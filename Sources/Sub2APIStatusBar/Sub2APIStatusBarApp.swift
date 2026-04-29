@@ -15,16 +15,16 @@ struct Sub2APIStatusBarApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private let model = MonitorViewModel()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "antenna.radiowaves.left.and.right", accessibilityDescription: "Sub2API")
-            button.image?.isTemplate = true
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem?.button {
+            setStatusImage("antenna.radiowaves.left.and.right", description: "Sub2API", fallbackTitle: " Sub2API")
             button.action = #selector(togglePopover)
             button.target = self
         }
@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePopover() {
-        guard let button = statusItem.button else {
+        guard let button = statusItem?.button else {
             return
         }
 
@@ -53,27 +53,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusItem(_ snapshot: MonitorSnapshot) {
-        guard let button = statusItem.button else {
+        guard let button = statusItem?.button else {
             return
         }
 
         switch snapshot.severity {
         case .healthy:
-            button.image = NSImage(systemSymbolName: "checkmark.circle", accessibilityDescription: "Sub2API OK")
+            setStatusImage("checkmark.circle", description: "Sub2API OK", fallbackTitle: " OK")
         case .warning:
-            button.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Sub2API Warning")
+            setStatusImage("exclamationmark.triangle", description: "Sub2API Warning", fallbackTitle: " Warn")
         case .error:
-            button.image = NSImage(systemSymbolName: "xmark.octagon", accessibilityDescription: "Sub2API Error")
+            setStatusImage("xmark.octagon", description: "Sub2API Error", fallbackTitle: " Error")
         }
-        button.image?.isTemplate = true
         button.imagePosition = .imageLeading
-        button.title = snapshot.connected && model.config.showsMenuBarText ? " \(snapshot.menuBarSummary)" : ""
+        let title = snapshot.connected && model.config.showsMenuBarText ? " \(snapshot.menuBarSummary)" : ""
+        if button.image == nil && title.isEmpty {
+            button.title = " \(snapshot.statusLabel)"
+        } else {
+            button.title = title
+        }
 
         if let stats = snapshot.stats, snapshot.connected {
             button.toolTip = "Sub2API \(snapshot.statusLabel) - Today \(StatusFormatters.currency(stats.todayActualCost)), RPM \(String(format: "%.1f", stats.rpm))"
         } else {
             button.toolTip = "Sub2API \(snapshot.statusLabel)"
         }
+    }
+
+    private func setStatusImage(_ systemName: String, description: String, fallbackTitle: String) {
+        guard let button = statusItem?.button else {
+            return
+        }
+
+        if let image = NSImage(systemSymbolName: systemName, accessibilityDescription: description) {
+            image.isTemplate = true
+            button.image = image
+            return
+        }
+
+        button.image = nil
+        button.title = fallbackTitle
     }
 }
 

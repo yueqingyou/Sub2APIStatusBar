@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.5
+
+- Fixed a macOS 12 launch crash caused by creating the menu bar status item before AppKit finished initializing.
+- Added a menu bar title fallback when a system symbol is unavailable on older macOS versions.
+
 ## v0.1.4
 
 - Lowered the app runtime target to macOS 12 for Intel Mac compatibility.

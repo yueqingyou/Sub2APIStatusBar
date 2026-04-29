@@ -66,7 +66,7 @@ swift run Sub2APIStatusBar
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.4 ./scripts/build-app.sh
+VERSION=v0.1.5 ./scripts/build-app.sh
 ```
 
 Output:
@@ -81,21 +81,21 @@ Release builds are host-native. Building on an Intel Mac produces an `x86_64` ap
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.4 \
+VERSION=v0.1.5 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.4 ./scripts/package-release.sh
+VERSION=v0.1.5 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.4-macOS.zip
-dist/Sub2APIStatusBar-0.1.4-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.5-macOS.zip
+dist/Sub2APIStatusBar-0.1.5-macOS.zip.sha256
 ```
 
 ## Notarize A Release
@@ -107,7 +107,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.4 \
+VERSION=v0.1.5 \
 ./scripts/notarize-release.sh
 ```
 

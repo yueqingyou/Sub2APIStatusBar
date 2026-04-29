@@ -170,9 +170,8 @@ final class MonitorViewModel: ObservableObject {
         let currentUser = try? await client.currentUser().user
         async let summaryTask = client.subscriptionSummary()
         async let statsTask = client.usageDashboardStats()
-        let menuBarRange = config.menuBarUsageWindow.dateRange()
         let timezone = TimeZone.current.identifier
-        async let menuBarStatsTask = client.usageStats(startDate: menuBarRange.start, endDate: menuBarRange.end, timezone: timezone)
+        async let menuBarStatsTask = menuBarUsageStats(client: client, timezone: timezone)
         async let latestUsageTask = client.usageLogs(page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc")
         let range = Self.lastSevenDayRange()
         async let trendTask = client.usageDashboardTrend(startDate: range.start, endDate: range.end, granularity: "day")
@@ -199,6 +198,11 @@ final class MonitorViewModel: ObservableObject {
             lastUpdatedAt: Date(),
             message: nil
         )
+    }
+
+    private func menuBarUsageStats(client: Sub2APIClient, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
+        let range = config.menuBarUsageWindow.dateRange(now: now)
+        return try await client.usageStats(startDate: range.start, endDate: range.end, timezone: timezone)
     }
 
     private func refreshAuthTokenIfNeeded(after error: Error) async -> Bool {
@@ -710,70 +714,34 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Settings")
-                .font(.title2.bold())
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Settings")
+                        .font(.title2.bold())
 
-            Form {
-                TextField("Base URL", text: $model.settingsDraft.baseURL)
-                Toggle("Show text in menu bar", isOn: $model.settingsDraft.showsMenuBarText)
-                Picker("Usage window", selection: $model.settingsDraft.menuBarUsageWindow) {
-                    ForEach(MenuBarUsageWindow.allCases) { window in
-                        Text(window.displayName).tag(window)
+                    settingsFields
+
+                    Divider()
+
+                    UpdateSettingsSection(model: model)
+
+                    Divider()
+
+                    loginSection
+
+                    if let error = model.settingsError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .lineLimit(3)
                     }
                 }
-                .pickerStyle(.segmented)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Menu bar items")
-                        .font(.headline)
-                    ForEach(MenuBarDisplayItem.allCases) { item in
-                        Toggle(item.displayName, isOn: menuBarItemBinding(item))
-                    }
-                }
-                HStack {
-                    Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
-                    Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
-                        .frame(width: 42, alignment: .trailing)
-                }
-                SecureField("Bearer Token", text: $model.settingsDraft.authToken)
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Divider()
-
-            UpdateSettingsSection(model: model)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Login")
-                    .font(.headline)
-                TextField("Email", text: $model.loginEmail)
-                SecureField("Password", text: $model.loginPassword)
-                Button {
-                    model.loginAndSave()
-                } label: {
-                    Label("Login and Save Token", systemImage: "key")
-                }
-                .disabled(!LoginFormState(baseURL: model.settingsDraft.baseURL, email: model.loginEmail, password: model.loginPassword).canSubmit || model.isLoggingIn)
-
-                Button(role: .destructive) {
-                    model.disconnect()
-                    dismiss()
-                } label: {
-                    Label("Disconnect", systemImage: "person.crop.circle.badge.xmark")
-                }
-                .disabled(model.config.authToken.isEmpty && model.settingsDraft.authToken.isEmpty)
-            }
-
-            if let error = model.settingsError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(3)
-            }
-
-            Spacer()
 
             HStack {
                 Spacer()
@@ -786,8 +754,85 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderedProminent)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
-        .padding(20)
+    }
+
+    private var settingsFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            settingsRow("Base URL") {
+                TextField("https://codex.lyhbio.cn", text: $model.settingsDraft.baseURL)
+            }
+
+            settingsRow("") {
+                Toggle("Show text in menu bar", isOn: $model.settingsDraft.showsMenuBarText)
+            }
+
+            settingsRow("Usage window") {
+                Picker("", selection: $model.settingsDraft.menuBarUsageWindow) {
+                    ForEach(MenuBarUsageWindow.allCases) { window in
+                        Text(window.displayName).tag(window)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+            }
+
+            settingsRow("Menu bar items") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(MenuBarDisplayItem.allCases) { item in
+                        Toggle(item.displayName, isOn: menuBarItemBinding(item))
+                    }
+                }
+            }
+
+            settingsRow("Refresh") {
+                HStack {
+                    Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
+                    Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
+                        .frame(width: 42, alignment: .trailing)
+                }
+            }
+
+            settingsRow("Bearer Token") {
+                SecureField("", text: $model.settingsDraft.authToken)
+            }
+        }
+    }
+
+    private var loginSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Login")
+                .font(.headline)
+            TextField("Email", text: $model.loginEmail)
+            SecureField("Password", text: $model.loginPassword)
+            Button {
+                model.loginAndSave()
+            } label: {
+                Label("Login and Save Token", systemImage: "key")
+            }
+            .disabled(!LoginFormState(baseURL: model.settingsDraft.baseURL, email: model.loginEmail, password: model.loginPassword).canSubmit || model.isLoggingIn)
+
+            Button(role: .destructive) {
+                model.disconnect()
+                dismiss()
+            } label: {
+                Label("Disconnect", systemImage: "person.crop.circle.badge.xmark")
+            }
+            .disabled(model.config.authToken.isEmpty && model.settingsDraft.authToken.isEmpty)
+        }
+    }
+
+    private func settingsRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(label)
+                .font(.callout.weight(.semibold))
+                .opacity(label.isEmpty ? 0 : 1)
+                .frame(width: 116, alignment: .trailing)
+                .padding(.top, 4)
+            content()
+        }
     }
 
     private func menuBarItemBinding(_ item: MenuBarDisplayItem) -> Binding<Bool> {

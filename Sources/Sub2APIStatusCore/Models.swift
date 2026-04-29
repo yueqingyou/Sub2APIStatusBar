@@ -551,6 +551,32 @@ public struct UsagePeriodStats: Decodable, Equatable, Sendable {
         self.totalActualCost = totalActualCost
         self.averageDurationMs = averageDurationMs
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case totalRequests
+        case totalInputTokens
+        case totalOutputTokens
+        case totalCacheCreationTokens
+        case totalCacheReadTokens
+        case totalTokens
+        case totalCost
+        case totalActualCost
+        case averageDurationMs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalRequests = try container.decodeIfPresent(Int64.self, forKey: .totalRequests) ?? 0
+        totalInputTokens = try container.decodeIfPresent(Int64.self, forKey: .totalInputTokens) ?? 0
+        totalOutputTokens = try container.decodeIfPresent(Int64.self, forKey: .totalOutputTokens) ?? 0
+        totalCacheCreationTokens = try container.decodeIfPresent(Int64.self, forKey: .totalCacheCreationTokens) ?? 0
+        totalCacheReadTokens = try container.decodeIfPresent(Int64.self, forKey: .totalCacheReadTokens) ?? 0
+        totalTokens = try container.decodeIfPresent(Int64.self, forKey: .totalTokens) ?? 0
+        totalCost = try container.decodeIfPresent(Double.self, forKey: .totalCost) ?? 0
+        totalActualCost = try container.decodeIfPresent(Double.self, forKey: .totalActualCost) ?? 0
+        averageDurationMs = try container.decodeIfPresent(Double.self, forKey: .averageDurationMs) ?? 0
+    }
+
 }
 
 public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
@@ -564,7 +590,9 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
     public let cacheReadTokens: Int64
     public let inputCost: Double
     public let outputCost: Double
+    public let totalCost: Double
     public let actualCost: Double
+    public let durationMs: Double
     public let createdAt: Date?
 
     public init(
@@ -578,7 +606,9 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         cacheReadTokens: Int64 = 0,
         inputCost: Double = 0,
         outputCost: Double = 0,
+        totalCost: Double = 0,
         actualCost: Double = 0,
+        durationMs: Double = 0,
         createdAt: Date? = nil
     ) {
         self.id = id
@@ -591,7 +621,9 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         self.cacheReadTokens = cacheReadTokens
         self.inputCost = inputCost
         self.outputCost = outputCost
+        self.totalCost = totalCost
         self.actualCost = actualCost
+        self.durationMs = durationMs
         self.createdAt = createdAt
     }
 
@@ -606,7 +638,9 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         case cacheReadTokens
         case inputCost
         case outputCost
+        case totalCost
         case actualCost
+        case durationMs
         case createdAt
     }
 
@@ -622,7 +656,9 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         cacheReadTokens = try container.decodeIfPresent(Int64.self, forKey: .cacheReadTokens) ?? 0
         inputCost = try container.decodeIfPresent(Double.self, forKey: .inputCost) ?? 0
         outputCost = try container.decodeIfPresent(Double.self, forKey: .outputCost) ?? 0
+        totalCost = try container.decodeIfPresent(Double.self, forKey: .totalCost) ?? inputCost + outputCost
         actualCost = try container.decodeIfPresent(Double.self, forKey: .actualCost) ?? 0
+        durationMs = try container.decodeIfPresent(Double.self, forKey: .durationMs) ?? 0
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
     }
 
@@ -1152,7 +1188,9 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return nil
         }
         switch config.menuBarUsageWindow {
-        case .last24Hours, .today:
+        case .last24Hours:
+            return nil
+        case .today:
             return stats.todayActualCost
         }
     }
@@ -1165,7 +1203,9 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return nil
         }
         switch config.menuBarUsageWindow {
-        case .last24Hours, .today:
+        case .last24Hours:
+            return nil
+        case .today:
             return stats.todayRequests
         }
     }

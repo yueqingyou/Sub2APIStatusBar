@@ -1,8 +1,8 @@
 import Foundation
 
 public enum AppBuildInfo {
-    public static let fallbackVersion = "0.1.6"
-    public static let repositoryOwner = "GeekyWizKid"
+    public static let fallbackVersion = "0.1.7"
+    public static let repositoryOwner = "yueqingyou"
     public static let repositoryName = "Sub2APIStatusBar"
 }
 

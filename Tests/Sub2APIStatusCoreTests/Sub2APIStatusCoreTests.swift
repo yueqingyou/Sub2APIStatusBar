@@ -202,7 +202,7 @@ func testGithubReleaseDecodesLatestReleasePayload() throws {
     {
       "tag_name": "v0.1.3",
       "name": "Sub2API Status Bar v0.1.3",
-      "html_url": "https://github.com/GeekyWizKid/Sub2APIStatusBar/releases/tag/v0.1.3",
+      "html_url": "https://github.com/yueqingyou/Sub2APIStatusBar/releases/tag/v0.1.3",
       "draft": false,
       "prerelease": false
     }
@@ -215,11 +215,18 @@ func testGithubReleaseDecodesLatestReleasePayload() throws {
     XCTAssert(release.releaseURL.absoluteString.hasSuffix("/v0.1.3"))
 }
 
+func testDefaultUpdateCheckerUsesPublishedRepository() {
+    let checker = GitHubUpdateChecker()
+
+    XCTAssert(checker.owner == "yueqingyou")
+    XCTAssert(checker.repository == "Sub2APIStatusBar")
+}
+
 func testUpdateInfoDetectsAvailableRelease() {
     let release = GitHubRelease(
         tagName: "v0.1.3",
         name: "Sub2API Status Bar v0.1.3",
-        releaseURL: URL(string: "https://github.com/GeekyWizKid/Sub2APIStatusBar/releases/tag/v0.1.3")!,
+        releaseURL: URL(string: "https://github.com/yueqingyou/Sub2APIStatusBar/releases/tag/v0.1.3")!,
         draft: false,
         prerelease: false
     )
@@ -389,7 +396,9 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
       "cache_read_tokens": 75432,
       "input_cost": 0.00946,
       "output_cost": 0.02574,
+      "total_cost": 0.0352,
       "actual_cost": 0.124712,
+      "duration_ms": 1456,
       "created_at": "2026-04-29T19:15:11.118937+08:00"
     }
     """.data(using: .utf8)!
@@ -402,6 +411,29 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
     XCTAssert(usage.contextLengthTokens == 88_378)
     XCTAssertEqual(usage.inputPricePerMillion ?? 0, 10, accuracy: 0.000001)
     XCTAssertEqual(usage.outputPricePerMillion ?? 0, 60, accuracy: 0.000001)
+    XCTAssertEqual(usage.totalCost, 0.0352, accuracy: 0.000001)
+    XCTAssertEqual(usage.durationMs, 1456, accuracy: 0.000001)
+}
+
+func testUsagePeriodStatsDecodesPartialStatsPayload() throws {
+    let json = """
+    {
+      "total_requests": 1051,
+      "total_actual_cost": 123.45,
+      "total_tokens": 98765,
+      "average_duration_ms": 12.3
+    }
+    """.data(using: .utf8)!
+
+    let stats = try JSONDecoder.sub2api.decode(UsagePeriodStats.self, from: json)
+
+    XCTAssert(stats.totalRequests == 1051)
+    XCTAssert(stats.totalActualCost == 123.45)
+    XCTAssert(stats.totalTokens == 98_765)
+    XCTAssert(stats.totalInputTokens == 0)
+    XCTAssert(stats.totalOutputTokens == 0)
+    XCTAssert(stats.totalCacheCreationTokens == 0)
+    XCTAssert(stats.totalCacheReadTokens == 0)
 }
 
 func testAccountHealthSummaryCountsRuntimeStates() {
@@ -571,6 +603,28 @@ func testMonitorSnapshotBuildsMenuBarSummaryFromDashboardStats() {
 
     XCTAssert(snapshot.menuBarSummary(config: defaultConfig) == "$12.35 · gpt-5.5 · xhigh · 88.4K ctx · Fast · 3 RPM")
     XCTAssert(snapshot.menuBarSummary(config: customConfig) == "2048 req · in $10.0000/1M · out $60.0000/1M")
+}
+
+func testMonitorSnapshotDoesNotUseTodayFallbackForLast24HourMenuBarStats() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(todayRequests: 503, todayActualCost: 12.34, rpm: 3),
+        menuBarUsageStats: nil,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        menuBarUsageWindow: .last24Hours,
+        menuBarDisplayItems: [.totalCost, .totalRequests]
+    )
+
+    XCTAssert(!snapshot.menuBarSummary(config: config).contains("503"))
+    XCTAssert(!snapshot.menuBarSummary(config: config).contains("$12.34"))
 }
 
 func testMonitorSnapshotAllowsEmptyMenuBarItemSelection() {

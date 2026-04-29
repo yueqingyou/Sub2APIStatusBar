@@ -32,13 +32,31 @@ public struct Sub2APIClient: Sendable {
         return try await get("/usage/stats", query: query)
     }
 
-    public func usageLogs(page: Int = 1, pageSize: Int = 20, sortBy: String = "created_at", sortOrder: String = "desc") async throws -> PaginatedResponse<UsageLog> {
-        try await get("/usage", query: [
+    public func usageLogs(
+        page: Int = 1,
+        pageSize: Int = 20,
+        sortBy: String = "created_at",
+        sortOrder: String = "desc",
+        startDate: String? = nil,
+        endDate: String? = nil,
+        timezone: String? = nil
+    ) async throws -> PaginatedResponse<UsageLog> {
+        var query = [
             URLQueryItem(name: "page", value: String(page)),
             URLQueryItem(name: "page_size", value: String(pageSize)),
             URLQueryItem(name: "sort_by", value: sortBy),
             URLQueryItem(name: "sort_order", value: sortOrder),
-        ])
+        ]
+        if let startDate, !startDate.isEmpty {
+            query.append(URLQueryItem(name: "start_date", value: startDate))
+        }
+        if let endDate, !endDate.isEmpty {
+            query.append(URLQueryItem(name: "end_date", value: endDate))
+        }
+        if let timezone, !timezone.isEmpty {
+            query.append(URLQueryItem(name: "timezone", value: timezone))
+        }
+        return try await get("/usage", query: query)
     }
 
     public func usageDashboardTrend(startDate: String, endDate: String, granularity: String = "day") async throws -> DashboardTrendResponse {

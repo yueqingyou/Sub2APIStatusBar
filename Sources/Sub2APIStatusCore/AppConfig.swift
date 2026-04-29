@@ -53,6 +53,129 @@ public enum MonitorMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public struct MenuBarDateRange: Equatable, Sendable {
+    public let start: String
+    public let end: String
+
+    public init(start: String, end: String) {
+        self.start = start
+        self.end = end
+    }
+}
+
+public enum MenuBarUsageWindow: String, Codable, CaseIterable, Identifiable, Sendable, Hashable {
+    case last24Hours
+    case today
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .last24Hours:
+            return "Last 24 Hours"
+        case .today:
+            return "Today"
+        }
+    }
+
+    public static func fromEnvironment(_ value: String?) -> MenuBarUsageWindow {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !value.isEmpty else {
+            return .last24Hours
+        }
+
+        switch value {
+        case "today":
+            return .today
+        case "last24hours", "last-24-hours", "last_24_hours", "24h", "last24h":
+            return .last24Hours
+        default:
+            return .last24Hours
+        }
+    }
+
+    public func dateRange(now: Date = Date(), calendar: Calendar = .current) -> MenuBarDateRange {
+        let startDate: Date
+        switch self {
+        case .last24Hours:
+            startDate = Date(timeInterval: -24 * 60 * 60, since: now)
+        case .today:
+            startDate = now
+        }
+
+        return MenuBarDateRange(
+            start: Self.formatDate(startDate, calendar: calendar),
+            end: Self.formatDate(now, calendar: calendar)
+        )
+    }
+
+    private static func formatDate(_ date: Date, calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+}
+
+public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sendable, Hashable {
+    case totalCost
+    case totalRequests
+    case model
+    case reasoningEffort
+    case contextLength
+    case fast
+    case inputPrice
+    case outputPrice
+    case rpm
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .totalCost:
+            return "Total Cost"
+        case .totalRequests:
+            return "Total Requests"
+        case .model:
+            return "Model"
+        case .reasoningEffort:
+            return "Reasoning Effort"
+        case .contextLength:
+            return "Context Length"
+        case .fast:
+            return "Fast Enabled"
+        case .inputPrice:
+            return "Input Price"
+        case .outputPrice:
+            return "Output Price"
+        case .rpm:
+            return "Realtime RPM"
+        }
+    }
+
+    public static let defaultSelection: [MenuBarDisplayItem] = [
+        .totalCost,
+        .model,
+        .reasoningEffort,
+        .contextLength,
+        .fast,
+        .rpm,
+    ]
+
+    public static func fromEnvironment(_ value: String?) -> [MenuBarDisplayItem] {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return defaultSelection
+        }
+
+        let items = value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap(MenuBarDisplayItem.init(rawValue:))
+        return items.isEmpty ? defaultSelection : items
+    }
+}
+
 public struct AppConfig: Codable, Equatable, Sendable {
     public var baseURL: String
     public var authToken: String
@@ -61,6 +184,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var language: AppLanguage
     public var monitorMode: MonitorMode
     public var showsMenuBarText: Bool
+    public var menuBarUsageWindow: MenuBarUsageWindow
+    public var menuBarDisplayItems: [MenuBarDisplayItem]
 
     public init(
         baseURL: String,
@@ -69,7 +194,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
         refreshIntervalSeconds: Double = 15,
         language: AppLanguage = .auto,
         monitorMode: MonitorMode = .user,
-        showsMenuBarText: Bool = false
+        showsMenuBarText: Bool = false,
+        menuBarUsageWindow: MenuBarUsageWindow = .last24Hours,
+        menuBarDisplayItems: [MenuBarDisplayItem] = MenuBarDisplayItem.defaultSelection
     ) {
         self.baseURL = baseURL
         self.authToken = authToken
@@ -78,6 +205,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.language = language
         self.monitorMode = monitorMode
         self.showsMenuBarText = showsMenuBarText
+        self.menuBarUsageWindow = menuBarUsageWindow
+        self.menuBarDisplayItems = menuBarDisplayItems
         normalize()
     }
 
@@ -89,6 +218,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case language
         case monitorMode
         case showsMenuBarText
+        case menuBarUsageWindow
+        case menuBarDisplayItems
     }
 
     public init(from decoder: Decoder) throws {
@@ -100,6 +231,12 @@ public struct AppConfig: Codable, Equatable, Sendable {
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .auto
         monitorMode = try container.decodeIfPresent(MonitorMode.self, forKey: .monitorMode) ?? .user
         showsMenuBarText = try container.decodeIfPresent(Bool.self, forKey: .showsMenuBarText) ?? false
+        menuBarUsageWindow = try container.decodeIfPresent(MenuBarUsageWindow.self, forKey: .menuBarUsageWindow) ?? .last24Hours
+        if let rawItems = try container.decodeIfPresent([String].self, forKey: .menuBarDisplayItems) {
+            menuBarDisplayItems = rawItems.compactMap(MenuBarDisplayItem.init(rawValue:))
+        } else {
+            menuBarDisplayItems = MenuBarDisplayItem.defaultSelection
+        }
         normalize()
     }
 
@@ -110,6 +247,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         try container.encode(language, forKey: .language)
         try container.encode(monitorMode, forKey: .monitorMode)
         try container.encode(showsMenuBarText, forKey: .showsMenuBarText)
+        try container.encode(menuBarUsageWindow, forKey: .menuBarUsageWindow)
+        try container.encode(menuBarDisplayItems.map(\.rawValue), forKey: .menuBarDisplayItems)
     }
 
     public static func defaults() -> AppConfig {
@@ -121,7 +260,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
             refreshIntervalSeconds: Double(env["SUB2API_REFRESH_SECONDS"] ?? "") ?? 15,
             language: AppLanguage.fromEnvironment(env["SUB2API_LANGUAGE"]),
             monitorMode: .user,
-            showsMenuBarText: ["1", "true", "yes", "on"].contains((env["SUB2API_SHOW_MENU_BAR_TEXT"] ?? "").lowercased())
+            showsMenuBarText: ["1", "true", "yes", "on"].contains((env["SUB2API_SHOW_MENU_BAR_TEXT"] ?? "").lowercased()),
+            menuBarUsageWindow: MenuBarUsageWindow.fromEnvironment(env["SUB2API_MENU_BAR_USAGE_WINDOW"]),
+            menuBarDisplayItems: MenuBarDisplayItem.fromEnvironment(env["SUB2API_MENU_BAR_ITEMS"])
         )
     }
 
@@ -138,6 +279,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         refreshToken = refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshIntervalSeconds = min(max(refreshIntervalSeconds, 5), 300)
         monitorMode = .user
+        var seen = Set<MenuBarDisplayItem>()
+        menuBarDisplayItems = menuBarDisplayItems.filter { seen.insert($0).inserted }
     }
 
     public mutating func clearAuthTokens() {

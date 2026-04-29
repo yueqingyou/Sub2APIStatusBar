@@ -66,15 +66,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setStatusImage("xmark.octagon", description: "Sub2API Error", fallbackTitle: " Error")
         }
         button.imagePosition = .imageLeading
-        let title = snapshot.connected && model.config.showsMenuBarText ? " \(snapshot.menuBarSummary)" : ""
+        let title = snapshot.connected && model.config.showsMenuBarText ? " \(snapshot.menuBarSummary(config: model.config))" : ""
         if button.image == nil && title.isEmpty {
             button.title = " \(snapshot.statusLabel)"
         } else {
             button.title = title
         }
 
-        if let stats = snapshot.stats, snapshot.connected {
-            button.toolTip = "Sub2API \(snapshot.statusLabel) - Today \(StatusFormatters.currency(stats.todayActualCost)), RPM \(String(format: "%.1f", stats.rpm))"
+        if snapshot.connected {
+            let summary = snapshot.menuBarSummary(config: model.config)
+            button.toolTip = summary.isEmpty ? "Sub2API \(snapshot.statusLabel)" : "Sub2API \(snapshot.statusLabel) - \(summary)"
         } else {
             button.toolTip = "Sub2API \(snapshot.statusLabel)"
         }
@@ -169,12 +170,18 @@ final class MonitorViewModel: ObservableObject {
         let currentUser = try? await client.currentUser().user
         async let summaryTask = client.subscriptionSummary()
         async let statsTask = client.usageDashboardStats()
+        let menuBarRange = config.menuBarUsageWindow.dateRange()
+        let timezone = TimeZone.current.identifier
+        async let menuBarStatsTask = client.usageStats(startDate: menuBarRange.start, endDate: menuBarRange.end, timezone: timezone)
+        async let latestUsageTask = client.usageLogs(page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc")
         let range = Self.lastSevenDayRange()
         async let trendTask = client.usageDashboardTrend(startDate: range.start, endDate: range.end, granularity: "day")
         async let modelsTask = client.usageDashboardModels(startDate: range.start, endDate: range.end)
 
         let summary = try await summaryTask
         let stats = try? await statsTask
+        let menuBarStats = try? await menuBarStatsTask
+        let latestUsage = try? await latestUsageTask
         let trend = try? await trendTask
         let models = try? await modelsTask
         return MonitorSnapshot(
@@ -182,6 +189,8 @@ final class MonitorViewModel: ObservableObject {
             connected: true,
             currentUser: currentUser,
             stats: stats,
+            menuBarUsageStats: menuBarStats,
+            latestUsage: latestUsage?.items.first,
             trend: trend?.trend,
             modelDistribution: models?.models,
             realtime: nil,
@@ -404,7 +413,7 @@ struct MonitorPanel: View {
         .frame(width: 520, height: 680)
         .sheet(isPresented: $showingSettings) {
             SettingsView(model: model)
-                .frame(width: 430, height: 610)
+                .frame(width: 430, height: 720)
         }
     }
 
@@ -708,6 +717,20 @@ struct SettingsView: View {
             Form {
                 TextField("Base URL", text: $model.settingsDraft.baseURL)
                 Toggle("Show text in menu bar", isOn: $model.settingsDraft.showsMenuBarText)
+                Picker("Usage window", selection: $model.settingsDraft.menuBarUsageWindow) {
+                    ForEach(MenuBarUsageWindow.allCases) { window in
+                        Text(window.displayName).tag(window)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Menu bar items")
+                        .font(.headline)
+                    ForEach(MenuBarDisplayItem.allCases) { item in
+                        Toggle(item.displayName, isOn: menuBarItemBinding(item))
+                    }
+                }
                 HStack {
                     Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
                     Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
@@ -765,6 +788,23 @@ struct SettingsView: View {
             }
         }
         .padding(20)
+    }
+
+    private func menuBarItemBinding(_ item: MenuBarDisplayItem) -> Binding<Bool> {
+        Binding(
+            get: {
+                model.settingsDraft.menuBarDisplayItems.contains(item)
+            },
+            set: { isEnabled in
+                if isEnabled {
+                    if !model.settingsDraft.menuBarDisplayItems.contains(item) {
+                        model.settingsDraft.menuBarDisplayItems.append(item)
+                    }
+                } else {
+                    model.settingsDraft.menuBarDisplayItems.removeAll { $0 == item }
+                }
+            }
+        )
     }
 }
 

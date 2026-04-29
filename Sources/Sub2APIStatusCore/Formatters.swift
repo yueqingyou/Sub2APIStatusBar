@@ -37,6 +37,14 @@ public enum StatusFormatters {
         String(format: "$%.4f", value)
     }
 
+    public static func tokenPricePerMillion(_ value: Double) -> String {
+        String(format: "$%.4f", value)
+    }
+
+    public static func contextLength(_ value: Int64) -> String {
+        "\(compactNumber(value)) ctx"
+    }
+
     public static func percent(_ value: Double) -> String {
         String(format: "%.0f%%", min(max(value, 0), 1) * 100)
     }

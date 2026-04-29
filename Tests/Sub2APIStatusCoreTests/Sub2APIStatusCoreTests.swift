@@ -30,11 +30,25 @@ func testAppConfigNormalizesBaseURLAndRefreshInterval() {
     XCTAssert(config.showsMenuBarText == false)
 }
 
+func testAppConfigDefaultsMenuBarWindowAndItems() {
+    let config = AppConfig(baseURL: "http://127.0.0.1:8080")
+
+    XCTAssert(config.menuBarUsageWindow == .last24Hours)
+    XCTAssert(config.menuBarDisplayItems == [
+        .totalCost,
+        .model,
+        .reasoningEffort,
+        .contextLength,
+        .fast,
+        .rpm,
+    ])
+}
+
 func testAppConfigPersistsMenuBarTextPreference() throws {
     let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
         .appendingPathComponent("config.json")
-    let store = ConfigStore(configURL: configURL)
+    let store = ConfigStore(configURL: configURL, tokenStore: MemoryTokenStore())
     let config = AppConfig(baseURL: "http://127.0.0.1:8080", showsMenuBarText: true)
 
     try store.save(config)
@@ -42,6 +56,25 @@ func testAppConfigPersistsMenuBarTextPreference() throws {
 
     XCTAssert(loaded.baseURL == "http://127.0.0.1:8080")
     XCTAssert(loaded.showsMenuBarText == true)
+}
+
+func testAppConfigPersistsMenuBarDetailPreferences() throws {
+    let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("config.json")
+    let store = ConfigStore(configURL: configURL, tokenStore: MemoryTokenStore())
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarUsageWindow: .today,
+        menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice]
+    )
+
+    try store.save(config)
+    let loaded = store.load()
+
+    XCTAssert(loaded.menuBarUsageWindow == .today)
+    XCTAssert(loaded.menuBarDisplayItems == [.totalRequests, .inputPrice, .outputPrice])
 }
 
 func testConfigStoreSavesTokensOutsideConfigJSON() throws {
@@ -334,6 +367,43 @@ func testUsageDashboardDecodesUserStatsTrendAndModels() throws {
     XCTAssert(models.models.first?.standardCost == 222.61852)
 }
 
+func testMenuBarUsageWindowBuildsDateRangesLikeWebPreset() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+    let now = Date(timeIntervalSince1970: 1_777_456_800) // 2026-04-29 20:00:00 +0800
+
+    XCTAssert(MenuBarUsageWindow.last24Hours.dateRange(now: now, calendar: calendar) == MenuBarDateRange(start: "2026-04-28", end: "2026-04-29"))
+    XCTAssert(MenuBarUsageWindow.today.dateRange(now: now, calendar: calendar) == MenuBarDateRange(start: "2026-04-29", end: "2026-04-29"))
+}
+
+func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
+    let json = """
+    {
+      "id": 133605,
+      "model": "gpt-5.5",
+      "service_tier": "priority",
+      "reasoning_effort": "xhigh",
+      "input_tokens": 946,
+      "output_tokens": 429,
+      "cache_creation_tokens": 12000,
+      "cache_read_tokens": 75432,
+      "input_cost": 0.00946,
+      "output_cost": 0.02574,
+      "actual_cost": 0.124712,
+      "created_at": "2026-04-29T19:15:11.118937+08:00"
+    }
+    """.data(using: .utf8)!
+
+    let usage = try JSONDecoder.sub2api.decode(UsageLog.self, from: json)
+
+    XCTAssert(usage.model == "gpt-5.5")
+    XCTAssert(usage.reasoningEffort == "xhigh")
+    XCTAssert(usage.isFastEnabled == true)
+    XCTAssert(usage.contextLengthTokens == 88_378)
+    XCTAssertEqual(usage.inputPricePerMillion ?? 0, 10, accuracy: 0.000001)
+    XCTAssertEqual(usage.outputPricePerMillion ?? 0, 60, accuracy: 0.000001)
+}
+
 func testAccountHealthSummaryCountsRuntimeStates() {
     let accounts = [
         AccountSummary(id: 1, name: "ok", platform: "openai", type: "oauth", status: "active", schedulable: true, quotaLimit: 100, quotaUsed: 30, quotaDailyLimit: nil, quotaDailyUsed: nil, quotaWeeklyLimit: nil, quotaWeeklyUsed: nil, errorMessage: "", rateLimitResetAt: nil),
@@ -467,18 +537,57 @@ func testMonitorSnapshotLabelsNearLimitSeparatelyFromConnectionFailure() {
 }
 
 func testMonitorSnapshotBuildsMenuBarSummaryFromDashboardStats() {
+    let latestUsage = UsageLog(
+        id: 133605,
+        model: "gpt-5.5",
+        serviceTier: "priority",
+        reasoningEffort: "xhigh",
+        inputTokens: 946,
+        outputTokens: 429,
+        cacheCreationTokens: 12_000,
+        cacheReadTokens: 75_432,
+        inputCost: 0.00946,
+        outputCost: 0.02574,
+        actualCost: 0.124712,
+        createdAt: Date(timeIntervalSince1970: 1_777_453_711)
+    )
     let snapshot = MonitorSnapshot(
         mode: .user,
         connected: true,
         stats: DashboardStats(todayRequests: 1119, todayActualCost: 113.3052, rpm: 3),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 2048, totalActualCost: 12.3456),
+        latestUsage: latestUsage,
         realtime: nil,
         accountHealth: nil,
         subscriptionSummary: nil,
         lastUpdatedAt: Date(timeIntervalSince1970: 0),
         message: nil
     )
+    let defaultConfig = AppConfig(baseURL: "http://127.0.0.1:8080")
+    let customConfig = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice]
+    )
 
-    XCTAssert(snapshot.menuBarSummary == "$113.31 · 1119 req · 3 RPM")
+    XCTAssert(snapshot.menuBarSummary(config: defaultConfig) == "$12.35 · gpt-5.5 · xhigh · 88.4K ctx · Fast · 3 RPM")
+    XCTAssert(snapshot.menuBarSummary(config: customConfig) == "2048 req · in $10.0000/1M · out $60.0000/1M")
+}
+
+func testMonitorSnapshotAllowsEmptyMenuBarItemSelection() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(todayRequests: 1119, todayActualCost: 113.3052, rpm: 3),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 2048, totalActualCost: 12.3456),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(baseURL: "http://127.0.0.1:8080", menuBarDisplayItems: [])
+
+    XCTAssert(snapshot.menuBarSummary(config: config) == "")
 }
 
 func testLoginFormStateRequiresURLAccountAndPassword() {

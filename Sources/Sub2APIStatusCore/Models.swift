@@ -519,6 +519,141 @@ public struct PaginatedResponse<Item: Decodable & Sendable>: Decodable, Sendable
     }
 }
 
+public struct UsagePeriodStats: Decodable, Equatable, Sendable {
+    public let totalRequests: Int64
+    public let totalInputTokens: Int64
+    public let totalOutputTokens: Int64
+    public let totalCacheCreationTokens: Int64
+    public let totalCacheReadTokens: Int64
+    public let totalTokens: Int64
+    public let totalCost: Double
+    public let totalActualCost: Double
+    public let averageDurationMs: Double
+
+    public init(
+        totalRequests: Int64 = 0,
+        totalInputTokens: Int64 = 0,
+        totalOutputTokens: Int64 = 0,
+        totalCacheCreationTokens: Int64 = 0,
+        totalCacheReadTokens: Int64 = 0,
+        totalTokens: Int64 = 0,
+        totalCost: Double = 0,
+        totalActualCost: Double = 0,
+        averageDurationMs: Double = 0
+    ) {
+        self.totalRequests = totalRequests
+        self.totalInputTokens = totalInputTokens
+        self.totalOutputTokens = totalOutputTokens
+        self.totalCacheCreationTokens = totalCacheCreationTokens
+        self.totalCacheReadTokens = totalCacheReadTokens
+        self.totalTokens = totalTokens
+        self.totalCost = totalCost
+        self.totalActualCost = totalActualCost
+        self.averageDurationMs = averageDurationMs
+    }
+}
+
+public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
+    public let id: Int64
+    public let model: String
+    public let serviceTier: String?
+    public let reasoningEffort: String?
+    public let inputTokens: Int64
+    public let outputTokens: Int64
+    public let cacheCreationTokens: Int64
+    public let cacheReadTokens: Int64
+    public let inputCost: Double
+    public let outputCost: Double
+    public let actualCost: Double
+    public let createdAt: Date?
+
+    public init(
+        id: Int64 = 0,
+        model: String = "",
+        serviceTier: String? = nil,
+        reasoningEffort: String? = nil,
+        inputTokens: Int64 = 0,
+        outputTokens: Int64 = 0,
+        cacheCreationTokens: Int64 = 0,
+        cacheReadTokens: Int64 = 0,
+        inputCost: Double = 0,
+        outputCost: Double = 0,
+        actualCost: Double = 0,
+        createdAt: Date? = nil
+    ) {
+        self.id = id
+        self.model = model
+        self.serviceTier = serviceTier
+        self.reasoningEffort = reasoningEffort
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheCreationTokens = cacheCreationTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.inputCost = inputCost
+        self.outputCost = outputCost
+        self.actualCost = actualCost
+        self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case model
+        case serviceTier
+        case reasoningEffort
+        case inputTokens
+        case outputTokens
+        case cacheCreationTokens
+        case cacheReadTokens
+        case inputCost
+        case outputCost
+        case actualCost
+        case createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(Int64.self, forKey: .id) ?? 0
+        model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
+        reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+        inputTokens = try container.decodeIfPresent(Int64.self, forKey: .inputTokens) ?? 0
+        outputTokens = try container.decodeIfPresent(Int64.self, forKey: .outputTokens) ?? 0
+        cacheCreationTokens = try container.decodeIfPresent(Int64.self, forKey: .cacheCreationTokens) ?? 0
+        cacheReadTokens = try container.decodeIfPresent(Int64.self, forKey: .cacheReadTokens) ?? 0
+        inputCost = try container.decodeIfPresent(Double.self, forKey: .inputCost) ?? 0
+        outputCost = try container.decodeIfPresent(Double.self, forKey: .outputCost) ?? 0
+        actualCost = try container.decodeIfPresent(Double.self, forKey: .actualCost) ?? 0
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
+    }
+
+    public var contextLengthTokens: Int64 {
+        inputTokens + cacheCreationTokens + cacheReadTokens
+    }
+
+    public var isFastEnabled: Bool {
+        guard let serviceTier else {
+            return false
+        }
+        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "priority" || normalized == "fast"
+    }
+
+    public var inputPricePerMillion: Double? {
+        Self.pricePerMillion(cost: inputCost, tokens: inputTokens)
+    }
+
+    public var outputPricePerMillion: Double? {
+        Self.pricePerMillion(cost: outputCost, tokens: outputTokens)
+    }
+
+    private static func pricePerMillion(cost: Double, tokens: Int64) -> Double? {
+        guard tokens > 0 else {
+            return nil
+        }
+        return cost / Double(tokens) * 1_000_000
+    }
+}
+
 public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
     public let id: Int64
     public let name: String
@@ -829,6 +964,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
     public let connected: Bool
     public let currentUser: CurrentUser?
     public let stats: DashboardStats?
+    public let menuBarUsageStats: UsagePeriodStats?
+    public let latestUsage: UsageLog?
     public let trend: [TrendDataPoint]?
     public let modelDistribution: [ModelUsageSummary]?
     public let realtime: RealtimeMetrics?
@@ -842,6 +979,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
         connected: Bool,
         currentUser: CurrentUser? = nil,
         stats: DashboardStats?,
+        menuBarUsageStats: UsagePeriodStats? = nil,
+        latestUsage: UsageLog? = nil,
         trend: [TrendDataPoint]? = nil,
         modelDistribution: [ModelUsageSummary]? = nil,
         realtime: RealtimeMetrics?,
@@ -854,6 +993,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
         self.connected = connected
         self.currentUser = currentUser
         self.stats = stats
+        self.menuBarUsageStats = menuBarUsageStats
+        self.latestUsage = latestUsage
         self.trend = trend
         self.modelDistribution = modelDistribution
         self.realtime = realtime
@@ -935,12 +1076,65 @@ public struct MonitorSnapshot: Equatable, Sendable {
     }
 
     public var menuBarSummary: String {
+        menuBarSummary(config: AppConfig(baseURL: ""))
+    }
+
+    public func menuBarSummary(config: AppConfig) -> String {
         guard connected else {
             return "Sub2API \(statusLabel)"
         }
 
-        if let stats {
-            return "\(StatusFormatters.currency(stats.todayActualCost)) · \(StatusFormatters.menuBarCount(stats.todayRequests)) req · \(StatusFormatters.menuBarRate(stats.rpm)) RPM"
+        guard !config.menuBarDisplayItems.isEmpty else {
+            return ""
+        }
+
+        let selectedItems = Set(config.menuBarDisplayItems)
+        let orderedItems = MenuBarDisplayItem.allCases.filter { selectedItems.contains($0) }
+        var parts: [String] = []
+
+        for item in orderedItems {
+            switch item {
+            case .totalCost:
+                if let cost = selectedTotalActualCost(config: config) {
+                    parts.append(StatusFormatters.currency(cost))
+                }
+            case .totalRequests:
+                if let requests = selectedTotalRequests(config: config) {
+                    parts.append("\(StatusFormatters.menuBarCount(requests)) req")
+                }
+            case .model:
+                if let model = latestUsage?.model.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+                    parts.append(model)
+                }
+            case .reasoningEffort:
+                if let effort = latestUsage?.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines), !effort.isEmpty {
+                    parts.append(effort)
+                }
+            case .contextLength:
+                if let latestUsage {
+                    parts.append(StatusFormatters.contextLength(latestUsage.contextLengthTokens))
+                }
+            case .fast:
+                if let latestUsage {
+                    parts.append(latestUsage.isFastEnabled ? "Fast" : "No Fast")
+                }
+            case .inputPrice:
+                if let price = latestUsage?.inputPricePerMillion {
+                    parts.append("in \(StatusFormatters.tokenPricePerMillion(price))/1M")
+                }
+            case .outputPrice:
+                if let price = latestUsage?.outputPricePerMillion {
+                    parts.append("out \(StatusFormatters.tokenPricePerMillion(price))/1M")
+                }
+            case .rpm:
+                if let rpm = stats?.rpm ?? realtime?.requestsPerMinute {
+                    parts.append("\(StatusFormatters.menuBarRate(rpm)) RPM")
+                }
+            }
+        }
+
+        if !parts.isEmpty {
+            return parts.joined(separator: " · ")
         }
 
         if let subscriptionSummary {
@@ -948,5 +1142,31 @@ public struct MonitorSnapshot: Equatable, Sendable {
         }
 
         return "Sub2API \(statusLabel)"
+    }
+
+    private func selectedTotalActualCost(config: AppConfig) -> Double? {
+        if let menuBarUsageStats {
+            return menuBarUsageStats.totalActualCost
+        }
+        guard let stats else {
+            return nil
+        }
+        switch config.menuBarUsageWindow {
+        case .last24Hours, .today:
+            return stats.todayActualCost
+        }
+    }
+
+    private func selectedTotalRequests(config: AppConfig) -> Int64? {
+        if let menuBarUsageStats {
+            return menuBarUsageStats.totalRequests
+        }
+        guard let stats else {
+            return nil
+        }
+        switch config.menuBarUsageWindow {
+        case .last24Hours, .today:
+            return stats.todayRequests
+        }
     }
 }

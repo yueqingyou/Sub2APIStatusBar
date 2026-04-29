@@ -8,7 +8,7 @@ Sub2API Status Bar is a macOS menu bar companion for Sub2API users. It keeps dai
 - User dashboard cards for balance, API keys, requests, spend, token totals, RPM/TPM, and response time
 - Subscription quota card with separate daily, weekly, and monthly progress bars
 - Seven-day token trend and model distribution
-- Optional menu bar text summary, for example `$120.75 · 1219 req · 3 RPM`
+- Optional configurable menu bar text summary, for example `$120.75 · gpt-5.5 · xhigh · 88.4K ctx · Fast · 3 RPM`
 - First-run login and optional manual Bearer token setup
 - Keychain-backed token storage; no telemetry or third-party analytics
 - GitHub Releases update checking from Settings
@@ -26,6 +26,8 @@ The app expects a Sub2API server with `/api/v1` endpoints:
 - `POST /api/v1/auth/login`
 - `GET /api/v1/auth/me`
 - `GET /api/v1/subscriptions/summary`
+- `GET /api/v1/usage`
+- `GET /api/v1/usage/stats`
 - `GET /api/v1/usage/dashboard/stats`
 - `GET /api/v1/usage/dashboard/trend`
 - `GET /api/v1/usage/dashboard/models`
@@ -60,13 +62,17 @@ Optional first-run environment variables:
 SUB2API_BASE_URL=https://sub2api.example.com \
 SUB2API_AUTH_TOKEN=your-token \
 SUB2API_SHOW_MENU_BAR_TEXT=true \
+SUB2API_MENU_BAR_USAGE_WINDOW=last24Hours \
+SUB2API_MENU_BAR_ITEMS=totalCost,model,reasoningEffort,contextLength,fast,rpm \
 swift run Sub2APIStatusBar
 ```
+
+When menu bar text is enabled, the default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, fast status, input price, output price, and realtime RPM. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
 
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.5 ./scripts/build-app.sh
+VERSION=v0.1.6 ./scripts/build-app.sh
 ```
 
 Output:
@@ -81,21 +87,21 @@ Release builds are host-native. Building on an Intel Mac produces an `x86_64` ap
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.5 \
+VERSION=v0.1.6 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.5 ./scripts/package-release.sh
+VERSION=v0.1.6 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.5-macOS.zip
-dist/Sub2APIStatusBar-0.1.5-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.6-macOS.zip
+dist/Sub2APIStatusBar-0.1.6-macOS.zip.sha256
 ```
 
 ## Notarize A Release
@@ -107,7 +113,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.5 \
+VERSION=v0.1.6 \
 ./scripts/notarize-release.sh
 ```
 

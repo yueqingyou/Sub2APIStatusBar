@@ -10,11 +10,11 @@ public enum AppLanguage: String, Codable, CaseIterable, Identifiable, Sendable {
     public var displayName: String {
         switch self {
         case .auto:
-            "Auto"
+            return "Auto"
         case .zhHans:
-            "简体中文"
+            return "简体中文"
         case .en:
-            "English"
+            return "English"
         }
     }
 
@@ -148,7 +148,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var apiBaseURL: URL? {
         var normalized = self
         normalized.normalize()
-        return URL(string: normalized.baseURL)?.appending(path: "api/v1", directoryHint: .isDirectory)
+        return URL(string: normalized.baseURL)?
+            .appendingPathComponent("api", isDirectory: true)
+            .appendingPathComponent("v1", isDirectory: true)
     }
 }
 
@@ -183,10 +185,12 @@ public final class ConfigStore: Sendable {
         }
 
         let baseDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appending(path: "Library/Application Support", directoryHint: .isDirectory)
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
         self.configURL = baseDir
-            .appending(path: "Sub2APIStatusBar", directoryHint: .isDirectory)
-            .appending(path: "config.json")
+            .appendingPathComponent("Sub2APIStatusBar", isDirectory: true)
+            .appendingPathComponent("config.json")
     }
 
     public func load() -> AppConfig {

@@ -15,8 +15,8 @@ Sub2API Status Bar is a macOS menu bar companion for Sub2API users. It keeps dai
 
 ## Requirements
 
-- macOS 13 or later
-- Swift 6.1 or later for local development
+- macOS 12 or later
+- Swift 5.7 or later for local development
 - A Sub2API server with user API endpoints enabled
 
 ## User API Endpoints
@@ -66,7 +66,7 @@ swift run Sub2APIStatusBar
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.3 ./scripts/build-app.sh
+VERSION=v0.1.4 ./scripts/build-app.sh
 ```
 
 Output:
@@ -77,23 +77,25 @@ dist/Sub2APIStatusBar.app
 
 The build script generates the app icon, copies bundle resources, and applies ad-hoc signing by default. To sign with a Developer ID certificate:
 
+Release builds are host-native. Building on an Intel Mac produces an `x86_64` app bundle.
+
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.3 \
+VERSION=v0.1.4 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.3 ./scripts/package-release.sh
+VERSION=v0.1.4 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.3-macOS.zip
-dist/Sub2APIStatusBar-0.1.3-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.4-macOS.zip
+dist/Sub2APIStatusBar-0.1.4-macOS.zip.sha256
 ```
 
 ## Notarize A Release
@@ -105,7 +107,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.3 \
+VERSION=v0.1.4 \
 ./scripts/notarize-release.sh
 ```
 

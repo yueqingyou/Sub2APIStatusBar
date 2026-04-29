@@ -9,22 +9,22 @@ public enum Sub2APIError: Error, LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case let .api(code, message):
-            "API \(code): \(message)"
+            return "API \(code): \(message)"
         case .missingData:
-            "Response did not include data."
+            return "Response did not include data."
         case .invalidBaseURL:
-            "Base URL is invalid."
+            return "Base URL is invalid."
         case let .badStatus(status, message):
-            "HTTP \(status): \(message)"
+            return "HTTP \(status): \(message)"
         }
     }
 
     public var isUnauthorized: Bool {
         switch self {
         case let .badStatus(status, _):
-            status == 401
+            return status == 401
         default:
-            false
+            return false
         }
     }
 }
@@ -607,7 +607,7 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
             ratio(used: quotaUsed, limit: quotaLimit),
             ratio(used: quotaDailyUsed, limit: quotaDailyLimit),
             ratio(used: quotaWeeklyUsed, limit: quotaWeeklyLimit),
-        ].compactMap(\.self).max()
+        ].compactMap { $0 }.max()
     }
 
     private func ratio(used: Double?, limit: Double?) -> Double? {
@@ -660,7 +660,7 @@ public struct SubscriptionSummary: Decodable, Equatable, Sendable {
 
     public var highestProgress: Double {
         subscriptions.flatMap { [$0.dailyProgress, $0.weeklyProgress, $0.monthlyProgress] }
-            .compactMap(\.self)
+            .compactMap { $0 }
             .max() ?? 0
     }
 
@@ -924,13 +924,13 @@ public struct MonitorSnapshot: Equatable, Sendable {
             }
         }
 
-        return switch severity {
+        switch severity {
         case .healthy:
-            "OK"
+            return "OK"
         case .warning:
-            "Warn"
+            return "Warn"
         case .error:
-            "Error"
+            return "Error"
         }
     }
 

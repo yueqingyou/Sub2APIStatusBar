@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-v0.1.3}"
+VERSION="${VERSION:-v0.1.4}"
 APP_NAME="Sub2APIStatusBar"
 BUNDLE_ID="${BUNDLE_ID:-com.geekywizkid.sub2api-statusbar}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
@@ -47,7 +47,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
+  <string>12.0</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.productivity</string>
   <key>LSUIElement</key>

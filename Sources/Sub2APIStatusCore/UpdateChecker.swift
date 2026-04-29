@@ -1,7 +1,7 @@
 import Foundation
 
 public enum AppBuildInfo {
-    public static let fallbackVersion = "0.1.3"
+    public static let fallbackVersion = "0.1.4"
     public static let repositoryOwner = "GeekyWizKid"
     public static let repositoryName = "Sub2APIStatusBar"
 }
@@ -107,9 +107,9 @@ public enum UpdateCheckError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .invalidReleaseURL:
-            "Update URL is invalid."
+            return "Update URL is invalid."
         case let .badStatus(status):
-            "Update check failed with HTTP \(status)."
+            return "Update check failed with HTTP \(status)."
         }
     }
 }

@@ -1,11 +1,11 @@
-// swift-tools-version: 6.1
+// swift-tools-version: 5.7
 
 import PackageDescription
 
 let package = Package(
     name: "Sub2APIStatusBar",
     platforms: [
-        .macOS(.v13),
+        .macOS(.v12),
     ],
     products: [
         .executable(name: "Sub2APIStatusBar", targets: ["Sub2APIStatusBar"]),

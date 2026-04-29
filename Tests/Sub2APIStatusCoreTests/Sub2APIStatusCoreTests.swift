@@ -1,5 +1,5 @@
 import Foundation
-import Testing
+import XCTest
 @testable import Sub2APIStatusCore
 
 final class MemoryTokenStore: TokenStore, @unchecked Sendable {
@@ -16,19 +16,21 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     }
 }
 
-@Test func appConfigNormalizesBaseURLAndRefreshInterval() {
+final class Sub2APIStatusCoreTests: XCTestCase {
+
+func testAppConfigNormalizesBaseURLAndRefreshInterval() {
     var config = AppConfig(baseURL: " http://127.0.0.1:8080/api/v1/// ", authToken: " token ", refreshIntervalSeconds: 1, language: .zhHans, monitorMode: .user)
 
     config.normalize()
 
-    #expect(config.baseURL == "http://127.0.0.1:8080")
-    #expect(config.authToken == "token")
-    #expect(config.refreshIntervalSeconds == 5)
-    #expect(config.monitorMode == .user)
-    #expect(config.showsMenuBarText == false)
+    XCTAssert(config.baseURL == "http://127.0.0.1:8080")
+    XCTAssert(config.authToken == "token")
+    XCTAssert(config.refreshIntervalSeconds == 5)
+    XCTAssert(config.monitorMode == .user)
+    XCTAssert(config.showsMenuBarText == false)
 }
 
-@Test func appConfigPersistsMenuBarTextPreference() throws {
+func testAppConfigPersistsMenuBarTextPreference() throws {
     let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
         .appendingPathComponent("config.json")
@@ -38,11 +40,11 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     try store.save(config)
     let loaded = store.load()
 
-    #expect(loaded.baseURL == "http://127.0.0.1:8080")
-    #expect(loaded.showsMenuBarText == true)
+    XCTAssert(loaded.baseURL == "http://127.0.0.1:8080")
+    XCTAssert(loaded.showsMenuBarText == true)
 }
 
-@Test func configStoreSavesTokensOutsideConfigJSON() throws {
+func testConfigStoreSavesTokensOutsideConfigJSON() throws {
     let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
         .appendingPathComponent("config.json")
@@ -58,16 +60,16 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     try store.save(config)
 
     let rawJSON = try String(contentsOf: configURL, encoding: .utf8)
-    #expect(!rawJSON.contains("access-token"))
-    #expect(!rawJSON.contains("refresh-token"))
-    #expect(!rawJSON.contains("authToken"))
-    #expect(!rawJSON.contains("refreshToken"))
-    #expect(tokenStore.tokens.authToken == "access-token")
-    #expect(tokenStore.tokens.refreshToken == "refresh-token")
-    #expect(store.load().authToken == "access-token")
+    XCTAssert(!rawJSON.contains("access-token"))
+    XCTAssert(!rawJSON.contains("refresh-token"))
+    XCTAssert(!rawJSON.contains("authToken"))
+    XCTAssert(!rawJSON.contains("refreshToken"))
+    XCTAssert(tokenStore.tokens.authToken == "access-token")
+    XCTAssert(tokenStore.tokens.refreshToken == "refresh-token")
+    XCTAssert(store.load().authToken == "access-token")
 }
 
-@Test func configStoreMigratesLegacyJSONTokensOutOfConfigFile() throws {
+func testConfigStoreMigratesLegacyJSONTokensOutOfConfigFile() throws {
     let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
         .appendingPathComponent("config.json")
@@ -88,25 +90,25 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let loaded = store.load()
 
-    #expect(loaded.authToken == "legacy-access")
-    #expect(loaded.refreshToken == "legacy-refresh")
-    #expect(tokenStore.tokens.authToken == "legacy-access")
-    #expect(tokenStore.tokens.refreshToken == "legacy-refresh")
+    XCTAssert(loaded.authToken == "legacy-access")
+    XCTAssert(loaded.refreshToken == "legacy-refresh")
+    XCTAssert(tokenStore.tokens.authToken == "legacy-access")
+    XCTAssert(tokenStore.tokens.refreshToken == "legacy-refresh")
 
     let migratedJSON = try String(contentsOf: configURL, encoding: .utf8)
-    #expect(!migratedJSON.contains("legacy-access"))
-    #expect(!migratedJSON.contains("legacy-refresh"))
-    #expect(!migratedJSON.contains("authToken"))
-    #expect(!migratedJSON.contains("refreshToken"))
+    XCTAssert(!migratedJSON.contains("legacy-access"))
+    XCTAssert(!migratedJSON.contains("legacy-refresh"))
+    XCTAssert(!migratedJSON.contains("authToken"))
+    XCTAssert(!migratedJSON.contains("refreshToken"))
 }
 
-@Test func appConfigDefaultsToUserMode() {
+func testAppConfigDefaultsToUserMode() {
     let config = AppConfig(baseURL: "http://127.0.0.1:8080")
 
-    #expect(config.monitorMode == .user)
+    XCTAssert(config.monitorMode == .user)
 }
 
-@Test func appConfigDecodesLegacyAdminModeAsUserMode() throws {
+func testAppConfigDecodesLegacyAdminModeAsUserMode() throws {
     let data = """
     {
       "baseURL": "http://127.0.0.1:8080",
@@ -116,19 +118,19 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
 
-    #expect(config.monitorMode == .user)
+    XCTAssert(config.monitorMode == .user)
 }
 
-@Test func appConfigClearsAuthTokens() {
+func testAppConfigClearsAuthTokens() {
     var config = AppConfig(baseURL: "http://127.0.0.1:8080", authToken: "access", refreshToken: "refresh")
 
     config.clearAuthTokens()
 
-    #expect(config.authToken.isEmpty)
-    #expect(config.refreshToken.isEmpty)
+    XCTAssert(config.authToken.isEmpty)
+    XCTAssert(config.refreshToken.isEmpty)
 }
 
-@Test func apiEnvelopeDecodesWrappedData() throws {
+func testApiEnvelopeDecodesWrappedData() throws {
     let json = """
     {
       "code": 0,
@@ -144,25 +146,25 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let metrics = try JSONDecoder.sub2api.decode(Sub2APIEnvelope<RealtimeMetrics>.self, from: json).value()
 
-    #expect(metrics.activeRequests == 2)
-    #expect(metrics.requestsPerMinute == 13.5)
-    #expect(metrics.averageResponseTime == 840)
-    #expect(metrics.errorRate == 0.025)
+    XCTAssert(metrics.activeRequests == 2)
+    XCTAssert(metrics.requestsPerMinute == 13.5)
+    XCTAssert(metrics.averageResponseTime == 840)
+    XCTAssert(metrics.errorRate == 0.025)
 }
 
-@Test func sub2APIErrorIdentifiesUnauthorizedResponses() {
-    #expect(Sub2APIError.badStatus(401, "expired").isUnauthorized == true)
-    #expect(Sub2APIError.badStatus(403, "forbidden").isUnauthorized == false)
-    #expect(Sub2APIError.invalidBaseURL.isUnauthorized == false)
+func testSub2APIErrorIdentifiesUnauthorizedResponses() {
+    XCTAssert(Sub2APIError.badStatus(401, "expired").isUnauthorized == true)
+    XCTAssert(Sub2APIError.badStatus(403, "forbidden").isUnauthorized == false)
+    XCTAssert(Sub2APIError.invalidBaseURL.isUnauthorized == false)
 }
 
-@Test func appVersionComparesSemanticVersions() {
-    #expect(AppVersion("v0.1.10") > AppVersion("0.1.2"))
-    #expect(AppVersion("1.0") == AppVersion("1.0.0"))
-    #expect(AppVersion("v2.0.0-beta") > AppVersion("1.9.9"))
+func testAppVersionComparesSemanticVersions() {
+    XCTAssert(AppVersion("v0.1.10") > AppVersion("0.1.2"))
+    XCTAssert(AppVersion("1.0") == AppVersion("1.0.0"))
+    XCTAssert(AppVersion("v2.0.0-beta") > AppVersion("1.9.9"))
 }
 
-@Test func githubReleaseDecodesLatestReleasePayload() throws {
+func testGithubReleaseDecodesLatestReleasePayload() throws {
     let json = """
     {
       "tag_name": "v0.1.3",
@@ -175,12 +177,12 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let release = try JSONDecoder().decode(GitHubRelease.self, from: json)
 
-    #expect(release.tagName == "v0.1.3")
-    #expect(release.version == AppVersion("0.1.3"))
-    #expect(release.releaseURL.absoluteString.hasSuffix("/v0.1.3"))
+    XCTAssert(release.tagName == "v0.1.3")
+    XCTAssert(release.version == AppVersion("0.1.3"))
+    XCTAssert(release.releaseURL.absoluteString.hasSuffix("/v0.1.3"))
 }
 
-@Test func updateInfoDetectsAvailableRelease() {
+func testUpdateInfoDetectsAvailableRelease() {
     let release = GitHubRelease(
         tagName: "v0.1.3",
         name: "Sub2API Status Bar v0.1.3",
@@ -192,13 +194,13 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     let available = UpdateInfo(currentVersion: AppVersion("0.1.2"), release: release)
     let current = UpdateInfo(currentVersion: AppVersion("0.1.3"), release: release)
 
-    #expect(available.isUpdateAvailable == true)
-    #expect(available.statusText == "Version 0.1.3 is available.")
-    #expect(current.isUpdateAvailable == false)
-    #expect(current.statusText == "You are up to date.")
+    XCTAssert(available.isUpdateAvailable == true)
+    XCTAssert(available.statusText == "Version 0.1.3 is available.")
+    XCTAssert(current.isUpdateAvailable == false)
+    XCTAssert(current.statusText == "You are up to date.")
 }
 
-@Test func currentUserResponseDecodesDirectUserPayload() throws {
+func testCurrentUserResponseDecodesDirectUserPayload() throws {
     let json = """
     {
       "id": 7,
@@ -212,11 +214,11 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let response = try JSONDecoder.sub2api.decode(CurrentUserResponse.self, from: json)
 
-    #expect(response.user?.balance == 12.34)
-    #expect(response.user?.username == "das")
+    XCTAssert(response.user?.balance == 12.34)
+    XCTAssert(response.user?.username == "das")
 }
 
-@Test func dashboardSnapshotDecodesTokenBreakdownAndModelDistribution() throws {
+func testDashboardSnapshotDecodesTokenBreakdownAndModelDistribution() throws {
     let json = """
     {
       "generated_at": "2026-04-28T13:00:00Z",
@@ -249,16 +251,16 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let snapshot = try JSONDecoder.sub2api.decode(DashboardSnapshot.self, from: json)
 
-    #expect(snapshot.stats?.todayInputTokens == 7_400_000)
-    #expect(snapshot.stats?.todayOutputTokens == 513_900)
-    #expect(snapshot.stats?.totalInputTokens == 40_200_000)
-    #expect(snapshot.stats?.totalOutputTokens == 3_500_000)
-    #expect(snapshot.modelDistribution?.first?.model == "gpt-5.5")
-    #expect(snapshot.modelDistribution?.first?.requests == 2116)
-    #expect(snapshot.modelDistribution?.first?.actualCost == 218.2116)
+    XCTAssert(snapshot.stats?.todayInputTokens == 7_400_000)
+    XCTAssert(snapshot.stats?.todayOutputTokens == 513_900)
+    XCTAssert(snapshot.stats?.totalInputTokens == 40_200_000)
+    XCTAssert(snapshot.stats?.totalOutputTokens == 3_500_000)
+    XCTAssert(snapshot.modelDistribution?.first?.model == "gpt-5.5")
+    XCTAssert(snapshot.modelDistribution?.first?.requests == 2116)
+    XCTAssert(snapshot.modelDistribution?.first?.actualCost == 218.2116)
 }
 
-@Test func usageDashboardDecodesUserStatsTrendAndModels() throws {
+func testUsageDashboardDecodesUserStatsTrendAndModels() throws {
     let statsJSON = """
     {
       "total_api_keys": 2,
@@ -324,15 +326,15 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     let trend = try JSONDecoder.sub2api.decode(DashboardTrendResponse.self, from: trendJSON)
     let models = try JSONDecoder.sub2api.decode(DashboardModelsResponse.self, from: modelsJSON)
 
-    #expect(stats.todayCacheReadTokens == 118_193_024)
-    #expect(stats.todayCost == 117.56682985)
-    #expect(trend.trend.first?.inputTokens == 7_672_001)
-    #expect(trend.trend.first?.cacheReadTokens == 118_310_656)
-    #expect(models.models.first?.accountCost == 222.61852)
-    #expect(models.models.first?.standardCost == 222.61852)
+    XCTAssert(stats.todayCacheReadTokens == 118_193_024)
+    XCTAssert(stats.todayCost == 117.56682985)
+    XCTAssert(trend.trend.first?.inputTokens == 7_672_001)
+    XCTAssert(trend.trend.first?.cacheReadTokens == 118_310_656)
+    XCTAssert(models.models.first?.accountCost == 222.61852)
+    XCTAssert(models.models.first?.standardCost == 222.61852)
 }
 
-@Test func accountHealthSummaryCountsRuntimeStates() {
+func testAccountHealthSummaryCountsRuntimeStates() {
     let accounts = [
         AccountSummary(id: 1, name: "ok", platform: "openai", type: "oauth", status: "active", schedulable: true, quotaLimit: 100, quotaUsed: 30, quotaDailyLimit: nil, quotaDailyUsed: nil, quotaWeeklyLimit: nil, quotaWeeklyUsed: nil, errorMessage: "", rateLimitResetAt: nil),
         AccountSummary(id: 2, name: "blocked", platform: "openai", type: "oauth", status: "active", schedulable: false, quotaLimit: 100, quotaUsed: 91, quotaDailyLimit: nil, quotaDailyUsed: nil, quotaWeeklyLimit: nil, quotaWeeklyUsed: nil, errorMessage: "", rateLimitResetAt: nil),
@@ -341,14 +343,14 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let summary = AccountHealthSummary(accounts: accounts)
 
-    #expect(summary.total == 3)
-    #expect(summary.active == 2)
-    #expect(summary.schedulable == 1)
-    #expect(summary.blocked == 2)
-    #expect(summary.nearQuotaLimit == 1)
+    XCTAssert(summary.total == 3)
+    XCTAssert(summary.active == 2)
+    XCTAssert(summary.schedulable == 1)
+    XCTAssert(summary.blocked == 2)
+    XCTAssert(summary.nearQuotaLimit == 1)
 }
 
-@Test func subscriptionProgressFindsHighestUsageRatio() {
+func testSubscriptionProgressFindsHighestUsageRatio() {
     let subscriptions = [
         SubscriptionSummaryItem(id: 1, groupName: "Claude", status: "active", dailyProgress: 0.25, weeklyProgress: nil, monthlyProgress: 0.6, expiresAt: nil, daysRemaining: 12),
         SubscriptionSummaryItem(id: 2, groupName: "OpenAI", status: "active", dailyProgress: 0.82, weeklyProgress: 0.71, monthlyProgress: nil, expiresAt: nil, daysRemaining: 2),
@@ -356,11 +358,11 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let summary = SubscriptionSummary(activeCount: 2, subscriptions: subscriptions)
 
-    #expect(summary.highestProgress == 0.82)
-    #expect(summary.expiringSoonCount == 1)
+    XCTAssert(summary.highestProgress == 0.82)
+    XCTAssert(summary.expiringSoonCount == 1)
 }
 
-@Test func subscriptionSummaryDecodesUsdUsageIntoProgress() throws {
+func testSubscriptionSummaryDecodesUsdUsageIntoProgress() throws {
     let json = """
     {
       "active_count": 1,
@@ -388,14 +390,14 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
 
     let summary = try JSONDecoder.sub2api.decode(SubscriptionSummary.self, from: json)
 
-    #expect(summary.totalUsedUSD == 498.38329835)
-    #expect(summary.subscriptions.first?.dailyProgress ?? 0 > 0.93)
-    #expect(summary.subscriptions.first?.monthlyProgress ?? 0 > 0.24)
-    #expect(summary.subscriptions.first?.dailyResetInSeconds == 6960)
-    #expect(summary.subscriptions.first?.daysRemaining == 22)
+    XCTAssert(summary.totalUsedUSD == 498.38329835)
+    XCTAssert(summary.subscriptions.first?.dailyProgress ?? 0 > 0.93)
+    XCTAssert(summary.subscriptions.first?.monthlyProgress ?? 0 > 0.24)
+    XCTAssert(summary.subscriptions.first?.dailyResetInSeconds == 6960)
+    XCTAssert(summary.subscriptions.first?.daysRemaining == 22)
 }
 
-@Test func monitorSnapshotEscalatesSeverityFromSignals() {
+func testMonitorSnapshotEscalatesSeverityFromSignals() {
     let healthy = MonitorSnapshot(
         mode: .user,
         connected: true,
@@ -431,12 +433,12 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
         message: "offline"
     )
 
-    #expect(healthy.severity == .healthy)
-    #expect(warned.severity == .warning)
-    #expect(failed.severity == .error)
+    XCTAssert(healthy.severity == .healthy)
+    XCTAssert(warned.severity == .warning)
+    XCTAssert(failed.severity == .error)
 }
 
-@Test func monitorSnapshotLabelsNearLimitSeparatelyFromConnectionFailure() {
+func testMonitorSnapshotLabelsNearLimitSeparatelyFromConnectionFailure() {
     let nearLimit = MonitorSnapshot(
         mode: .user,
         connected: true,
@@ -460,11 +462,11 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
         message: "offline"
     )
 
-    #expect(nearLimit.statusLabel == "Near Limit")
-    #expect(disconnected.statusLabel == "Disconnected")
+    XCTAssert(nearLimit.statusLabel == "Near Limit")
+    XCTAssert(disconnected.statusLabel == "Disconnected")
 }
 
-@Test func monitorSnapshotBuildsMenuBarSummaryFromDashboardStats() {
+func testMonitorSnapshotBuildsMenuBarSummaryFromDashboardStats() {
     let snapshot = MonitorSnapshot(
         mode: .user,
         connected: true,
@@ -476,12 +478,14 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
         message: nil
     )
 
-    #expect(snapshot.menuBarSummary == "$113.31 · 1119 req · 3 RPM")
+    XCTAssert(snapshot.menuBarSummary == "$113.31 · 1119 req · 3 RPM")
 }
 
-@Test func loginFormStateRequiresURLAccountAndPassword() {
-    #expect(LoginFormState(baseURL: "", email: "a@example.com", password: "secret").canSubmit == false)
-    #expect(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "", password: "secret").canSubmit == false)
-    #expect(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "a@example.com", password: "").canSubmit == false)
-    #expect(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "a@example.com", password: "secret").canSubmit == true)
+func testLoginFormStateRequiresURLAccountAndPassword() {
+    XCTAssert(LoginFormState(baseURL: "", email: "a@example.com", password: "secret").canSubmit == false)
+    XCTAssert(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "", password: "secret").canSubmit == false)
+    XCTAssert(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "a@example.com", password: "").canSubmit == false)
+    XCTAssert(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "a@example.com", password: "secret").canSubmit == true)
+}
+
 }

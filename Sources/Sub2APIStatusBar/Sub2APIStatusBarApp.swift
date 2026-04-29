@@ -246,9 +246,8 @@ final class MonitorViewModel: ObservableObject {
         var draft = settingsDraft
         draft.authToken = ""
         let client = Sub2APIClient(config: draft)
-        Task {
+        Task { @MainActor in
             isLoggingIn = true
-            defer { isLoggingIn = false }
             do {
                 let response = try await client.login(email: loginEmail, password: loginPassword)
                 settingsDraft.authToken = response.accessToken
@@ -258,6 +257,7 @@ final class MonitorViewModel: ObservableObject {
             } catch {
                 settingsError = error.localizedDescription
             }
+            isLoggingIn = false
         }
     }
 
@@ -327,7 +327,7 @@ final class MonitorViewModel: ObservableObject {
     private func scheduleTimer() {
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: config.refreshIntervalSeconds, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.refresh()
             }
         }
@@ -522,22 +522,22 @@ struct MonitorPanel: View {
     private var iconName: String {
         switch model.snapshot.severity {
         case .healthy:
-            "checkmark.circle.fill"
+            return "checkmark.circle.fill"
         case .warning:
-            "exclamationmark.triangle.fill"
+            return "exclamationmark.triangle.fill"
         case .error:
-            "xmark.octagon.fill"
+            return "xmark.octagon.fill"
         }
     }
 
     private var iconColor: Color {
         switch model.snapshot.severity {
         case .healthy:
-            .green
+            return .green
         case .warning:
-            .orange
+            return .orange
         case .error:
-            .red
+            return .red
         }
     }
 

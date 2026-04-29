@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.4
+
+- Lowered the app runtime target to macOS 12 for Intel Mac compatibility.
+- Lowered the local development toolchain requirement to Swift 5.7.
+- Migrated tests from Swift Testing to XCTest for Xcode 14.2 compatibility.
+
 ## v0.1.3
 
 - Added GitHub Releases update checking.

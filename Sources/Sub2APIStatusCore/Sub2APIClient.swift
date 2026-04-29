@@ -67,7 +67,7 @@ public struct Sub2APIClient: Sendable {
         }
 
         let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
-        var components = URLComponents(url: baseURL.appending(path: cleanPath), resolvingAgainstBaseURL: false)
+        var components = URLComponents(url: baseURL.appendingPathComponent(cleanPath), resolvingAgainstBaseURL: false)
         components?.queryItems = query.isEmpty ? nil : query
 
         guard let url = components?.url else {

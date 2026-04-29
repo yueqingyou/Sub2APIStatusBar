@@ -7,7 +7,7 @@ public enum KeychainTokenStoreError: Error, LocalizedError, Equatable, Sendable 
     public var errorDescription: String? {
         switch self {
         case let .unexpectedStatus(status):
-            "Keychain operation failed with status \(status)."
+            return "Keychain operation failed with status \(status)."
         }
     }
 }

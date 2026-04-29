@@ -4,9 +4,9 @@ import AppKit
 import Foundation
 
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-let resources = root.appending(path: "Resources", directoryHint: .isDirectory)
-let iconset = resources.appending(path: "AppIcon.iconset", directoryHint: .isDirectory)
-let icns = resources.appending(path: "AppIcon.icns")
+let resources = root.appendingPathComponent("Resources", isDirectory: true)
+let iconset = resources.appendingPathComponent("AppIcon.iconset", isDirectory: true)
+let icns = resources.appendingPathComponent("AppIcon.icns")
 
 try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
 try? FileManager.default.removeItem(at: iconset)
@@ -108,7 +108,7 @@ func drawIcon(size: Int) throws -> Data {
 
 for variant in variants {
     let data = try drawIcon(size: variant.pixels)
-    try data.write(to: iconset.appending(path: variant.name))
+    try data.write(to: iconset.appendingPathComponent(variant.name))
 }
 
 let process = Process()

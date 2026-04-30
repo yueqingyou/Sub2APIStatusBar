@@ -113,12 +113,14 @@ final class MonitorViewModel: ObservableObject {
     @Published var settingsError: String?
     @Published var updateInfo: UpdateInfo?
     @Published var isCheckingForUpdates = false
+    @Published var isInstallingUpdate = false
     @Published var updateStatusMessage: String?
 
     var onSnapshotChange: ((MonitorSnapshot) -> Void)?
 
     private let store = ConfigStore()
     private let updateChecker = GitHubUpdateChecker()
+    private let updateInstaller = AppUpdateInstaller()
     private var refreshTimer: Timer?
 
     init() {
@@ -339,6 +341,55 @@ final class MonitorViewModel: ObservableObject {
         openURL("https://github.com/\(AppBuildInfo.repositoryOwner)/\(AppBuildInfo.repositoryName)/releases")
     }
 
+    func installUpdate() {
+        Task {
+            await installUpdateNow()
+        }
+    }
+
+    func installUpdateNow() async {
+        guard !isInstallingUpdate else {
+            return
+        }
+        guard let info = updateInfo, info.isUpdateAvailable else {
+            updateStatusMessage = "No update is available."
+            return
+        }
+        guard info.latestRelease.installArchiveAsset() != nil else {
+            updateStatusMessage = AppUpdateInstallerError.missingInstallArchiveAsset.localizedDescription
+            return
+        }
+
+        let currentAppURL = Bundle.main.bundleURL
+        guard currentAppURL.pathExtension == "app" else {
+            updateStatusMessage = "Direct update requires the packaged app bundle."
+            return
+        }
+
+        isInstallingUpdate = true
+        updateStatusMessage = "Downloading update..."
+
+        do {
+            let bundleIdentifier = Bundle.main.bundleIdentifier ?? AppBuildInfo.bundleIdentifier
+            let prepared = try await updateInstaller.downloadAndExtract(
+                release: info.latestRelease,
+                expectedBundleIdentifier: bundleIdentifier
+            )
+            updateStatusMessage = "Installing update. The app will restart."
+            try updateInstaller.startInstall(
+                extractedAppURL: prepared.appURL,
+                targetAppURL: currentAppURL,
+                currentProcessID: ProcessInfo.processInfo.processIdentifier
+            )
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                NSApp.terminate(nil)
+            }
+        } catch {
+            isInstallingUpdate = false
+            updateStatusMessage = error.localizedDescription
+        }
+    }
+
     func openURL(_ value: String) {
         guard let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             return
@@ -399,9 +450,17 @@ struct MonitorPanel: View {
                             statusSection
 
                             if let updateInfo = model.updateInfo, updateInfo.isUpdateAvailable {
-                                UpdateAvailableBanner(info: updateInfo) {
-                                    model.openLatestRelease()
-                                }
+                                UpdateAvailableBanner(
+                                    info: updateInfo,
+                                    isInstalling: model.isInstallingUpdate,
+                                    statusMessage: model.updateStatusMessage,
+                                    installUpdate: {
+                                        model.installUpdate()
+                                    },
+                                    openRelease: {
+                                        model.openLatestRelease()
+                                    }
+                                )
                             }
 
                             userSection
@@ -866,7 +925,7 @@ struct UpdateSettingsSection: View {
                 Text("Updates")
                     .font(.headline)
                 Spacer()
-                if model.isCheckingForUpdates {
+                if model.isCheckingForUpdates || model.isInstallingUpdate {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -883,6 +942,11 @@ struct UpdateSettingsSection: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                        if let message = model.updateStatusMessage {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             } else if let message = model.updateStatusMessage {
@@ -901,14 +965,24 @@ struct UpdateSettingsSection: View {
                 } label: {
                     Label("Check Now", systemImage: "arrow.clockwise")
                 }
-                .disabled(model.isCheckingForUpdates)
+                .disabled(model.isCheckingForUpdates || model.isInstallingUpdate)
 
                 if model.updateInfo?.isUpdateAvailable == true {
+                    if model.updateInfo?.latestRelease.installArchiveAsset() != nil {
+                        Button {
+                            model.installUpdate()
+                        } label: {
+                            Label("Install Update", systemImage: "arrow.down.circle")
+                        }
+                        .disabled(model.isCheckingForUpdates || model.isInstallingUpdate)
+                    }
+
                     Button {
                         model.openLatestRelease()
                     } label: {
                         Label("Open Release", systemImage: "safari")
                     }
+                    .disabled(model.isInstallingUpdate)
                 }
             }
             .buttonStyle(.borderless)
@@ -918,27 +992,57 @@ struct UpdateSettingsSection: View {
 
 struct UpdateAvailableBanner: View {
     let info: UpdateInfo
+    let isInstalling: Bool
+    let statusMessage: String?
+    let installUpdate: () -> Void
     let openRelease: () -> Void
+
+    private var canInstallDirectly: Bool {
+        info.latestRelease.installArchiveAsset() != nil
+    }
+
+    private var detailText: String {
+        if let statusMessage, statusMessage != info.statusText {
+            return statusMessage
+        }
+        return canInstallDirectly ? "Install directly or open the GitHub release." : "Download the latest release from GitHub."
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.green)
+            if isInstalling {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.green)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(info.statusText)
                     .font(.callout.weight(.semibold))
-                Text("Download the latest release from GitHub.")
+                Text(detailText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if canInstallDirectly {
+                Button {
+                    installUpdate()
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .buttonStyle(.borderless)
+                .disabled(isInstalling)
+                .help("Install update")
+            }
             Button {
                 openRelease()
             } label: {
                 Image(systemName: "safari")
             }
             .buttonStyle(.borderless)
+            .disabled(isInstalling)
             .help("Open release")
         }
         .padding(10)

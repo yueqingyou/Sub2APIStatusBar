@@ -204,15 +204,33 @@ func testGithubReleaseDecodesLatestReleasePayload() throws {
       "name": "Sub2API Status Bar v0.1.3",
       "html_url": "https://github.com/yueqingyou/Sub2APIStatusBar/releases/tag/v0.1.3",
       "draft": false,
-      "prerelease": false
+      "prerelease": false,
+      "assets": [
+        {
+          "name": "Sub2APIStatusBar-0.1.3-macOS.zip.sha256",
+          "browser_download_url": "https://github.com/yueqingyou/Sub2APIStatusBar/releases/download/v0.1.3/Sub2APIStatusBar-0.1.3-macOS.zip.sha256",
+          "content_type": "text/plain",
+          "size": 96
+        },
+        {
+          "name": "Sub2APIStatusBar-0.1.3-macOS.zip",
+          "browser_download_url": "https://github.com/yueqingyou/Sub2APIStatusBar/releases/download/v0.1.3/Sub2APIStatusBar-0.1.3-macOS.zip",
+          "content_type": "application/zip",
+          "size": 4096
+        }
+      ]
     }
     """.data(using: .utf8)!
 
     let release = try JSONDecoder().decode(GitHubRelease.self, from: json)
+    let asset = release.installArchiveAsset(repositoryName: "Sub2APIStatusBar")
 
     XCTAssert(release.tagName == "v0.1.3")
     XCTAssert(release.version == AppVersion("0.1.3"))
     XCTAssert(release.releaseURL.absoluteString.hasSuffix("/v0.1.3"))
+    XCTAssert(release.assets.count == 2)
+    XCTAssert(asset?.name == "Sub2APIStatusBar-0.1.3-macOS.zip")
+    XCTAssert(asset?.downloadURL.absoluteString.hasSuffix("/Sub2APIStatusBar-0.1.3-macOS.zip") == true)
 }
 
 func testDefaultUpdateCheckerUsesPublishedRepository() {
@@ -238,6 +256,79 @@ func testUpdateInfoDetectsAvailableRelease() {
     XCTAssert(available.statusText == "Version 0.1.3 is available.")
     XCTAssert(current.isUpdateAvailable == false)
     XCTAssert(current.statusText == "You are up to date.")
+}
+
+func testGitHubReleaseSelectsMacOSZipAssetOverOtherAssets() {
+    let checksum = GitHubReleaseAsset(
+        name: "Sub2APIStatusBar-0.1.9-macOS.zip.sha256",
+        downloadURL: URL(string: "https://example.com/Sub2APIStatusBar-0.1.9-macOS.zip.sha256")!,
+        contentType: "text/plain",
+        size: 96
+    )
+    let symbols = GitHubReleaseAsset(
+        name: "Sub2APIStatusBar-0.1.9-symbols.zip",
+        downloadURL: URL(string: "https://example.com/Sub2APIStatusBar-0.1.9-symbols.zip")!,
+        contentType: "application/zip",
+        size: 2048
+    )
+    let app = GitHubReleaseAsset(
+        name: "Sub2APIStatusBar-0.1.9-macOS.zip",
+        downloadURL: URL(string: "https://example.com/Sub2APIStatusBar-0.1.9-macOS.zip")!,
+        contentType: "application/zip",
+        size: 4096
+    )
+    let release = GitHubRelease(
+        tagName: "v0.1.9",
+        name: "Sub2API Status Bar v0.1.9",
+        releaseURL: URL(string: "https://github.com/yueqingyou/Sub2APIStatusBar/releases/tag/v0.1.9")!,
+        draft: false,
+        prerelease: false,
+        assets: [checksum, symbols, app]
+    )
+
+    XCTAssert(release.installArchiveAsset(repositoryName: "Sub2APIStatusBar") == app)
+}
+
+func testAppUpdateInstallerValidatesExtractedAppBundleMetadata() throws {
+    let appURL = try makeTemporaryAppBundle(bundleIdentifier: "com.geekywizkid.sub2api-statusbar", version: "0.1.9")
+    let installer = AppUpdateInstaller()
+
+    XCTAssertNoThrow(try installer.validateExtractedApp(
+        at: appURL,
+        expectedVersion: AppVersion("0.1.9"),
+        bundleIdentifier: "com.geekywizkid.sub2api-statusbar"
+    ))
+}
+
+func testAppUpdateInstallerRejectsUnexpectedBundleIdentifier() throws {
+    let appURL = try makeTemporaryAppBundle(bundleIdentifier: "com.example.other", version: "0.1.9")
+    let installer = AppUpdateInstaller()
+
+    XCTAssertThrowsError(try installer.validateExtractedApp(
+        at: appURL,
+        expectedVersion: AppVersion("0.1.9"),
+        bundleIdentifier: "com.geekywizkid.sub2api-statusbar"
+    )) { error in
+        if case AppUpdateInstallerError.unexpectedBundleIdentifier = error {
+            return
+        }
+        XCTFail("Expected unexpectedBundleIdentifier, got \\(error)")
+    }
+}
+
+func testAppUpdateInstallerBuildsSelfReplacementScript() {
+    let installer = AppUpdateInstaller()
+    let script = installer.installScript(
+        sourceAppURL: URL(fileURLWithPath: "/tmp/Sub2API's Status Bar.app"),
+        targetAppURL: URL(fileURLWithPath: "/Applications/Sub2APIStatusBar.app"),
+        currentProcessID: 1234
+    )
+
+    XCTAssert(script.contains("SOURCE_APP='/tmp/Sub2API'\"'\"'s Status Bar.app'"))
+    XCTAssert(script.contains("TARGET_APP='/Applications/Sub2APIStatusBar.app'"))
+    XCTAssert(script.contains("while /bin/kill -0 \"$APP_PID\""))
+    XCTAssert(script.contains("/usr/bin/ditto \"$SOURCE_APP\" \"$TARGET_APP\""))
+    XCTAssert(script.contains("/usr/bin/open \"$TARGET_APP\""))
 }
 
 func testCurrentUserResponseDecodesDirectUserPayload() throws {
@@ -748,6 +839,22 @@ func testLoginFormStateRequiresURLAccountAndPassword() {
     XCTAssert(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "", password: "secret").canSubmit == false)
     XCTAssert(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "a@example.com", password: "").canSubmit == false)
     XCTAssert(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "a@example.com", password: "secret").canSubmit == true)
+}
+
+private func makeTemporaryAppBundle(bundleIdentifier: String, version: String) throws -> URL {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let appURL = root.appendingPathComponent("Sub2APIStatusBar.app", isDirectory: true)
+    let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+    let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
+    try FileManager.default.createDirectory(at: macOSURL, withIntermediateDirectories: true)
+    let plist: [String: Any] = [
+        "CFBundleIdentifier": bundleIdentifier,
+        "CFBundleShortVersionString": version,
+        "CFBundleExecutable": "Sub2APIStatusBar",
+    ]
+    let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    try data.write(to: contentsURL.appendingPathComponent("Info.plist"))
+    return appURL
 }
 
 }

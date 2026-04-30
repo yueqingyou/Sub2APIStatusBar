@@ -1,9 +1,10 @@
 import Foundation
 
 public enum AppBuildInfo {
-    public static let fallbackVersion = "0.1.8"
+    public static let fallbackVersion = "0.1.9"
     public static let repositoryOwner = "yueqingyou"
     public static let repositoryName = "Sub2APIStatusBar"
+    public static let bundleIdentifier = "com.geekywizkid.sub2api-statusbar"
 }
 
 public struct AppVersion: Comparable, CustomStringConvertible, Sendable {
@@ -51,19 +52,49 @@ public struct AppVersion: Comparable, CustomStringConvertible, Sendable {
     }
 }
 
+public struct GitHubReleaseAsset: Decodable, Equatable, Sendable {
+    public let name: String
+    public let downloadURL: URL
+    public let contentType: String?
+    public let size: Int?
+
+    public init(name: String, downloadURL: URL, contentType: String?, size: Int?) {
+        self.name = name
+        self.downloadURL = downloadURL
+        self.contentType = contentType
+        self.size = size
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case downloadURL = "browser_download_url"
+        case contentType = "content_type"
+        case size
+    }
+}
+
 public struct GitHubRelease: Decodable, Equatable, Sendable {
     public let tagName: String
     public let name: String
     public let releaseURL: URL
     public let draft: Bool
     public let prerelease: Bool
+    public let assets: [GitHubReleaseAsset]
 
-    public init(tagName: String, name: String, releaseURL: URL, draft: Bool, prerelease: Bool) {
+    public init(
+        tagName: String,
+        name: String,
+        releaseURL: URL,
+        draft: Bool,
+        prerelease: Bool,
+        assets: [GitHubReleaseAsset] = []
+    ) {
         self.tagName = tagName
         self.name = name
         self.releaseURL = releaseURL
         self.draft = draft
         self.prerelease = prerelease
+        self.assets = assets
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -72,10 +103,44 @@ public struct GitHubRelease: Decodable, Equatable, Sendable {
         case releaseURL = "html_url"
         case draft
         case prerelease
+        case assets
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tagName = try container.decode(String.self, forKey: .tagName)
+        name = try container.decode(String.self, forKey: .name)
+        releaseURL = try container.decode(URL.self, forKey: .releaseURL)
+        draft = try container.decode(Bool.self, forKey: .draft)
+        prerelease = try container.decode(Bool.self, forKey: .prerelease)
+        assets = try container.decodeIfPresent([GitHubReleaseAsset].self, forKey: .assets) ?? []
     }
 
     public var version: AppVersion {
         AppVersion(tagName)
+    }
+
+    public func installArchiveAsset(repositoryName: String = AppBuildInfo.repositoryName) -> GitHubReleaseAsset? {
+        let zipAssets = assets.filter { $0.name.lowercased().hasSuffix(".zip") }
+        let repository = repositoryName.lowercased()
+
+        if let appArchive = zipAssets.first(where: { asset in
+            let name = asset.name.lowercased()
+            return name.contains(repository)
+                && name.contains("macos")
+                && !name.contains("symbols")
+        }) {
+            return appArchive
+        }
+
+        if let macOSArchive = zipAssets.first(where: { asset in
+            let name = asset.name.lowercased()
+            return name.contains("macos") && !name.contains("symbols")
+        }) {
+            return macOSArchive
+        }
+
+        return zipAssets.first
     }
 }
 

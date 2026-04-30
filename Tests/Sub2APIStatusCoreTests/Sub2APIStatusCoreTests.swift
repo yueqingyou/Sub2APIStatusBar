@@ -415,6 +415,23 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
     XCTAssertEqual(usage.durationMs, 1456, accuracy: 0.000001)
 }
 
+func testUsageLogRecognizesUpdatedFastModeServiceTierAlias() throws {
+    let json = """
+    {
+      "id": 133606,
+      "model": "gpt-5.5",
+      "service_tier": "fast-mode-2026-02-01",
+      "input_tokens": 946,
+      "output_tokens": 429,
+      "created_at": "2026-04-29T19:15:11.118937+08:00"
+    }
+    """.data(using: .utf8)!
+
+    let usage = try JSONDecoder.sub2api.decode(UsageLog.self, from: json)
+
+    XCTAssert(usage.isFastEnabled == true)
+}
+
 func testUsagePeriodStatsDecodesPartialStatsPayload() throws {
     let json = """
     {
@@ -603,6 +620,88 @@ func testMonitorSnapshotBuildsMenuBarSummaryFromDashboardStats() {
 
     XCTAssert(snapshot.menuBarSummary(config: defaultConfig) == "$12.35 · gpt-5.5 · xhigh · 88.4K ctx · Fast · 3 RPM")
     XCTAssert(snapshot.menuBarSummary(config: customConfig) == "2048 req · in $10.0000/1M · out $60.0000/1M")
+}
+
+func testMonitorSnapshotOmitsFastTextWhenFastIsNotEnabled() {
+    let latestUsage = UsageLog(
+        id: 133605,
+        model: "gpt-5.5",
+        serviceTier: "standard",
+        reasoningEffort: "xhigh",
+        inputTokens: 946,
+        outputTokens: 429,
+        cacheCreationTokens: 12_000,
+        cacheReadTokens: 75_432,
+        inputCost: 0.00946,
+        outputCost: 0.02574,
+        actualCost: 0.124712,
+        createdAt: Date(timeIntervalSince1970: 1_777_453_711)
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(todayRequests: 1119, todayActualCost: 113.3052, rpm: 3),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 2048, totalActualCost: 12.3456),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(baseURL: "http://127.0.0.1:8080")
+
+    XCTAssert(snapshot.menuBarSummary(config: config) == "$12.35 · gpt-5.5 · xhigh · 88.4K ctx · 3 RPM")
+}
+
+func testMonitorSnapshotMenuBarPresentationHidesHealthyImageWhenTextIsShown() {
+    let latestUsage = UsageLog(id: 133605, model: "gpt-5.5")
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssert(presentation.title == " gpt-5.5")
+    XCTAssert(presentation.hidesHealthyStatusImage == true)
+}
+
+func testMonitorSnapshotMenuBarPresentationUsesEmptyTitleWhenOnlyDisabledFastIsSelected() {
+    let latestUsage = UsageLog(id: 133605, model: "gpt-5.5", serviceTier: "standard")
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.fast]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssert(presentation.title == "")
+    XCTAssert(presentation.hidesHealthyStatusImage == false)
 }
 
 func testMonitorSnapshotDoesNotUseTodayFallbackForLast24HourMenuBarStats() {

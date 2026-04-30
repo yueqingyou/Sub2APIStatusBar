@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.8
+
+- Updated fast-mode detection for recent Sub2API service tier values.
+- Stopped showing `No Fast` in the menu bar when fast mode is not active.
+- Removed the leading healthy checkmark icon when menu bar text is enabled and visible.
+
 ## v0.1.5
 
 - Fixed a macOS 12 launch crash caused by creating the menu bar status item before AppKit finished initializing.

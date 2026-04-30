@@ -57,20 +57,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let presentation = snapshot.menuBarStatusPresentation(config: model.config)
         switch snapshot.severity {
         case .healthy:
-            setStatusImage("checkmark.circle", description: "Sub2API OK", fallbackTitle: " OK")
+            if presentation.hidesHealthyStatusImage {
+                button.image = nil
+            } else {
+                setStatusImage("checkmark.circle", description: "Sub2API OK", fallbackTitle: " OK")
+            }
         case .warning:
             setStatusImage("exclamationmark.triangle", description: "Sub2API Warning", fallbackTitle: " Warn")
         case .error:
             setStatusImage("xmark.octagon", description: "Sub2API Error", fallbackTitle: " Error")
         }
         button.imagePosition = .imageLeading
-        let title = snapshot.connected && model.config.showsMenuBarText ? " \(snapshot.menuBarSummary(config: model.config))" : ""
-        if button.image == nil && title.isEmpty {
+        if button.image == nil && presentation.title.isEmpty {
             button.title = " \(snapshot.statusLabel)"
         } else {
-            button.title = title
+            button.title = presentation.title
         }
 
         if snapshot.connected {

@@ -667,11 +667,7 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
     }
 
     public var isFastEnabled: Bool {
-        guard let serviceTier else {
-            return false
-        }
-        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalized == "priority" || normalized == "fast"
+        Self.normalizedServiceTier(serviceTier) == "priority"
     }
 
     public var inputPricePerMillion: Double? {
@@ -687,6 +683,32 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
             return nil
         }
         return cost / Double(tokens) * 1_000_000
+    }
+
+    private static func normalizedServiceTier(_ serviceTier: String?) -> String? {
+        guard let serviceTier else {
+            return nil
+        }
+
+        let normalized = serviceTier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else {
+            return nil
+        }
+
+        let token = normalized
+            .replacingOccurrences(of: "_", with: "-")
+            .replacingOccurrences(of: " ", with: "-")
+
+        switch token {
+        case "fast", "priority", "fast-mode", "fast-mode-2026-02-01":
+            return "priority"
+        case "default", "standard":
+            return "standard"
+        case "flex", "auto", "scale":
+            return token
+        default:
+            return normalized
+        }
     }
 }
 
@@ -995,6 +1017,16 @@ public enum MonitorSeverity: String, Equatable, Sendable {
     case error
 }
 
+public struct MenuBarStatusPresentation: Equatable, Sendable {
+    public let title: String
+    public let hidesHealthyStatusImage: Bool
+
+    public init(title: String, hidesHealthyStatusImage: Bool) {
+        self.title = title
+        self.hidesHealthyStatusImage = hidesHealthyStatusImage
+    }
+}
+
 public struct MonitorSnapshot: Equatable, Sendable {
     public let mode: MonitorMode
     public let connected: Bool
@@ -1151,8 +1183,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
                     parts.append(StatusFormatters.contextLength(latestUsage.contextLengthTokens))
                 }
             case .fast:
-                if let latestUsage {
-                    parts.append(latestUsage.isFastEnabled ? "Fast" : "No Fast")
+                if let latestUsage, latestUsage.isFastEnabled {
+                    parts.append("Fast")
                 }
             case .inputPrice:
                 if let price = latestUsage?.inputPricePerMillion {
@@ -1173,11 +1205,20 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return parts.joined(separator: " · ")
         }
 
-        if let subscriptionSummary {
-            return "\(subscriptionSummary.activeCount) subs · \(StatusFormatters.percent(subscriptionSummary.highestProgress)) peak"
+        return ""
+    }
+
+    public func menuBarStatusPresentation(config: AppConfig) -> MenuBarStatusPresentation {
+        guard connected, config.showsMenuBarText else {
+            return MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false)
         }
 
-        return "Sub2API \(statusLabel)"
+        let summary = menuBarSummary(config: config)
+        guard !summary.isEmpty else {
+            return MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false)
+        }
+
+        return MenuBarStatusPresentation(title: " \(summary)", hidesHealthyStatusImage: true)
     }
 
     private func selectedTotalActualCost(config: AppConfig) -> Double? {

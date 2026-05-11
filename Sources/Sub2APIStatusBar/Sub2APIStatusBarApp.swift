@@ -121,10 +121,20 @@ final class MonitorViewModel: ObservableObject {
     private let store = ConfigStore()
     private let updateChecker = GitHubUpdateChecker()
     private let updateInstaller = AppUpdateInstaller()
+    private let launchAtLoginManager = LaunchAtLoginManager(appBundleURL: Bundle.main.bundleURL)
     private var refreshTimer: Timer?
 
     init() {
-        let loaded = store.load()
+        var loaded = store.load()
+        if loaded.launchAtLogin {
+            do {
+                try launchAtLoginManager.setEnabled(true)
+            } catch {
+                loaded.launchAtLogin = launchAtLoginManager.isEnabled
+            }
+        } else if launchAtLoginManager.isEnabled {
+            loaded.launchAtLogin = true
+        }
         config = loaded
         settingsDraft = loaded
         snapshot = .idle(mode: loaded.monitorMode)
@@ -247,19 +257,29 @@ final class MonitorViewModel: ObservableObject {
         ))
     }
 
-    func saveSettings() {
+    @discardableResult
+    func saveSettings() -> Bool {
         settingsError = nil
         var next = settingsDraft
         next.normalize()
+        let previousLaunchAtLogin = launchAtLoginManager.isEnabled
         do {
-            try store.save(next)
+            try launchAtLoginManager.setEnabled(next.launchAtLogin)
+            do {
+                try store.save(next)
+            } catch {
+                try? launchAtLoginManager.setEnabled(previousLaunchAtLogin)
+                throw error
+            }
             config = next
             settingsDraft = next
             scheduleTimer()
             onSnapshotChange?(snapshot)
             refresh()
+            return true
         } catch {
             settingsError = error.localizedDescription
+            return false
         }
     }
 
@@ -812,8 +832,9 @@ struct SettingsView: View {
                     dismiss()
                 }
                 Button("Save") {
-                    model.saveSettings()
-                    dismiss()
+                    if model.saveSettings() {
+                        dismiss()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -830,6 +851,10 @@ struct SettingsView: View {
 
             settingsRow("") {
                 Toggle("Show text in menu bar", isOn: $model.settingsDraft.showsMenuBarText)
+            }
+
+            settingsRow("") {
+                Toggle("Open at Login", isOn: $model.settingsDraft.launchAtLogin)
             }
 
             settingsRow("Usage window") {

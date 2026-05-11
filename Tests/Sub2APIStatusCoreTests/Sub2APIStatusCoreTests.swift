@@ -28,6 +28,7 @@ func testAppConfigNormalizesBaseURLAndRefreshInterval() {
     XCTAssert(config.refreshIntervalSeconds == 5)
     XCTAssert(config.monitorMode == .user)
     XCTAssert(config.showsMenuBarText == false)
+    XCTAssert(config.launchAtLogin == false)
 }
 
 func testAppConfigDefaultsMenuBarWindowAndItems() {
@@ -75,6 +76,64 @@ func testAppConfigPersistsMenuBarDetailPreferences() throws {
 
     XCTAssert(loaded.menuBarUsageWindow == .today)
     XCTAssert(loaded.menuBarDisplayItems == [.totalRequests, .inputPrice, .outputPrice])
+}
+
+func testAppConfigPersistsLaunchAtLoginPreference() throws {
+    let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("config.json")
+    let store = ConfigStore(configURL: configURL, tokenStore: MemoryTokenStore())
+    let config = AppConfig(baseURL: "http://127.0.0.1:8080", launchAtLogin: true)
+
+    try store.save(config)
+    let loaded = store.load()
+
+    XCTAssert(loaded.launchAtLogin == true)
+}
+
+func testLaunchAtLoginManagerWritesAndRemovesUserLaunchAgent() throws {
+    let launchAgentsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("LaunchAgents", isDirectory: true)
+    let appURL = URL(fileURLWithPath: "/Applications/Sub2APIStatusBar.app", isDirectory: true)
+    let manager = LaunchAtLoginManager(
+        appBundleURL: appURL,
+        launchAgentsDirectory: launchAgentsURL,
+        label: "com.example.sub2api-statusbar.login"
+    )
+
+    try manager.setEnabled(true)
+
+    let plist = try manager.loadLaunchAgentPlist()
+    XCTAssert(plist["Label"] as? String == "com.example.sub2api-statusbar.login")
+    XCTAssert(plist["ProgramArguments"] as? [String] == ["/usr/bin/open", appURL.path])
+    XCTAssert(plist["RunAtLoad"] as? Bool == true)
+    XCTAssert(manager.isEnabled == true)
+
+    try manager.setEnabled(false)
+
+    XCTAssert(FileManager.default.fileExists(atPath: manager.plistURL.path) == false)
+    XCTAssert(manager.isEnabled == false)
+}
+
+func testLaunchAtLoginManagerTreatsStaleAppPathAsDisabled() throws {
+    let launchAgentsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("LaunchAgents", isDirectory: true)
+    let manager = LaunchAtLoginManager(
+        appBundleURL: URL(fileURLWithPath: "/Applications/Sub2APIStatusBar.app", isDirectory: true),
+        launchAgentsDirectory: launchAgentsURL,
+        label: "com.example.sub2api-statusbar.login"
+    )
+    let staleManager = LaunchAtLoginManager(
+        appBundleURL: URL(fileURLWithPath: "/Users/me/Downloads/Sub2APIStatusBar.app", isDirectory: true),
+        launchAgentsDirectory: launchAgentsURL,
+        label: "com.example.sub2api-statusbar.login"
+    )
+
+    try staleManager.setEnabled(true)
+
+    XCTAssert(manager.isEnabled == false)
 }
 
 func testConfigStoreSavesTokensOutsideConfigJSON() throws {

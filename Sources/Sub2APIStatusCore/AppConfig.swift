@@ -184,6 +184,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var language: AppLanguage
     public var monitorMode: MonitorMode
     public var showsMenuBarText: Bool
+    public var launchAtLogin: Bool
     public var menuBarUsageWindow: MenuBarUsageWindow
     public var menuBarDisplayItems: [MenuBarDisplayItem]
 
@@ -195,6 +196,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         language: AppLanguage = .auto,
         monitorMode: MonitorMode = .user,
         showsMenuBarText: Bool = false,
+        launchAtLogin: Bool = false,
         menuBarUsageWindow: MenuBarUsageWindow = .last24Hours,
         menuBarDisplayItems: [MenuBarDisplayItem] = MenuBarDisplayItem.defaultSelection
     ) {
@@ -205,6 +207,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.language = language
         self.monitorMode = monitorMode
         self.showsMenuBarText = showsMenuBarText
+        self.launchAtLogin = launchAtLogin
         self.menuBarUsageWindow = menuBarUsageWindow
         self.menuBarDisplayItems = menuBarDisplayItems
         normalize()
@@ -218,6 +221,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case language
         case monitorMode
         case showsMenuBarText
+        case launchAtLogin
         case menuBarUsageWindow
         case menuBarDisplayItems
     }
@@ -231,6 +235,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .auto
         monitorMode = try container.decodeIfPresent(MonitorMode.self, forKey: .monitorMode) ?? .user
         showsMenuBarText = try container.decodeIfPresent(Bool.self, forKey: .showsMenuBarText) ?? false
+        launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         menuBarUsageWindow = try container.decodeIfPresent(MenuBarUsageWindow.self, forKey: .menuBarUsageWindow) ?? .last24Hours
         if let rawItems = try container.decodeIfPresent([String].self, forKey: .menuBarDisplayItems) {
             menuBarDisplayItems = rawItems.compactMap(MenuBarDisplayItem.init(rawValue:))
@@ -247,6 +252,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         try container.encode(language, forKey: .language)
         try container.encode(monitorMode, forKey: .monitorMode)
         try container.encode(showsMenuBarText, forKey: .showsMenuBarText)
+        try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(menuBarUsageWindow, forKey: .menuBarUsageWindow)
         try container.encode(menuBarDisplayItems.map(\.rawValue), forKey: .menuBarDisplayItems)
     }
@@ -261,6 +267,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
             language: AppLanguage.fromEnvironment(env["SUB2API_LANGUAGE"]),
             monitorMode: .user,
             showsMenuBarText: ["1", "true", "yes", "on"].contains((env["SUB2API_SHOW_MENU_BAR_TEXT"] ?? "").lowercased()),
+            launchAtLogin: ["1", "true", "yes", "on"].contains((env["SUB2API_LAUNCH_AT_LOGIN"] ?? "").lowercased()),
             menuBarUsageWindow: MenuBarUsageWindow.fromEnvironment(env["SUB2API_MENU_BAR_USAGE_WINDOW"]),
             menuBarDisplayItems: MenuBarDisplayItem.fromEnvironment(env["SUB2API_MENU_BAR_ITEMS"])
         )

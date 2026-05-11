@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.10
+
+- Added an Open at Login setting backed by a macOS 12-compatible user LaunchAgent.
+- Persisted the launch-at-login preference with the rest of the app settings.
+- Added test coverage for launch-at-login config persistence and LaunchAgent generation.
+
+## v0.1.9
+
+- Added direct in-app update installation from GitHub Releases.
+- Validated downloaded update app bundles before replacement.
+- Kept Open Release as a fallback when direct installation is unavailable.
+
 ## v0.1.8
 
 - Updated fast-mode detection for recent Sub2API service tier values.

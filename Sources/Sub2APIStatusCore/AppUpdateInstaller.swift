@@ -174,7 +174,12 @@ public struct AppUpdateInstaller {
         return scriptURL
     }
 
-    public func installScript(sourceAppURL: URL, targetAppURL: URL, currentProcessID: Int32) -> String {
+    public func installScript(
+        sourceAppURL: URL,
+        targetAppURL: URL,
+        currentProcessID: Int32,
+        appExitWaitIterations: Int = 20
+    ) -> String {
         """
         #!/bin/sh
         set -u
@@ -183,30 +188,58 @@ public struct AppUpdateInstaller {
         TARGET_APP=\(shellQuote(targetAppURL.path))
         APP_PID='\(currentProcessID)'
         BACKUP_APP="${TARGET_APP}.updater-backup"
-        WAIT_COUNT=0
+        LOG_FILE="${TMPDIR:-/tmp}/Sub2APIStatusBar-update-install.log"
 
-        while /bin/kill -0 "$APP_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 120 ]; do
-          WAIT_COUNT=$((WAIT_COUNT + 1))
-          /bin/sleep 0.5
-        done
+        log() {
+          /bin/echo "$(/bin/date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE" 2>/dev/null || true
+        }
 
-        if /bin/kill -0 "$APP_PID" 2>/dev/null; then
+        wait_for_app_exit() {
+          WAIT_LIMIT="$1"
+          WAIT_COUNT=0
+          while /bin/kill -0 "$APP_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt "$WAIT_LIMIT" ]; do
+            WAIT_COUNT=$((WAIT_COUNT + 1))
+            /bin/sleep 0.5
+          done
+
+          ! /bin/kill -0 "$APP_PID" 2>/dev/null
+        }
+
+        log "Installer started for $TARGET_APP from $SOURCE_APP"
+
+        if ! wait_for_app_exit \(appExitWaitIterations); then
+          log "App PID $APP_PID is still running; sending TERM"
+          /bin/kill -TERM "$APP_PID" 2>/dev/null || true
+        fi
+
+        if ! wait_for_app_exit \(appExitWaitIterations); then
+          log "App PID $APP_PID is still running; sending KILL"
+          /bin/kill -KILL "$APP_PID" 2>/dev/null || true
+        fi
+
+        if ! wait_for_app_exit \(appExitWaitIterations); then
+          log "App PID $APP_PID did not exit; aborting install"
           exit 1
         fi
 
-        /bin/rm -rf "$BACKUP_APP"
+        /bin/rm -rf "$BACKUP_APP" >> "$LOG_FILE" 2>&1 || true
         if [ -d "$TARGET_APP" ]; then
-          /bin/mv "$TARGET_APP" "$BACKUP_APP" || exit 1
+          /bin/mv "$TARGET_APP" "$BACKUP_APP" >> "$LOG_FILE" 2>&1 || {
+            log "Failed to move $TARGET_APP to backup"
+            exit 1
+          }
         fi
 
-        if /usr/bin/ditto "$SOURCE_APP" "$TARGET_APP"; then
+        if /usr/bin/ditto "$SOURCE_APP" "$TARGET_APP" >> "$LOG_FILE" 2>&1; then
           /usr/bin/xattr -cr "$TARGET_APP" 2>/dev/null || true
-          /bin/rm -rf "$BACKUP_APP"
-          /usr/bin/open "$TARGET_APP"
+          /bin/rm -rf "$BACKUP_APP" >> "$LOG_FILE" 2>&1 || true
+          log "Installed update; opening $TARGET_APP"
+          /usr/bin/open "$TARGET_APP" >> "$LOG_FILE" 2>&1 || true
           exit 0
         fi
 
-        /bin/rm -rf "$TARGET_APP"
+        log "Failed to copy update; restoring backup"
+        /bin/rm -rf "$TARGET_APP" >> "$LOG_FILE" 2>&1 || true
         if [ -d "$BACKUP_APP" ]; then
           /bin/mv "$BACKUP_APP" "$TARGET_APP" 2>/dev/null || true
           /usr/bin/open "$TARGET_APP" 2>/dev/null || true

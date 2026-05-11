@@ -74,7 +74,7 @@ When menu bar text is enabled, the default usage window is **Last 24 Hours**. Se
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.10 ./scripts/build-app.sh
+VERSION=v0.1.11 ./scripts/build-app.sh
 ```
 
 Output:
@@ -89,21 +89,21 @@ Release builds are host-native. Building on an Intel Mac produces an `x86_64` ap
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.10 \
+VERSION=v0.1.11 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.10 ./scripts/package-release.sh
+VERSION=v0.1.11 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.10-macOS.zip
-dist/Sub2APIStatusBar-0.1.10-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.11-macOS.zip
+dist/Sub2APIStatusBar-0.1.11-macOS.zip.sha256
 ```
 
 ## Notarize A Release
@@ -115,7 +115,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.10 \
+VERSION=v0.1.11 \
 ./scripts/notarize-release.sh
 ```
 

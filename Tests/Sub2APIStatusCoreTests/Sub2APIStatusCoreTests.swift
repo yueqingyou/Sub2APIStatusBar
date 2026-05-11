@@ -386,8 +386,60 @@ func testAppUpdateInstallerBuildsSelfReplacementScript() {
     XCTAssert(script.contains("SOURCE_APP='/tmp/Sub2API'\"'\"'s Status Bar.app'"))
     XCTAssert(script.contains("TARGET_APP='/Applications/Sub2APIStatusBar.app'"))
     XCTAssert(script.contains("while /bin/kill -0 \"$APP_PID\""))
+    XCTAssert(script.contains("/bin/kill -TERM \"$APP_PID\""))
+    XCTAssert(script.contains("/bin/kill -KILL \"$APP_PID\""))
     XCTAssert(script.contains("/usr/bin/ditto \"$SOURCE_APP\" \"$TARGET_APP\""))
     XCTAssert(script.contains("/usr/bin/open \"$TARGET_APP\""))
+    XCTAssert(script.contains("Sub2APIStatusBar-update-install.log"))
+}
+
+func testAppUpdateInstallerScriptTerminatesStuckProcessAndReplacesTarget() throws {
+    let fileManager = FileManager.default
+    let rootURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let sourceAppURL = rootURL.appendingPathComponent("Source.app", isDirectory: true)
+    let targetAppURL = rootURL.appendingPathComponent("Target.app", isDirectory: true)
+    try fileManager.createDirectory(at: sourceAppURL, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: targetAppURL, withIntermediateDirectories: true)
+    try "new".write(to: sourceAppURL.appendingPathComponent("version.txt"), atomically: true, encoding: .utf8)
+    try "old".write(to: targetAppURL.appendingPathComponent("version.txt"), atomically: true, encoding: .utf8)
+
+    let stuckProcess = Process()
+    stuckProcess.executableURL = URL(fileURLWithPath: "/bin/sleep")
+    stuckProcess.arguments = ["30"]
+    try stuckProcess.run()
+    defer {
+        if stuckProcess.isRunning {
+            stuckProcess.terminate()
+        }
+    }
+
+    let script = AppUpdateInstaller().installScript(
+        sourceAppURL: sourceAppURL,
+        targetAppURL: targetAppURL,
+        currentProcessID: stuckProcess.processIdentifier,
+        appExitWaitIterations: 1
+    )
+    let scriptURL = rootURL.appendingPathComponent("install-update.sh")
+    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+
+    let installerProcess = Process()
+    installerProcess.executableURL = URL(fileURLWithPath: "/bin/sh")
+    installerProcess.arguments = [scriptURL.path]
+    var environment = ProcessInfo.processInfo.environment
+    environment["TMPDIR"] = rootURL.path
+    installerProcess.environment = environment
+    try installerProcess.run()
+    installerProcess.waitUntilExit()
+
+    XCTAssert(installerProcess.terminationStatus == 0)
+    XCTAssert(stuckProcess.isRunning == false)
+    XCTAssert(try String(contentsOf: targetAppURL.appendingPathComponent("version.txt")) == "new")
+    XCTAssert(fileManager.fileExists(atPath: "\(targetAppURL.path).updater-backup") == false)
+
+    let logURL = rootURL.appendingPathComponent("Sub2APIStatusBar-update-install.log")
+    let log = try String(contentsOf: logURL)
+    XCTAssert(log.contains("sending TERM"))
+    XCTAssert(log.contains("Installed update"))
 }
 
 func testCurrentUserResponseDecodesDirectUserPayload() throws {

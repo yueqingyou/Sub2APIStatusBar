@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.11
+
+- Fixed direct update installs that could remain stuck at `Installing update` when the running app did not exit promptly.
+- Added update installer logging to help diagnose replacement and restart failures.
+- Added regression coverage for self-replacement when the old app process must be terminated before replacing the bundle.
+
 ## v0.1.10
 
 - Added an Open at Login setting backed by a macOS 12-compatible user LaunchAgent.

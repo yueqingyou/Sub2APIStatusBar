@@ -10,7 +10,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Identifiable, Sendable {
     public var displayName: String {
         switch self {
         case .auto:
-            return "Auto"
+            return "简体中文"
         case .zhHans:
             return "简体中文"
         case .en:
@@ -20,7 +20,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Identifiable, Sendable {
 
     public static func fromEnvironment(_ value: String?) -> AppLanguage {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !value.isEmpty else {
-            return .auto
+            return .zhHans
         }
 
         switch value {
@@ -28,8 +28,10 @@ public enum AppLanguage: String, Codable, CaseIterable, Identifiable, Sendable {
             return .zhHans
         case "en", "en-us", "english":
             return .en
+        case "auto", "system":
+            return .zhHans
         default:
-            return .auto
+            return .zhHans
         }
     }
 }
@@ -193,7 +195,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         authToken: String = "",
         refreshToken: String = "",
         refreshIntervalSeconds: Double = 15,
-        language: AppLanguage = .auto,
+        language: AppLanguage = .zhHans,
         monitorMode: MonitorMode = .user,
         showsMenuBarText: Bool = false,
         launchAtLogin: Bool = false,
@@ -232,7 +234,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         authToken = try container.decodeIfPresent(String.self, forKey: .authToken) ?? ""
         refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? ""
         refreshIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .refreshIntervalSeconds) ?? 15
-        language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .auto
+        language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .zhHans
         monitorMode = try container.decodeIfPresent(MonitorMode.self, forKey: .monitorMode) ?? .user
         showsMenuBarText = try container.decodeIfPresent(Bool.self, forKey: .showsMenuBarText) ?? false
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
@@ -285,6 +287,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
         authToken = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshToken = refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshIntervalSeconds = min(max(refreshIntervalSeconds, 5), 300)
+        if language == .auto {
+            language = .zhHans
+        }
         monitorMode = .user
         var seen = Set<MenuBarDisplayItem>()
         menuBarDisplayItems = menuBarDisplayItems.filter { seen.insert($0).inserted }

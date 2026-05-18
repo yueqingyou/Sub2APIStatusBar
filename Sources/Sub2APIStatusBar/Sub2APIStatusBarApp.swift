@@ -31,7 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 520, height: 680)
-        popover.contentViewController = NSHostingController(rootView: MonitorPanel(model: model))
+        popover.contentViewController = NSHostingController(
+            rootView: MonitorPanel(model: model)
+            .environment(\.appLanguage, model.config.language)
+            .tint(ClaudeTheme.accent)
+        )
 
         model.onSnapshotChange = { [weak self] snapshot in
             self?.updateStatusItem(snapshot)
@@ -57,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let strings = AppStrings(model.config.language)
+        let localizedStatus = strings.statusLabel(for: snapshot)
         let presentation = snapshot.menuBarStatusPresentation(config: model.config)
         switch snapshot.severity {
         case .healthy:
@@ -72,16 +78,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         button.imagePosition = .imageLeading
         if button.image == nil && presentation.title.isEmpty {
-            button.title = " \(snapshot.statusLabel)"
+            button.title = " \(localizedStatus)"
         } else {
             button.title = presentation.title
         }
 
         if snapshot.connected {
             let summary = snapshot.menuBarSummary(config: model.config)
-            button.toolTip = summary.isEmpty ? "Sub2API \(snapshot.statusLabel)" : "Sub2API \(snapshot.statusLabel) - \(summary)"
+            button.toolTip = summary.isEmpty ? "Sub2API \(localizedStatus)" : "Sub2API \(localizedStatus) - \(summary)"
         } else {
-            button.toolTip = "Sub2API \(snapshot.statusLabel)"
+            button.toolTip = "Sub2API \(localizedStatus)"
         }
     }
 
@@ -319,6 +325,13 @@ final class MonitorViewModel: ObservableObject {
         }
     }
 
+    func resetSettingsDraftFromConfig() {
+        guard settingsDraft != config else {
+            return
+        }
+        settingsDraft = config
+    }
+
     func openDashboard() {
         openURL(config.baseURL)
     }
@@ -344,7 +357,7 @@ final class MonitorViewModel: ObservableObject {
             let info = try await updateChecker.check(currentVersion: currentAppVersion)
             updateInfo = info
             if info.isUpdateAvailable || !silent {
-                updateStatusMessage = info.statusText
+                updateStatusMessage = AppStrings(config.language).updateStatus(info)
             }
         } catch {
             if !silent {
@@ -372,7 +385,7 @@ final class MonitorViewModel: ObservableObject {
             return
         }
         guard let info = updateInfo, info.isUpdateAvailable else {
-            updateStatusMessage = "No update is available."
+            updateStatusMessage = AppStrings(config.language).phrase("没有可用更新。", "No update is available.")
             return
         }
         guard info.latestRelease.installArchiveAsset() != nil else {
@@ -382,12 +395,12 @@ final class MonitorViewModel: ObservableObject {
 
         let currentAppURL = Bundle.main.bundleURL
         guard currentAppURL.pathExtension == "app" else {
-            updateStatusMessage = "Direct update requires the packaged app bundle."
+            updateStatusMessage = AppStrings(config.language).phrase("直接更新需要已打包的 App。", "Direct update requires the packaged app bundle.")
             return
         }
 
         isInstallingUpdate = true
-        updateStatusMessage = "Downloading update..."
+        updateStatusMessage = AppStrings(config.language).phrase("正在下载更新...", "Downloading update...")
 
         do {
             let bundleIdentifier = Bundle.main.bundleIdentifier ?? AppBuildInfo.bundleIdentifier
@@ -395,7 +408,7 @@ final class MonitorViewModel: ObservableObject {
                 release: info.latestRelease,
                 expectedBundleIdentifier: bundleIdentifier
             )
-            updateStatusMessage = "Installing update. The app will restart."
+            updateStatusMessage = AppStrings(config.language).phrase("正在安装更新，应用将重新启动。", "Installing update. The app will restart.")
             try updateInstaller.startInstall(
                 extractedAppURL: prepared.appURL,
                 targetAppURL: currentAppURL,
@@ -454,7 +467,7 @@ final class MonitorViewModel: ObservableObject {
 
 struct MonitorPanel: View {
     @ObservedObject var model: MonitorViewModel
-    @State private var showingSettings = false
+    @State private var selectedPage: PanelPage = .overview
 
     var body: some View {
         Group {
@@ -465,99 +478,131 @@ struct MonitorPanel: View {
                     header
                     Divider()
 
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 14) {
-                            statusSection
-
-                            if let updateInfo = model.updateInfo, updateInfo.isUpdateAvailable {
-                                UpdateAvailableBanner(
-                                    info: updateInfo,
-                                    isInstalling: model.isInstallingUpdate,
-                                    statusMessage: model.updateStatusMessage,
-                                    installUpdate: {
-                                        model.installUpdate()
-                                    },
-                                    openRelease: {
-                                        model.openLatestRelease()
-                                    }
-                                )
-                            }
-
-                            userSection
-
-                            if let message = model.snapshot.message, !message.isEmpty {
-                                MessageRow(message: message)
-                            }
-                        }
-                        .padding(16)
-                    }
+                    content
 
                     Divider()
-                    footer
+                    footer(for: selectedPage)
                 }
             }
         }
         .frame(width: 520, height: 680)
-        .sheet(isPresented: $showingSettings) {
-            SettingsView(model: model)
-                .frame(width: 430, height: 720)
-        }
+        .background(PanelBackground())
+        .environment(\.appLanguage, model.config.language)
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: iconName)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(iconColor)
+        VStack(spacing: 14) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(iconColor.opacity(0.13))
+                    Image(systemName: iconName)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(iconColor)
+                }
+                .frame(width: 42, height: 42)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Sub2API")
-                    .font(.headline)
-                Text(model.snapshot.connected ? lastUpdatedText : "Disconnected")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sub2API")
+                        .font(.system(size: 19, weight: .semibold, design: .rounded))
+                    Text(model.snapshot.connected ? lastUpdatedText : strings.phrase("未连接", "Disconnected"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    model.refresh()
+                } label: {
+                    Image(systemName: model.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                }
+                .disabled(model.isRefreshing)
+                .help(strings.phrase("刷新", "Refresh"))
             }
+            .buttonStyle(.borderless)
 
-            Spacer()
-
-            Button {
-                model.refresh()
-            } label: {
-                Image(systemName: model.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+            PanelPageTabs(selection: $selectedPage, strings: strings) { page in
+                if page == .settings {
+                    model.resetSettingsDraftFromConfig()
+                }
             }
-            .disabled(model.isRefreshing)
-            .help("Refresh")
-
-            Button {
-                model.settingsDraft = model.config
-                showingSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .help("Settings")
         }
-        .buttonStyle(.borderless)
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 14)
+        .background(ClaudeTheme.header)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch selectedPage {
+        case .overview:
+            overviewContent
+        case .settings:
+            SettingsView(model: model)
+        }
+    }
+
+    private var overviewContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                statusSection
+
+                if let updateInfo = model.updateInfo, updateInfo.isUpdateAvailable {
+                    UpdateAvailableBanner(
+                        info: updateInfo,
+                        isInstalling: model.isInstallingUpdate,
+                        statusMessage: model.updateStatusMessage,
+                        installUpdate: {
+                            model.installUpdate()
+                        },
+                        openRelease: {
+                            model.openLatestRelease()
+                        }
+                    )
+                }
+
+                userSection
+
+                if let message = model.snapshot.message, !message.isEmpty {
+                    MessageRow(message: message)
+                }
+            }
+            .padding(16)
+        }
     }
 
     private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(model.snapshot.statusLabel)
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(iconColor)
-                Spacer()
-                Text("User Usage")
-                    .font(.caption.weight(.medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.quaternary, in: Capsule())
-            }
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(strings.phrase("状态概览", "Status Overview"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(strings.statusLabel(for: model.snapshot))
+                            .font(.system(size: 32, weight: .semibold, design: .rounded))
+                            .foregroundStyle(iconColor)
+                    }
+                    Spacer()
+                    Text(strings.phrase("用户用量", "User Usage"))
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(iconColor.opacity(0.16), in: Capsule())
+                        .foregroundStyle(iconColor)
+                }
 
-            if model.config.authToken.isEmpty {
-                Text("Set Base URL and token to start monitoring.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                if model.config.authToken.isEmpty {
+                    Text(strings.phrase("设置服务地址和令牌后开始监控。", "Set Base URL and token to start monitoring."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(model.snapshot.connected ? strings.phrase("监控已连接，数据会按刷新间隔自动更新。", "Monitoring is connected and updates on your refresh interval.") : strings.phrase("当前无法连接服务，检查网络或登录状态。", "The server is not reachable. Check network or login state."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -570,28 +615,28 @@ struct MonitorPanel: View {
 
             if let stats = model.snapshot.stats {
                 MetricGrid(items: [
-                    MetricItem(title: "Balance", value: balanceText, caption: "Available", systemImage: "banknote", tint: .green),
-                    MetricItem(title: "API Keys", value: "\(stats.totalAPIKeys)", caption: "\(stats.activeAPIKeys) active", systemImage: "key", tint: .blue),
-                    MetricItem(title: "Today Requests", value: StatusFormatters.menuBarCount(stats.todayRequests), caption: "Total \(StatusFormatters.compactNumber(stats.totalRequests))", systemImage: "chart.bar", tint: .green),
-                    MetricItem(title: "Today Cost", value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: "Total \(StatusFormatters.preciseCurrency(stats.totalActualCost))", systemImage: "dollarsign.circle", tint: .purple),
-                    MetricItem(title: "Today Tokens", value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: .orange),
-                    MetricItem(title: "Total Tokens", value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: .indigo),
-                    MetricItem(title: "Performance", value: "\(StatusFormatters.menuBarRate(stats.rpm)) RPM", caption: "\(StatusFormatters.compactNumber(Int64(stats.tpm))) TPM", systemImage: "bolt", tint: .purple),
-                    MetricItem(title: "Avg Response", value: latencyText(milliseconds: stats.averageDurationMs), caption: "Average time", systemImage: "clock", tint: .pink),
+                    MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, caption: strings.phrase("可用", "Available"), systemImage: "banknote", tint: ClaudeTheme.accent),
+                    MetricItem(title: "API Keys", value: "\(stats.totalAPIKeys)", caption: strings.phrase("\(stats.activeAPIKeys) 个活跃", "\(stats.activeAPIKeys) active"), systemImage: "key", tint: ClaudeTheme.slate),
+                    MetricItem(title: strings.phrase("今日请求", "Today Requests"), value: StatusFormatters.menuBarCount(stats.todayRequests), caption: strings.phrase("总计 \(StatusFormatters.compactNumber(stats.totalRequests))", "Total \(StatusFormatters.compactNumber(stats.totalRequests))"), systemImage: "chart.bar", tint: ClaudeTheme.accent),
+                    MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: strings.phrase("总计 \(StatusFormatters.preciseCurrency(stats.totalActualCost))", "Total \(StatusFormatters.preciseCurrency(stats.totalActualCost))"), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
+                    MetricItem(title: strings.phrase("今日 Token", "Today Tokens"), value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: ClaudeTheme.warm),
+                    MetricItem(title: strings.phrase("总 Token", "Total Tokens"), value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.ink),
+                    MetricItem(title: strings.phrase("性能", "Performance"), value: "\(StatusFormatters.menuBarRate(stats.rpm)) RPM", caption: "\(StatusFormatters.compactNumber(Int64(stats.tpm))) TPM", systemImage: "bolt", tint: ClaudeTheme.gold),
+                    MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), caption: strings.phrase("平均耗时", "Average time"), systemImage: "clock", tint: ClaudeTheme.danger),
                 ])
             }
 
             if let summary = model.snapshot.subscriptionSummary {
                 if model.snapshot.stats == nil {
                     MetricGrid(items: [
-                        MetricItem(title: "Balance", value: balanceText, systemImage: "banknote", tint: .green),
-                        MetricItem(title: "Active Subs", value: "\(summary.activeCount)", systemImage: "checkmark.seal", tint: .green),
-                        MetricItem(title: "Peak Usage", value: StatusFormatters.percent(summary.highestProgress), systemImage: "gauge.with.dots.needle.67percent", tint: .orange),
-                        MetricItem(title: "Total Used", value: StatusFormatters.preciseCurrency(summary.totalUsedUSD), systemImage: "dollarsign.circle", tint: .purple),
+                        MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, systemImage: "banknote", tint: ClaudeTheme.accent),
+                        MetricItem(title: strings.phrase("活跃订阅", "Active Subs"), value: "\(summary.activeCount)", systemImage: "checkmark.seal", tint: ClaudeTheme.accent),
+                        MetricItem(title: strings.phrase("峰值用量", "Peak Usage"), value: StatusFormatters.percent(summary.highestProgress), systemImage: "gauge.with.dots.needle.67percent", tint: ClaudeTheme.warning),
+                        MetricItem(title: strings.phrase("已用总额", "Total Used"), value: StatusFormatters.preciseCurrency(summary.totalUsedUSD), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
                     ])
                 }
 
-                SectionBlock(title: "Subscriptions") {
+                SectionBlock(title: strings.phrase("订阅", "Subscriptions")) {
                     VStack(spacing: 10) {
                         ForEach(summary.subscriptions.prefix(5)) { item in
                             SubscriptionQuotaCard(item: item)
@@ -605,7 +650,7 @@ struct MonitorPanel: View {
             }
 
             if let trend = model.snapshot.trend, trend.count > 1 {
-                SectionBlock(title: "Token Trend") {
+                SectionBlock(title: strings.phrase("Token 趋势", "Token Trend")) {
                     TokenTrendView(points: trend)
                         .frame(height: 150)
                 }
@@ -613,12 +658,22 @@ struct MonitorPanel: View {
         }
     }
 
-    private var footer: some View {
-        HStack {
+    @ViewBuilder
+    private func footer(for page: PanelPage) -> some View {
+        switch page {
+        case .overview:
+            overviewFooter
+        case .settings:
+            settingsFooter
+        }
+    }
+
+    private var overviewFooter: some View {
+        HStack(spacing: 12) {
             Button {
                 model.openDashboard()
             } label: {
-                Label("Open", systemImage: "safari")
+                Label(strings.phrase("打开控制台", "Open"), systemImage: "safari")
             }
             .disabled(model.config.baseURL.isEmpty)
 
@@ -627,11 +682,31 @@ struct MonitorPanel: View {
             Button {
                 model.quit()
             } label: {
-                Label("Quit", systemImage: "power")
+                Label(strings.phrase("退出", "Quit"), systemImage: "power")
             }
         }
         .buttonStyle(.borderless)
         .padding(12)
+        .background(ClaudeTheme.footer)
+    }
+
+    private var settingsFooter: some View {
+        HStack(spacing: 12) {
+            Text(strings.phrase("保存后立即应用。", "Applies immediately after saving."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(strings.phrase("取消", "Cancel")) {
+                model.resetSettingsDraftFromConfig()
+            }
+            Button(strings.phrase("保存", "Save")) {
+                model.saveSettings()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(ClaudeTheme.footer)
     }
 
     private var iconName: String {
@@ -648,19 +723,16 @@ struct MonitorPanel: View {
     private var iconColor: Color {
         switch model.snapshot.severity {
         case .healthy:
-            return .green
+            return ClaudeTheme.success
         case .warning:
-            return .orange
+            return ClaudeTheme.warning
         case .error:
-            return .red
+            return ClaudeTheme.danger
         }
     }
 
     private var lastUpdatedText: String {
-        guard let date = model.snapshot.lastUpdatedAt else {
-            return "Waiting for first refresh"
-        }
-        return "Updated \(date.formatted(date: .omitted, time: .shortened))"
+        strings.updated(at: model.snapshot.lastUpdatedAt)
     }
 
     private var balanceText: String {
@@ -671,7 +743,10 @@ struct MonitorPanel: View {
     }
 
     private func tokenBreakdown(input: Int64, output: Int64) -> String {
-        "In \(StatusFormatters.compactNumber(input)) / Out \(StatusFormatters.compactNumber(output))"
+        strings.phrase(
+            "入 \(StatusFormatters.compactNumber(input)) / 出 \(StatusFormatters.compactNumber(output))",
+            "In \(StatusFormatters.compactNumber(input)) / Out \(StatusFormatters.compactNumber(output))"
+        )
     }
 
     private func latencyText(milliseconds: Double) -> String {
@@ -681,6 +756,67 @@ struct MonitorPanel: View {
         return "\(Int(milliseconds))ms"
     }
 
+    private var strings: AppStrings {
+        AppStrings(model.config.language)
+    }
+}
+
+private enum PanelPage: String, CaseIterable, Identifiable {
+    case overview
+    case settings
+
+    var id: String { rawValue }
+
+    func title(strings: AppStrings) -> String {
+        switch self {
+        case .overview:
+            return strings.phrase("概览", "Overview")
+        case .settings:
+            return strings.phrase("设置", "Settings")
+        }
+    }
+}
+
+private struct PanelPageTabs: View {
+    @Binding var selection: PanelPage
+    let strings: AppStrings
+    let onSelect: (PanelPage) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(PanelPage.allCases) { page in
+                Button {
+                    guard selection != page else {
+                        return
+                    }
+                    selection = page
+                    onSelect(page)
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(selection == page ? ClaudeTheme.tabSelected : Color.clear)
+                        Text(page.title(strings: strings))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(selection == page ? ClaudeTheme.primaryText : ClaudeTheme.secondaryText)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 34)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .accessibilityLabel(page.title(strings: strings))
+                .accessibilityAddTraits(selection == page ? [.isSelected] : [])
+            }
+        }
+        .padding(3)
+        .background(ClaudeTheme.tabBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(ClaudeTheme.border, lineWidth: 1)
+        )
+        .animation(nil, value: selection)
+    }
 }
 
 struct LoginPanel: View {
@@ -697,37 +833,51 @@ struct LoginPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
-                    .font(.system(size: 38, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(ClaudeTheme.accent.opacity(0.16))
+                    Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
+                        .font(.system(size: 32, weight: .semibold))
+                        .foregroundStyle(ClaudeTheme.accent)
+                }
+                .frame(width: 54, height: 54)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Sub2API")
-                        .font(.title2.bold())
-                    Text("Connect your server")
+                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                    Text(strings.phrase("连接你的服务", "Connect your server"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                TextField("Server URL", text: $model.settingsDraft.baseURL)
-                    .textFieldStyle(.roundedBorder)
+            GlassCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker(strings.phrase("语言", "Language"), selection: $model.settingsDraft.language) {
+                        ForEach([AppLanguage.zhHans, .en]) { language in
+                            Text(strings.languageName(language)).tag(language)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
-                TextField("Account", text: $model.loginEmail)
-                    .textFieldStyle(.roundedBorder)
+                    TextField(strings.phrase("服务地址", "Server URL"), text: $model.settingsDraft.baseURL)
+                        .themedTextField()
 
-                SecureField("Password", text: $model.loginPassword)
-                    .textFieldStyle(.roundedBorder)
+                    TextField(strings.phrase("账号", "Account"), text: $model.loginEmail)
+                        .themedTextField()
 
-                HStack {
-                    Text("Refresh")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
-                    Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
-                        .font(.callout.monospacedDigit())
-                        .frame(width: 42, alignment: .trailing)
+                    SecureField(strings.phrase("密码", "Password"), text: $model.loginPassword)
+                        .themedTextField()
+
+                    HStack {
+                        Text(strings.phrase("刷新", "Refresh"))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
+                        Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
+                            .font(.callout.monospacedDigit())
+                            .frame(width: 42, alignment: .trailing)
+                    }
                 }
             }
 
@@ -745,7 +895,7 @@ struct LoginPanel: View {
                     } else {
                         Image(systemName: "key.fill")
                     }
-                    Text(model.isLoggingIn ? "Connecting..." : "Login")
+                    Text(model.isLoggingIn ? strings.phrase("连接中...", "Connecting...") : strings.phrase("登录", "Login"))
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -753,19 +903,19 @@ struct LoginPanel: View {
             .controlSize(.large)
             .disabled(!formState.canSubmit || model.isLoggingIn)
 
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Manual token")
-                    .font(.headline)
-                SecureField("Bearer Token", text: $model.settingsDraft.authToken)
-                    .textFieldStyle(.roundedBorder)
-                Button {
-                    model.saveSettings()
-                } label: {
-                    Label("Save Token", systemImage: "square.and.arrow.down")
+            GlassCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(strings.phrase("手动令牌", "Manual token"))
+                        .font(.headline)
+                    SecureField("Bearer Token", text: $model.settingsDraft.authToken)
+                        .themedTextField()
+                    Button {
+                        model.saveSettings()
+                    } label: {
+                        Label(strings.phrase("保存令牌", "Save Token"), systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(model.settingsDraft.authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .disabled(model.settingsDraft.authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
             Spacer()
@@ -774,7 +924,7 @@ struct LoginPanel: View {
                 Button {
                     model.openURL(model.settingsDraft.baseURL)
                 } label: {
-                    Label("Open Server", systemImage: "safari")
+                    Label(strings.phrase("打开服务", "Open Server"), systemImage: "safari")
                 }
                 .disabled(model.settingsDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
@@ -783,132 +933,164 @@ struct LoginPanel: View {
                 Button {
                     model.quit()
                 } label: {
-                    Label("Quit", systemImage: "power")
+                    Label(strings.phrase("退出", "Quit"), systemImage: "power")
                 }
             }
             .buttonStyle(.borderless)
         }
         .padding(20)
+        .frame(width: 520, height: 680)
+        .background(PanelBackground())
+        .environment(\.appLanguage, model.settingsDraft.language)
+    }
+
+    private var strings: AppStrings {
+        AppStrings(model.settingsDraft.language)
     }
 }
 
 struct SettingsView: View {
     @ObservedObject var model: MonitorViewModel
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Settings")
-                        .font(.title2.bold())
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                settingsHeader
 
-                    settingsFields
+                settingsFields
 
-                    Divider()
+                UpdateSettingsSection(model: model)
 
-                    UpdateSettingsSection(model: model)
+                loginSection
 
-                    Divider()
-
-                    loginSection
-
-                    if let error = model.settingsError {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .lineLimit(3)
-                    }
+                if let error = model.settingsError {
+                    MessageRow(message: error)
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .environment(\.appLanguage, model.settingsDraft.language)
+    }
 
-            Divider()
-
-            HStack {
-                Spacer()
-                Button("Cancel") {
-                    dismiss()
-                }
-                Button("Save") {
-                    if model.saveSettings() {
-                        dismiss()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
+    private var settingsHeader: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(ClaudeTheme.accent.opacity(0.16))
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(ClaudeTheme.accent)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
+            .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(strings.phrase("设置", "Settings"))
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                Text(strings.phrase("语言、连接、菜单栏显示和更新在同一控制台中管理。", "Manage language, connection, menu bar display, and updates in this console."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
     private var settingsFields: some View {
         VStack(alignment: .leading, spacing: 12) {
-            settingsRow("Base URL") {
-                TextField("https://codex.lyhbio.cn", text: $model.settingsDraft.baseURL)
-            }
+            GlassCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(strings.phrase("基础", "General"))
+                        .font(.headline)
 
-            settingsRow("") {
-                Toggle("Show text in menu bar", isOn: $model.settingsDraft.showsMenuBarText)
-            }
+                    settingsRow(strings.phrase("语言", "Language")) {
+                        Picker("", selection: $model.settingsDraft.language) {
+                            ForEach([AppLanguage.zhHans, .en]) { language in
+                                Text(strings.languageName(language)).tag(language)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
 
-            settingsRow("") {
-                Toggle("Open at Login", isOn: $model.settingsDraft.launchAtLogin)
-            }
+                    settingsRow("Base URL") {
+                        TextField("https://codex.lyhbio.cn", text: $model.settingsDraft.baseURL)
+                            .themedTextField()
+                    }
 
-            settingsRow("Usage window") {
-                Picker("", selection: $model.settingsDraft.menuBarUsageWindow) {
-                    ForEach(MenuBarUsageWindow.allCases) { window in
-                        Text(window.displayName).tag(window)
+                    settingsRow(strings.phrase("刷新", "Refresh")) {
+                        HStack {
+                            Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
+                            Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
+                                .font(.callout.monospacedDigit())
+                                .frame(width: 42, alignment: .trailing)
+                        }
+                    }
+
+                    settingsRow("Bearer Token") {
+                        SecureField("", text: $model.settingsDraft.authToken)
+                            .themedTextField()
                     }
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
             }
 
-            settingsRow("Menu bar items") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(MenuBarDisplayItem.allCases) { item in
-                        Toggle(item.displayName, isOn: menuBarItemBinding(item))
+            GlassCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(strings.phrase("菜单栏", "Menu Bar"))
+                        .font(.headline)
+
+                    Toggle(strings.phrase("在菜单栏显示文字", "Show text in menu bar"), isOn: $model.settingsDraft.showsMenuBarText)
+
+                    settingsRow(strings.phrase("统计窗口", "Usage window")) {
+                        Picker("", selection: $model.settingsDraft.menuBarUsageWindow) {
+                            ForEach(MenuBarUsageWindow.allCases) { window in
+                                Text(strings.usageWindowName(window)).tag(window)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text(strings.phrase("显示项目", "Menu bar items"))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
+                            ForEach(MenuBarDisplayItem.allCases) { item in
+                                Toggle(strings.menuBarItemName(item), isOn: menuBarItemBinding(item))
+                            }
+                        }
                     }
                 }
             }
 
-            settingsRow("Refresh") {
-                HStack {
-                    Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
-                    Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
-                        .frame(width: 42, alignment: .trailing)
-                }
-            }
-
-            settingsRow("Bearer Token") {
-                SecureField("", text: $model.settingsDraft.authToken)
+            GlassCard {
+                Toggle(strings.phrase("登录时打开", "Open at Login"), isOn: $model.settingsDraft.launchAtLogin)
             }
         }
     }
 
     private var loginSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Login")
-                .font(.headline)
-            TextField("Email", text: $model.loginEmail)
-            SecureField("Password", text: $model.loginPassword)
-            Button {
-                model.loginAndSave()
-            } label: {
-                Label("Login and Save Token", systemImage: "key")
-            }
-            .disabled(!LoginFormState(baseURL: model.settingsDraft.baseURL, email: model.loginEmail, password: model.loginPassword).canSubmit || model.isLoggingIn)
+        GlassCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(strings.phrase("登录", "Login"))
+                    .font(.headline)
+                TextField("Email", text: $model.loginEmail)
+                    .themedTextField()
+                SecureField(strings.phrase("密码", "Password"), text: $model.loginPassword)
+                    .themedTextField()
+                Button {
+                    model.loginAndSave()
+                } label: {
+                    Label(strings.phrase("登录并保存令牌", "Login and Save Token"), systemImage: "key")
+                }
+                .disabled(!LoginFormState(baseURL: model.settingsDraft.baseURL, email: model.loginEmail, password: model.loginPassword).canSubmit || model.isLoggingIn)
 
-            Button(role: .destructive) {
-                model.disconnect()
-                dismiss()
-            } label: {
-                Label("Disconnect", systemImage: "person.crop.circle.badge.xmark")
+                Button(role: .destructive) {
+                    model.disconnect()
+                } label: {
+                    Label(strings.phrase("断开连接", "Disconnect"), systemImage: "person.crop.circle.badge.xmark")
+                }
+                .disabled(model.config.authToken.isEmpty && model.settingsDraft.authToken.isEmpty)
             }
-            .disabled(model.config.authToken.isEmpty && model.settingsDraft.authToken.isEmpty)
         }
     }
 
@@ -921,6 +1103,10 @@ struct SettingsView: View {
                 .padding(.top, 4)
             content()
         }
+    }
+
+    private var strings: AppStrings {
+        AppStrings(model.settingsDraft.language)
     }
 
     private func menuBarItemBinding(_ item: MenuBarDisplayItem) -> Binding<Bool> {
@@ -945,77 +1131,87 @@ struct UpdateSettingsSection: View {
     @ObservedObject var model: MonitorViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Updates")
-                    .font(.headline)
-                Spacer()
-                if model.isCheckingForUpdates || model.isInstallingUpdate {
-                    ProgressView()
-                        .controlSize(.small)
+        GlassCard {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(strings.phrase("更新", "Updates"))
+                        .font(.headline)
+                    Spacer()
+                    if model.isCheckingForUpdates || model.isInstallingUpdate {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
-            }
 
-            if let updateInfo = model.updateInfo, updateInfo.isUpdateAvailable {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(updateInfo.statusText)
-                            .font(.callout.weight(.medium))
-                        Text(updateInfo.latestRelease.name)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        if let message = model.updateStatusMessage {
-                            Text(message)
+                if let updateInfo = model.updateInfo, updateInfo.isUpdateAvailable {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .foregroundStyle(ClaudeTheme.success)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(strings.updateStatus(updateInfo))
+                                .font(.callout.weight(.medium))
+                            Text(updateInfo.latestRelease.name)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            if let message = model.updateStatusMessage,
+                               message != strings.updateStatus(updateInfo),
+                               message != updateInfo.statusText {
+                                Text(message)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
+                } else if let message = model.updateStatusMessage {
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(strings.phrase("检查 GitHub Releases 中的新版本。", "Checks GitHub Releases for newer versions."))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-            } else if let message = model.updateStatusMessage {
-                Text(message)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Checks GitHub Releases for newer versions.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
 
-            HStack {
-                Button {
-                    model.checkForUpdates()
-                } label: {
-                    Label("Check Now", systemImage: "arrow.clockwise")
-                }
-                .disabled(model.isCheckingForUpdates || model.isInstallingUpdate)
-
-                if model.updateInfo?.isUpdateAvailable == true {
-                    if model.updateInfo?.latestRelease.installArchiveAsset() != nil {
-                        Button {
-                            model.installUpdate()
-                        } label: {
-                            Label("Install Update", systemImage: "arrow.down.circle")
-                        }
-                        .disabled(model.isCheckingForUpdates || model.isInstallingUpdate)
-                    }
-
+                HStack {
                     Button {
-                        model.openLatestRelease()
+                        model.checkForUpdates()
                     } label: {
-                        Label("Open Release", systemImage: "safari")
+                        Label(strings.phrase("立即检查", "Check Now"), systemImage: "arrow.clockwise")
                     }
-                    .disabled(model.isInstallingUpdate)
+                    .disabled(model.isCheckingForUpdates || model.isInstallingUpdate)
+
+                    if model.updateInfo?.isUpdateAvailable == true {
+                        if model.updateInfo?.latestRelease.installArchiveAsset() != nil {
+                            Button {
+                                model.installUpdate()
+                            } label: {
+                                Label(strings.phrase("安装更新", "Install Update"), systemImage: "arrow.down.circle")
+                            }
+                            .disabled(model.isCheckingForUpdates || model.isInstallingUpdate)
+                        }
+
+                        Button {
+                            model.openLatestRelease()
+                        } label: {
+                            Label(strings.phrase("打开发布页", "Open Release"), systemImage: "safari")
+                        }
+                        .disabled(model.isInstallingUpdate)
+                    }
                 }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
         }
+    }
+
+    private var strings: AppStrings {
+        AppStrings(model.settingsDraft.language)
     }
 }
 
 struct UpdateAvailableBanner: View {
+    @Environment(\.appLanguage) private var language
+
     let info: UpdateInfo
     let isInstalling: Bool
     let statusMessage: String?
@@ -1027,10 +1223,14 @@ struct UpdateAvailableBanner: View {
     }
 
     private var detailText: String {
-        if let statusMessage, statusMessage != info.statusText {
+        if let statusMessage,
+           statusMessage != info.statusText,
+           statusMessage != strings.updateStatus(info) {
             return statusMessage
         }
-        return canInstallDirectly ? "Install directly or open the GitHub release." : "Download the latest release from GitHub."
+        return canInstallDirectly
+            ? strings.phrase("可直接安装，也可以打开 GitHub 发布页。", "Install directly or open the GitHub release.")
+            : strings.phrase("从 GitHub 下载最新版本。", "Download the latest release from GitHub.")
     }
 
     var body: some View {
@@ -1041,10 +1241,10 @@ struct UpdateAvailableBanner: View {
             } else {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(ClaudeTheme.success)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(info.statusText)
+                Text(strings.updateStatus(info))
                     .font(.callout.weight(.semibold))
                 Text(detailText)
                     .font(.caption)
@@ -1059,7 +1259,7 @@ struct UpdateAvailableBanner: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(isInstalling)
-                .help("Install update")
+                .help(strings.phrase("安装更新", "Install update"))
             }
             Button {
                 openRelease()
@@ -1068,22 +1268,31 @@ struct UpdateAvailableBanner: View {
             }
             .buttonStyle(.borderless)
             .disabled(isInstalling)
-            .help("Open release")
+            .help(strings.phrase("打开发布页", "Open release"))
         }
-        .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(12)
+        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(ClaudeTheme.accent.opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var strings: AppStrings {
+        AppStrings(language)
     }
 }
 
 struct MetricItem: Identifiable {
-    let id = UUID()
+    let id: String
     let title: String
     let value: String
     let caption: String?
     let systemImage: String?
     let tint: Color
 
-    init(title: String, value: String, caption: String? = nil, systemImage: String? = nil, tint: Color = .accentColor) {
+    init(title: String, value: String, caption: String? = nil, systemImage: String? = nil, tint: Color = ClaudeTheme.accent) {
+        id = "\(title)-\(systemImage ?? "")"
         self.title = title
         self.value = value
         self.caption = caption
@@ -1093,6 +1302,8 @@ struct MetricItem: Identifiable {
 }
 
 struct UserAccountCard: View {
+    @Environment(\.appLanguage) private var language
+
     let user: CurrentUser
 
     private var displayName: String {
@@ -1104,11 +1315,7 @@ struct UserAccountCard: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(.blue)
-                .frame(width: 42, height: 42)
-                .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            DefaultAvatar(name: displayName, email: user.email)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(displayName)
@@ -1124,16 +1331,52 @@ struct UserAccountCard: View {
             Spacer()
 
             if let status = user.status, !status.isEmpty {
-                Text(status.capitalized)
+                Text(strings.activeStatus(status))
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(status.lowercased() == "active" ? .green : .secondary)
+                    .foregroundStyle(status.lowercased() == "active" ? ClaudeTheme.success : .secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
-                    .background((status.lowercased() == "active" ? Color.green : Color.secondary).opacity(0.14), in: Capsule())
+                    .background((status.lowercased() == "active" ? ClaudeTheme.success : ClaudeTheme.muted).opacity(0.14), in: Capsule())
             }
         }
-        .padding(10)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .padding(12)
+        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
+}
+
+struct DefaultAvatar: View {
+    let name: String
+    let email: String
+
+    private var initials: String {
+        let source = name.isEmpty ? email : name
+        let parts = source
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+        let letters = parts.prefix(2).compactMap { $0.first }
+        if letters.isEmpty {
+            return "S"
+        }
+        return String(letters).uppercased()
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(ClaudeTheme.avatarBackground)
+            Text(initials)
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+                .foregroundStyle(ClaudeTheme.avatarForeground)
+        }
+        .frame(width: 42, height: 42)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(ClaudeTheme.border, lineWidth: 1)
+        )
     }
 }
 
@@ -1170,8 +1413,12 @@ struct MetricGrid: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .padding(12)
+                .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(ClaudeTheme.border, lineWidth: 1)
+                )
             }
         }
     }
@@ -1193,51 +1440,53 @@ struct SafeSystemImage: View {
 }
 
 struct SubscriptionQuotaCard: View {
+    @Environment(\.appLanguage) private var language
+
     let item: SubscriptionSummaryItem
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Circle()
-                    .fill(item.status == "active" ? Color.green : Color.secondary)
+                    .fill(item.status == "active" ? ClaudeTheme.success : ClaudeTheme.muted)
                     .frame(width: 7, height: 7)
                 Text(item.groupName)
                     .font(.headline)
                 Spacer()
-                Text(item.status == "active" ? "Active" : item.status)
+                Text(strings.activeStatus(item.status))
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(item.status == "active" ? .green : .secondary)
+                    .foregroundStyle(item.status == "active" ? ClaudeTheme.success : .secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background((item.status == "active" ? Color.green : Color.secondary).opacity(0.14), in: Capsule())
+                    .background((item.status == "active" ? ClaudeTheme.success : ClaudeTheme.muted).opacity(0.14), in: Capsule())
             }
 
             if let days = item.daysRemaining {
                 HStack {
-                    Text("Expires")
+                    Text(strings.phrase("到期", "Expires"))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("Remaining \(days)d")
+                    Text(strings.phrase("剩余 \(days) 天", "Remaining \(days)d"))
                 }
                 .font(.caption)
             }
 
             QuotaProgressRow(
-                title: "Daily",
+                title: strings.phrase("每日", "Daily"),
                 used: item.dailyUsedUSD,
                 limit: item.dailyLimitUSD,
                 progress: item.dailyProgress,
                 resetInSeconds: item.dailyResetInSeconds
             )
             QuotaProgressRow(
-                title: "Weekly",
+                title: strings.phrase("每周", "Weekly"),
                 used: item.weeklyUsedUSD,
                 limit: item.weeklyLimitUSD,
                 progress: item.weeklyProgress,
                 resetInSeconds: item.weeklyResetInSeconds
             )
             QuotaProgressRow(
-                title: "Monthly",
+                title: strings.phrase("每月", "Monthly"),
                 used: item.monthlyUsedUSD,
                 limit: item.monthlyLimitUSD,
                 progress: item.monthlyProgress,
@@ -1245,9 +1494,15 @@ struct SubscriptionQuotaCard: View {
             )
         }
     }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
 }
 
 struct QuotaProgressRow: View {
+    @Environment(\.appLanguage) private var language
+
     let title: String
     let used: Double?
     let limit: Double?
@@ -1259,7 +1514,7 @@ struct QuotaProgressRow: View {
     }
 
     private var tint: Color {
-        normalizedProgress >= 0.95 ? .red : .green
+        normalizedProgress >= 0.95 ? ClaudeTheme.danger : ClaudeTheme.success
     }
 
     var body: some View {
@@ -1279,7 +1534,10 @@ struct QuotaProgressRow: View {
                 .tint(tint)
 
             if let resetInSeconds {
-                Text("\(StatusFormatters.duration(seconds: resetInSeconds)) until reset")
+                Text(strings.phrase(
+                    "\(StatusFormatters.duration(seconds: resetInSeconds)) 后重置",
+                    "\(StatusFormatters.duration(seconds: resetInSeconds)) until reset"
+                ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1292,9 +1550,15 @@ struct QuotaProgressRow: View {
         }
         return "\(StatusFormatters.currency(used)) / \(StatusFormatters.currency(limit))"
     }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
 }
 
 struct ModelDistributionView: View {
+    @Environment(\.appLanguage) private var language
+
     let models: [ModelUsageSummary]
 
     private var visibleModels: [ModelUsageSummary] {
@@ -1306,7 +1570,7 @@ struct ModelDistributionView: View {
     }
 
     var body: some View {
-        SectionBlock(title: "Model Distribution") {
+        SectionBlock(title: strings.phrase("模型分布", "Model Distribution")) {
             VStack(spacing: 10) {
                 ForEach(visibleModels) { item in
                     VStack(spacing: 7) {
@@ -1317,17 +1581,20 @@ struct ModelDistributionView: View {
                             Spacer()
                             Text(StatusFormatters.preciseCurrency(item.actualCost))
                                 .font(.callout.weight(.medium))
-                                .foregroundStyle(.green)
+                                .foregroundStyle(ClaudeTheme.accent)
                         }
                         HStack {
-                            Text("\(StatusFormatters.menuBarCount(item.requests)) requests")
+                            Text(strings.phrase(
+                                "\(StatusFormatters.menuBarCount(item.requests)) 次请求",
+                                "\(StatusFormatters.menuBarCount(item.requests)) requests"
+                            ))
                             Spacer()
                             Text(StatusFormatters.compactNumber(item.totalTokens))
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         ProgressView(value: Double(item.totalTokens) / maximumTokens)
-                            .tint(.blue)
+                            .tint(ClaudeTheme.slate)
                     }
                     if item.id != visibleModels.last?.id {
                         Divider()
@@ -1336,9 +1603,15 @@ struct ModelDistributionView: View {
             }
         }
     }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
 }
 
 struct TokenTrendView: View {
+    @Environment(\.appLanguage) private var language
+
     let points: [TrendDataPoint]
 
     var body: some View {
@@ -1346,20 +1619,20 @@ struct TokenTrendView: View {
             GeometryReader { proxy in
                 ZStack {
                     trendPath(values: points.map { Double($0.cacheReadTokens) }, in: proxy.size)
-                        .fill(Color.cyan.opacity(0.16))
+                        .fill(ClaudeTheme.sand.opacity(0.24))
                     trendPath(values: points.map { Double($0.cacheReadTokens) }, in: proxy.size)
-                        .stroke(Color.cyan, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                        .stroke(ClaudeTheme.sand, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
                     trendPath(values: points.map { Double($0.inputTokens) }, in: proxy.size)
-                        .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        .stroke(ClaudeTheme.slate, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     trendPath(values: points.map { Double($0.outputTokens) }, in: proxy.size)
-                        .stroke(Color.green, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        .stroke(ClaudeTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             }
 
             HStack(spacing: 12) {
-                LegendDot(color: .blue, label: "Input")
-                LegendDot(color: .green, label: "Output")
-                LegendDot(color: .cyan, label: "Cache Read")
+                LegendDot(color: ClaudeTheme.slate, label: strings.phrase("输入", "Input"))
+                LegendDot(color: ClaudeTheme.accent, label: strings.phrase("输出", "Output"))
+                LegendDot(color: ClaudeTheme.sand, label: strings.phrase("缓存读取", "Cache Read"))
                 Spacer()
                 Text(points.last?.date ?? "")
                     .foregroundStyle(.secondary)
@@ -1382,6 +1655,10 @@ struct TokenTrendView: View {
         }
         return path
     }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
 }
 
 struct LegendDot: View {
@@ -1403,12 +1680,12 @@ struct SectionBlock<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title)
                 .font(.headline)
-            content
-                .padding(10)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            GlassCard {
+                content
+            }
         }
     }
 }
@@ -1429,6 +1706,95 @@ struct InfoRow: View {
     }
 }
 
+enum ClaudeTheme {
+    static let background = LinearGradient(
+        colors: [
+            Color(red: 0.055, green: 0.060, blue: 0.064),
+            Color(red: 0.090, green: 0.086, blue: 0.078),
+            Color(red: 0.130, green: 0.106, blue: 0.086),
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let header = Color(red: 0.105, green: 0.104, blue: 0.098)
+    static let footer = Color(red: 0.085, green: 0.082, blue: 0.076)
+    static let card = Color(red: 0.150, green: 0.143, blue: 0.132)
+    static let elevatedCard = Color(red: 0.180, green: 0.170, blue: 0.156)
+    static let tabBackground = Color(red: 0.115, green: 0.110, blue: 0.102)
+    static let tabSelected = Color(red: 0.245, green: 0.222, blue: 0.196)
+    static let border = Color(red: 0.82, green: 0.76, blue: 0.66).opacity(0.18)
+    static let primaryText = Color(red: 0.94, green: 0.91, blue: 0.86)
+    static let secondaryText = Color(red: 0.66, green: 0.62, blue: 0.55)
+    static let muted = Color(red: 0.62, green: 0.59, blue: 0.52)
+    static let accent = Color(red: 0.86, green: 0.38, blue: 0.19)
+    static let success = Color(red: 0.71, green: 0.58, blue: 0.38)
+    static let slate = Color(red: 0.55, green: 0.60, blue: 0.60)
+    static let sand = Color(red: 0.72, green: 0.62, blue: 0.48)
+    static let gold = Color(red: 0.84, green: 0.58, blue: 0.29)
+    static let warm = Color(red: 0.82, green: 0.45, blue: 0.25)
+    static let ink = Color(red: 0.64, green: 0.55, blue: 0.46)
+    static let warning = Color(red: 0.86, green: 0.58, blue: 0.22)
+    static let danger = Color(red: 0.86, green: 0.31, blue: 0.25)
+    static let textFieldBackground = Color(red: 0.060, green: 0.058, blue: 0.054)
+    static let avatarBackground = LinearGradient(
+        colors: [
+            Color(red: 0.70, green: 0.48, blue: 0.30),
+            Color(red: 0.42, green: 0.30, blue: 0.22),
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let avatarForeground = Color(red: 0.98, green: 0.90, blue: 0.78)
+}
+
+extension View {
+    func themedTextField() -> some View {
+        self
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(ClaudeTheme.border, lineWidth: 1)
+            )
+    }
+}
+
+struct PanelBackground: View {
+    var body: some View {
+        ZStack {
+            ClaudeTheme.background
+
+            Circle()
+                .fill(ClaudeTheme.accent.opacity(0.12))
+                .frame(width: 150, height: 150)
+                .offset(x: 250, y: -255)
+
+            Circle()
+                .fill(ClaudeTheme.sand.opacity(0.10))
+                .frame(width: 130, height: 130)
+                .offset(x: -250, y: 255)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+struct GlassCard<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(ClaudeTheme.border, lineWidth: 1)
+            )
+    }
+}
+
 struct MessageRow: View {
     let message: String
 
@@ -1442,6 +1808,10 @@ struct MessageRow: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(ClaudeTheme.border, lineWidth: 1)
+        )
     }
 }

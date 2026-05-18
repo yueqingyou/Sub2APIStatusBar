@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.12
+
+- Refined the menu bar popover with a warmer Claude-inspired visual theme and localized Chinese defaults.
+- Moved overview and settings into one unified popover with full-width tab hit targets.
+- Added a default account avatar and improved settings layout, footer actions, and update messaging.
+- Reduced SwiftUI rendering overhead by removing heavy blur/shadow effects, stabilizing metric identifiers, and avoiding no-op settings draft updates.
+
 ## v0.1.11
 
 - Fixed direct update installs that could remain stuck at `Installing update` when the running app did not exit promptly.

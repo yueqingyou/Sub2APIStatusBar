@@ -45,6 +45,32 @@ func testAppConfigDefaultsMenuBarWindowAndItems() {
     ])
 }
 
+func testAppConfigDefaultsToChineseLanguage() {
+    let config = AppConfig(baseURL: "http://127.0.0.1:8080")
+
+    XCTAssert(config.language == .zhHans)
+}
+
+func testAppLanguageFallsBackToChineseWhenEnvironmentIsMissingOrUnknown() {
+    XCTAssert(AppLanguage.fromEnvironment(nil) == .zhHans)
+    XCTAssert(AppLanguage.fromEnvironment("") == .zhHans)
+    XCTAssert(AppLanguage.fromEnvironment("auto") == .zhHans)
+    XCTAssert(AppLanguage.fromEnvironment("english") == .en)
+}
+
+func testLegacyAutoLanguageNormalizesToChinese() throws {
+    let data = """
+    {
+      "baseURL": "http://127.0.0.1:8080",
+      "language": "auto"
+    }
+    """.data(using: .utf8)!
+
+    let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
+
+    XCTAssert(config.language == .zhHans)
+}
+
 func testAppConfigPersistsMenuBarTextPreference() throws {
     let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)

@@ -93,7 +93,11 @@ public struct AppUpdateInstaller {
         try fileManager.moveItem(at: temporaryArchiveURL, to: archiveURL)
 
         let appURL = try extractApp(from: archiveURL, to: extractionURL, appName: appName)
-        try validateExtractedApp(at: appURL, expectedVersion: release.version, bundleIdentifier: expectedBundleIdentifier)
+        try validateExtractedApp(
+            at: appURL,
+            expectedVersion: release.version,
+            bundleIdentifier: expectedBundleIdentifier
+        )
         return PreparedAppUpdate(archiveURL: archiveURL, extractionDirectoryURL: extractionURL, appURL: appURL)
     }
 
@@ -122,7 +126,11 @@ public struct AppUpdateInstaller {
         throw AppUpdateInstallerError.extractedAppNotFound
     }
 
-    public func validateExtractedApp(at appURL: URL, expectedVersion: AppVersion, bundleIdentifier: String) throws {
+    public func validateExtractedApp(
+        at appURL: URL,
+        expectedVersion: AppVersion,
+        bundleIdentifier: String
+    ) throws {
         guard appURL.pathExtension == "app", let bundle = Bundle(url: appURL) else {
             throw AppUpdateInstallerError.invalidAppBundle(appURL)
         }

@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 520, height: 680)
         popover.delegate = self
+        applyAppearance(model.config.appearance)
         popover.contentViewController = NSHostingController(
             rootView: MonitorPanel(model: model)
             .environment(\.appLanguage, model.config.language)
@@ -42,6 +43,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         model.onSnapshotChange = { [weak self] snapshot in
             self?.updateStatusItem(snapshot)
+        }
+        model.onAppearanceChange = { [weak self] appearance in
+            self?.applyAppearance(appearance)
         }
         model.start()
     }
@@ -134,6 +138,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem?.length = NSStatusItem.variableLength
         frozenStatusItemLength = nil
     }
+
+    private func applyAppearance(_ appearance: AppAppearance) {
+        let nsAppearance = appearance.nsAppearance
+        NSApp.appearance = nsAppearance
+        popover.appearance = nsAppearance
+    }
 }
 
 @MainActor
@@ -152,12 +162,14 @@ final class MonitorViewModel: ObservableObject {
     @Published var updateStatusMessage: String?
 
     var onSnapshotChange: ((MonitorSnapshot) -> Void)?
+    var onAppearanceChange: ((AppAppearance) -> Void)?
 
     private let store = ConfigStore()
     private let updateChecker = GitHubUpdateChecker()
     private let updateInstaller = AppUpdateInstaller()
     private let launchAtLoginManager = LaunchAtLoginManager(appBundleURL: Bundle.main.bundleURL)
     private var refreshTimer: Timer?
+    private var settingsAutosaveTask: Task<Void, Never>?
 
     init() {
         var loaded = store.load()
@@ -294,9 +306,35 @@ final class MonitorViewModel: ObservableObject {
 
     @discardableResult
     func saveSettings() -> Bool {
+        persistSettingsDraft(refreshAfterSave: true)
+    }
+
+    func applySettingsChange(refreshAfterSave: Bool = true, _ change: (inout AppConfig) -> Void) {
+        settingsAutosaveTask?.cancel()
+        settingsError = nil
+        change(&settingsDraft)
+        persistSettingsDraft(refreshAfterSave: refreshAfterSave)
+    }
+
+    func scheduleSettingsAutosave(refreshAfterSave: Bool = false) {
+        settingsAutosaveTask?.cancel()
+        settingsAutosaveTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 550_000_000)
+            } catch {
+                return
+            }
+            self?.persistSettingsDraft(refreshAfterSave: refreshAfterSave)
+        }
+    }
+
+    @discardableResult
+    private func persistSettingsDraft(refreshAfterSave: Bool) -> Bool {
         settingsError = nil
         var next = settingsDraft
         next.normalize()
+        settingsDraft = next
+        let previousConfig = config
         let previousLaunchAtLogin = launchAtLoginManager.isEnabled
         do {
             try launchAtLoginManager.setEnabled(next.launchAtLogin)
@@ -308,14 +346,33 @@ final class MonitorViewModel: ObservableObject {
             }
             config = next
             settingsDraft = next
+            relocalizeUpdateStatusIfNeeded(previousLanguage: previousConfig.language, nextLanguage: next.language)
             scheduleTimer()
             onSnapshotChange?(snapshot)
-            refresh()
+            onAppearanceChange?(next.appearance)
+            if refreshAfterSave {
+                refresh()
+            }
             return true
         } catch {
             settingsError = error.localizedDescription
             return false
         }
+    }
+
+    private func relocalizeUpdateStatusIfNeeded(previousLanguage: AppLanguage, nextLanguage: AppLanguage) {
+        guard previousLanguage != nextLanguage,
+              let info = updateInfo else {
+            return
+        }
+
+        let previousStatus = AppStrings(previousLanguage).updateStatus(info)
+        guard updateStatusMessage == nil ||
+              updateStatusMessage == previousStatus ||
+              updateStatusMessage == info.statusText else {
+            return
+        }
+        updateStatusMessage = AppStrings(nextLanguage).updateStatus(info)
     }
 
     func disconnect() {
@@ -509,8 +566,10 @@ struct MonitorPanel: View {
 
                     content
 
-                    Divider()
-                    footer(for: selectedPage)
+                    if selectedPage == .overview {
+                        Divider()
+                        overviewFooter
+                    }
                 }
             }
         }
@@ -552,11 +611,7 @@ struct MonitorPanel: View {
             }
             .buttonStyle(.borderless)
 
-            PanelPageTabs(selection: $selectedPage, strings: strings) { page in
-                if page == .settings {
-                    model.resetSettingsDraftFromConfig()
-                }
-            }
+            PanelPageTabs(selection: $selectedPage, strings: strings)
         }
         .padding(.horizontal, 16)
         .padding(.top, 16)
@@ -682,16 +737,6 @@ struct MonitorPanel: View {
         }
     }
 
-    @ViewBuilder
-    private func footer(for page: PanelPage) -> some View {
-        switch page {
-        case .overview:
-            overviewFooter
-        case .settings:
-            settingsFooter
-        }
-    }
-
     private var overviewFooter: some View {
         HStack(spacing: 12) {
             Button {
@@ -711,25 +756,6 @@ struct MonitorPanel: View {
         }
         .buttonStyle(.borderless)
         .padding(12)
-        .background(ClaudeTheme.footer)
-    }
-
-    private var settingsFooter: some View {
-        HStack(spacing: 12) {
-            Text(strings.phrase("保存后立即应用。", "Applies immediately after saving."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button(strings.phrase("取消", "Cancel")) {
-                model.resetSettingsDraftFromConfig()
-            }
-            Button(strings.phrase("保存", "Save")) {
-                model.saveSettings()
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
         .background(ClaudeTheme.footer)
     }
 
@@ -808,7 +834,6 @@ private enum PanelPage: String, CaseIterable, Identifiable, Equatable {
 private struct PanelPageTabs: View {
     @Binding var selection: PanelPage
     let strings: AppStrings
-    let onSelect: (PanelPage) -> Void
     @State private var hoveredPage: PanelPage?
 
     private let tabHeight: CGFloat = 34
@@ -841,7 +866,6 @@ private struct PanelPageTabs: View {
                 return
             }
             selection = page
-            onSelect(page)
         } label: {
             Text(page.title(strings: strings))
                 .font(.callout.weight(.semibold))
@@ -920,14 +944,14 @@ struct LoginPanel: View {
 
             GlassCard {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker(strings.phrase("语言", "Language"), selection: $model.settingsDraft.language) {
+                    Picker(strings.phrase("语言", "Language"), selection: languageBinding) {
                         ForEach([AppLanguage.zhHans, .en]) { language in
                             Text(strings.languageName(language)).tag(language)
                         }
                     }
                     .pickerStyle(.segmented)
 
-                    Picker(strings.phrase("外观", "Appearance"), selection: $model.settingsDraft.appearance) {
+                    Picker(strings.phrase("外观", "Appearance"), selection: appearanceBinding) {
                         ForEach(AppAppearance.allCases) { appearance in
                             Text(strings.appearanceName(appearance)).tag(appearance)
                         }
@@ -936,6 +960,9 @@ struct LoginPanel: View {
 
                     TextField(strings.phrase("服务地址", "Server URL"), text: $model.settingsDraft.baseURL)
                         .themedTextField()
+                        .onChange(of: model.settingsDraft.baseURL) { _ in
+                            model.scheduleSettingsAutosave(refreshAfterSave: false)
+                        }
 
                     TextField(strings.phrase("账号", "Account"), text: $model.loginEmail)
                         .themedTextField()
@@ -948,6 +975,9 @@ struct LoginPanel: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                         Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
+                            .onChange(of: model.settingsDraft.refreshIntervalSeconds) { _ in
+                                model.scheduleSettingsAutosave(refreshAfterSave: false)
+                            }
                         Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
                             .font(.callout.monospacedDigit())
                             .frame(width: 42, alignment: .trailing)
@@ -983,6 +1013,9 @@ struct LoginPanel: View {
                         .font(.headline)
                     SecureField("Bearer Token", text: $model.settingsDraft.authToken)
                         .themedTextField()
+                        .onChange(of: model.settingsDraft.authToken) { _ in
+                            model.scheduleSettingsAutosave(refreshAfterSave: false)
+                        }
                     Button {
                         model.saveSettings()
                     } label: {
@@ -1022,10 +1055,29 @@ struct LoginPanel: View {
     private var strings: AppStrings {
         AppStrings(model.settingsDraft.language)
     }
+
+    private var languageBinding: Binding<AppLanguage> {
+        Binding(
+            get: { model.settingsDraft.language },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) { $0.language = value }
+            }
+        )
+    }
+
+    private var appearanceBinding: Binding<AppAppearance> {
+        Binding(
+            get: { model.settingsDraft.appearance },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) { $0.appearance = value }
+            }
+        )
+    }
 }
 
 struct SettingsView: View {
     @ObservedObject var model: MonitorViewModel
+    @FocusState private var focusedField: SettingsField?
 
     var body: some View {
         ScrollView {
@@ -1047,6 +1099,11 @@ struct SettingsView: View {
         }
         .environment(\.appLanguage, model.settingsDraft.language)
         .appAppearance(model.settingsDraft.appearance)
+        .onChange(of: focusedField) { focus in
+            if focus == nil {
+                model.scheduleSettingsAutosave(refreshAfterSave: true)
+            }
+        }
     }
 
     private var settingsHeader: some View {
@@ -1066,6 +1123,8 @@ struct SettingsView: View {
                 Text(strings.phrase("语言、外观、连接、菜单栏显示和更新在同一控制台中管理。", "Manage language, appearance, connection, menu bar display, and updates in this console."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -1078,7 +1137,7 @@ struct SettingsView: View {
                         .font(.headline)
 
                     settingsRow(strings.phrase("语言", "Language")) {
-                        Picker("", selection: $model.settingsDraft.language) {
+                        Picker("", selection: languageBinding) {
                             ForEach([AppLanguage.zhHans, .en]) { language in
                                 Text(strings.languageName(language)).tag(language)
                             }
@@ -1088,7 +1147,7 @@ struct SettingsView: View {
                     }
 
                     settingsRow(strings.phrase("外观", "Appearance")) {
-                        Picker("", selection: $model.settingsDraft.appearance) {
+                        Picker("", selection: appearanceBinding) {
                             ForEach(AppAppearance.allCases) { appearance in
                                 Text(strings.appearanceName(appearance)).tag(appearance)
                             }
@@ -1100,11 +1159,18 @@ struct SettingsView: View {
                     settingsRow("Base URL") {
                         TextField("https://codex.lyhbio.cn", text: $model.settingsDraft.baseURL)
                             .themedTextField()
+                            .focused($focusedField, equals: .baseURL)
+                            .onChange(of: model.settingsDraft.baseURL) { _ in
+                                model.scheduleSettingsAutosave(refreshAfterSave: false)
+                            }
                     }
 
                     settingsRow(strings.phrase("刷新", "Refresh")) {
                         HStack {
                             Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
+                                .onChange(of: model.settingsDraft.refreshIntervalSeconds) { _ in
+                                    model.scheduleSettingsAutosave(refreshAfterSave: false)
+                                }
                             Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
                                 .font(.callout.monospacedDigit())
                                 .frame(width: 42, alignment: .trailing)
@@ -1114,6 +1180,10 @@ struct SettingsView: View {
                     settingsRow("Bearer Token") {
                         SecureField("", text: $model.settingsDraft.authToken)
                             .themedTextField()
+                            .focused($focusedField, equals: .authToken)
+                            .onChange(of: model.settingsDraft.authToken) { _ in
+                                model.scheduleSettingsAutosave(refreshAfterSave: false)
+                            }
                     }
                 }
             }
@@ -1123,10 +1193,10 @@ struct SettingsView: View {
                     Text(strings.phrase("菜单栏", "Menu Bar"))
                         .font(.headline)
 
-                    Toggle(strings.phrase("在菜单栏显示文字", "Show text in menu bar"), isOn: $model.settingsDraft.showsMenuBarText)
+                    Toggle(strings.phrase("在菜单栏显示文字", "Show text in menu bar"), isOn: showsMenuBarTextBinding)
 
                     settingsRow(strings.phrase("统计窗口", "Usage window")) {
-                        Picker("", selection: $model.settingsDraft.menuBarUsageWindow) {
+                        Picker("", selection: menuBarUsageWindowBinding) {
                             ForEach(MenuBarUsageWindow.allCases) { window in
                                 Text(strings.usageWindowName(window)).tag(window)
                             }
@@ -1149,7 +1219,7 @@ struct SettingsView: View {
             }
 
             GlassCard {
-                Toggle(strings.phrase("登录时打开", "Open at Login"), isOn: $model.settingsDraft.launchAtLogin)
+                Toggle(strings.phrase("登录时打开", "Open at Login"), isOn: launchAtLoginBinding)
             }
         }
     }
@@ -1181,12 +1251,13 @@ struct SettingsView: View {
     }
 
     private func settingsRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(label)
                 .font(.callout.weight(.semibold))
                 .opacity(label.isEmpty ? 0 : 1)
-                .frame(width: 116, alignment: .trailing)
-                .padding(.top, 4)
+                .frame(width: 100, alignment: .trailing)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
             content()
         }
     }
@@ -1195,22 +1266,74 @@ struct SettingsView: View {
         AppStrings(model.settingsDraft.language)
     }
 
+    private var languageBinding: Binding<AppLanguage> {
+        Binding(
+            get: { model.settingsDraft.language },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) { $0.language = value }
+            }
+        )
+    }
+
+    private var appearanceBinding: Binding<AppAppearance> {
+        Binding(
+            get: { model.settingsDraft.appearance },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) { $0.appearance = value }
+            }
+        )
+    }
+
+    private var showsMenuBarTextBinding: Binding<Bool> {
+        Binding(
+            get: { model.settingsDraft.showsMenuBarText },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) { $0.showsMenuBarText = value }
+            }
+        )
+    }
+
+    private var menuBarUsageWindowBinding: Binding<MenuBarUsageWindow> {
+        Binding(
+            get: { model.settingsDraft.menuBarUsageWindow },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: true) { $0.menuBarUsageWindow = value }
+            }
+        )
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { model.settingsDraft.launchAtLogin },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) { $0.launchAtLogin = value }
+            }
+        )
+    }
+
     private func menuBarItemBinding(_ item: MenuBarDisplayItem) -> Binding<Bool> {
         Binding(
             get: {
                 model.settingsDraft.menuBarDisplayItems.contains(item)
             },
             set: { isEnabled in
-                if isEnabled {
-                    if !model.settingsDraft.menuBarDisplayItems.contains(item) {
-                        model.settingsDraft.menuBarDisplayItems.append(item)
+                model.applySettingsChange(refreshAfterSave: false) { draft in
+                    if isEnabled {
+                        if !draft.menuBarDisplayItems.contains(item) {
+                            draft.menuBarDisplayItems.append(item)
+                        }
+                    } else {
+                        draft.menuBarDisplayItems.removeAll { $0 == item }
                     }
-                } else {
-                    model.settingsDraft.menuBarDisplayItems.removeAll { $0 == item }
                 }
             }
         )
     }
+}
+
+private enum SettingsField: Hashable {
+    case baseURL
+    case authToken
 }
 
 struct UpdateSettingsSection: View {
@@ -1246,6 +1369,7 @@ struct UpdateSettingsSection: View {
                                 Text(message)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
                     }
@@ -1253,13 +1377,15 @@ struct UpdateSettingsSection: View {
                     Text(message)
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(strings.phrase("检查 GitHub Releases 中的新版本。", "Checks GitHub Releases for newer versions."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                HStack {
+                HStack(spacing: 14) {
                     Button {
                         model.checkForUpdates()
                     } label: {
@@ -1888,6 +2014,17 @@ extension AppAppearance {
             return .light
         case .dark:
             return .dark
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return NSAppearance(named: .aqua)
+        case .dark:
+            return NSAppearance(named: .darkAqua)
         }
     }
 }

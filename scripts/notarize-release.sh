@@ -3,12 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sub2APIStatusBar"
-VERSION="${VERSION:-v0.1.14}"
+VERSION="${VERSION:-v0.1.15}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
 ZIP_PATH="$DIST_DIR/$APP_NAME-${VERSION#v}-macOS.zip"
 CHECKSUM_PATH="$ZIP_PATH.sha256"
+
+source "$ROOT_DIR/scripts/signing-identity.sh"
 
 require_env() {
   local name="$1"
@@ -21,6 +23,10 @@ require_env() {
 require_env APPLE_ID
 require_env TEAM_ID
 require_env APP_SPECIFIC_PASSWORD
+
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$(find_developer_id_identity || true)"
+fi
 
 if [[ -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" ]]; then
   echo "SIGN_IDENTITY must be a Developer ID Application certificate for notarization." >&2

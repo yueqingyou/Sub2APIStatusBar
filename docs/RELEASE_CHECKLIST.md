@@ -23,14 +23,16 @@
 - [x] Direct in-app update installation from the published macOS zip asset
 - [x] Open at Login preference backed by a user LaunchAgent
 - [x] Light, dark, and system-matching appearance preference
+- [x] GitHub-only ad-hoc release packaging
+- [x] Shared Keychain token item to avoid repeated authorization prompts after ad-hoc in-app updates
 - [x] Troubleshooting path for stale Swift build cache errors
 - [x] macOS 12 and Swift 5.7 compatibility for Intel Mac builds
 
 ## Before Public Distribution
 
-- [x] Choose a public version tag, for example `v0.1.14`
-- [ ] Build with a Developer ID Application certificate
-- [ ] Notarize the app with Apple
+- [x] Choose a public version tag, for example `v0.1.15`
+- [ ] Optional: build with a Developer ID Application certificate
+- [ ] Optional: notarize the app with Apple
 - [x] Attach the release zip and checksum to a GitHub Release
 - [ ] Add product screenshots or a short demo GIF to the README
 - [ ] Decide whether the repository should stay private or become public
@@ -40,17 +42,20 @@
 ```bash
 swift test
 swift build
-VERSION=v0.1.14 ./scripts/package-release.sh
-VERSION=v0.1.14 ./scripts/verify-release.sh
+VERSION=v0.1.15 \
+./scripts/package-release.sh
+VERSION=v0.1.15 ./scripts/verify-release.sh
 ```
 
 Developer ID signing:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.14 \
+VERSION=v0.1.15 \
 ./scripts/package-release.sh
 ```
+
+Default packaging is ad-hoc signed for GitHub-only distribution. Auth tokens use a shared Keychain item so app updates do not depend on a stable paid signing identity for repeated local Keychain authorization.
 
 Notarization requires Apple Developer account credentials and is intentionally not automated until those secrets are available in GitHub Actions or the local keychain.
 
@@ -59,6 +64,6 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.14 \
+VERSION=v0.1.15 \
 ./scripts/notarize-release.sh
 ```

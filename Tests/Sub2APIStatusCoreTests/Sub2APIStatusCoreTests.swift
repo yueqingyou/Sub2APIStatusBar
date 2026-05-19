@@ -262,6 +262,18 @@ func testConfigStoreMigratesLegacyJSONTokensOutOfConfigFile() throws {
     XCTAssert(!migratedJSON.contains("refreshToken"))
 }
 
+func testStoredAuthTokensEncodeAsSingleKeychainPayload() throws {
+    let tokens = StoredAuthTokens(authToken: "access", refreshToken: "refresh")
+
+    let data = try JSONEncoder.sub2api.encode(tokens)
+    let rawJSON = try XCTUnwrap(String(data: data, encoding: .utf8))
+    let decoded = try JSONDecoder.sub2api.decode(StoredAuthTokens.self, from: data)
+
+    XCTAssert(rawJSON.contains("auth_token"))
+    XCTAssert(rawJSON.contains("refresh_token"))
+    XCTAssert(decoded == tokens)
+}
+
 func testAppConfigDefaultsToUserMode() {
     let config = AppConfig(baseURL: "http://127.0.0.1:8080")
 

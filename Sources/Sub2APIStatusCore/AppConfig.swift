@@ -352,7 +352,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
     }
 }
 
-public struct StoredAuthTokens: Equatable, Sendable {
+public struct StoredAuthTokens: Codable, Equatable, Sendable {
     public var authToken: String
     public var refreshToken: String
 

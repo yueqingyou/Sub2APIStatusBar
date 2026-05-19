@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.15
+
+- Store access and refresh tokens in one Keychain item to avoid duplicate authorization prompts.
+- Create the token Keychain item with shared local access so ad-hoc GitHub updates do not require repeated macOS password approval.
+- Keep ad-hoc release archives supported by default for GitHub-only distribution.
+- Apply settings immediately without Cancel/Save buttons, including language and appearance changes.
+- Fix English settings text wrapping and refresh localized update status text after language changes.
+
 ## v0.1.14
 
 - Added a Light/Dark/System appearance setting that defaults to matching the current macOS appearance.

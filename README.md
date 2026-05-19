@@ -78,7 +78,7 @@ When menu bar text is enabled, the default usage window is **Last 24 Hours**. Se
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.14 ./scripts/build-app.sh
+VERSION=v0.1.15 ./scripts/build-app.sh
 ```
 
 Output:
@@ -87,39 +87,51 @@ Output:
 dist/Sub2APIStatusBar.app
 ```
 
-The build script generates the app icon, copies bundle resources, and applies ad-hoc signing by default. To sign with a Developer ID certificate:
+The build script generates the app icon, copies bundle resources, and applies ad-hoc signing by default. This is suitable for GitHub-only distribution when you do not need Apple notarization.
 
 Release builds are host-native. Building on an Intel Mac produces an `x86_64` app bundle.
 
+Optional signed build:
+
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.14 \
+VERSION=v0.1.15 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.14 ./scripts/package-release.sh
+VERSION=v0.1.15 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.14-macOS.zip
-dist/Sub2APIStatusBar-0.1.14-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.15-macOS.zip
+dist/Sub2APIStatusBar-0.1.15-macOS.zip.sha256
 ```
+
+By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
+
+```bash
+SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+VERSION=v0.1.15 \
+./scripts/package-release.sh
+```
+
+For GitHub-only ad-hoc releases, auth tokens are stored in a single Keychain item with a shared access-control list. That avoids the repeated per-update macOS password prompt that happens when Keychain access is tied to each ad-hoc build's changing code signature.
 
 ## Notarize A Release
 
-After signing with a Developer ID Application certificate, notarize and staple the app with:
+Notarization is optional and requires a paid Apple Developer Program membership plus a Developer ID Application certificate. If you do have those credentials, notarize and staple the app with:
 
 ```bash
 APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.14 \
+VERSION=v0.1.15 \
 ./scripts/notarize-release.sh
 ```
 
@@ -151,7 +163,7 @@ swift run Sub2APIStatusBar
 
 ## Privacy
 
-Sub2API Status Bar stores the server URL, display preferences, and refresh interval in the local Application Support config file. Auth and refresh tokens are stored in the macOS Keychain. It does not send data anywhere except the configured Sub2API server.
+Sub2API Status Bar stores the server URL, display preferences, and refresh interval in the local Application Support config file. Auth and refresh tokens are stored in one macOS Keychain item with shared local access so ad-hoc GitHub updates do not repeatedly ask for Keychain authorization. It does not send data anywhere except the configured Sub2API server.
 
 ## Acknowledgements
 Thanks to the [LinuxDo](https://linux.do/) community for the discussions, sharing, and feedback.

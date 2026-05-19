@@ -1,7 +1,7 @@
 import Foundation
 
 public enum AppBuildInfo {
-    public static let fallbackVersion = "0.1.12"
+    public static let fallbackVersion = "0.1.13"
     public static let repositoryOwner = "yueqingyou"
     public static let repositoryName = "Sub2APIStatusBar"
     public static let bundleIdentifier = "com.geekywizkid.sub2api-statusbar"

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.13
+
+- Fixed the Overview/Settings switcher so the selected tab no longer expands into an oversized panel.
+- Added a clear empty state for accounts that have no subscription quota details.
+- Stabilized the popover anchor while open by freezing the menu bar status item width during refresh-driven title updates.
+
 ## v0.1.12
 
 - Refined the menu bar popover with a warmer Claude-inspired visual theme and localized Chinese defaults.

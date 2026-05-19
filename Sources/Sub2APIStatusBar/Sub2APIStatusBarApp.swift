@@ -14,10 +14,11 @@ struct Sub2APIStatusBarApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private let model = MonitorViewModel()
+    private var frozenStatusItemLength: CGFloat?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -31,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 520, height: 680)
+        popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: MonitorPanel(model: model)
             .environment(\.appLanguage, model.config.language)
@@ -51,9 +53,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            freezeStatusItemLengthForPopover()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
         }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        restoreVariableStatusItemLength()
     }
 
     private func updateStatusItem(_ snapshot: MonitorSnapshot) {
@@ -104,6 +111,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         button.image = nil
         button.title = fallbackTitle
+    }
+
+    private func freezeStatusItemLengthForPopover() {
+        guard frozenStatusItemLength == nil,
+              let statusItem,
+              let button = statusItem.button else {
+            return
+        }
+
+        let currentWidth = max(button.bounds.width, 24)
+        frozenStatusItemLength = currentWidth
+        statusItem.length = currentWidth
+    }
+
+    private func restoreVariableStatusItemLength() {
+        guard frozenStatusItemLength != nil else {
+            return
+        }
+
+        statusItem?.length = NSStatusItem.variableLength
+        frozenStatusItemLength = nil
     }
 }
 
@@ -636,13 +664,7 @@ struct MonitorPanel: View {
                     ])
                 }
 
-                SectionBlock(title: strings.phrase("订阅", "Subscriptions")) {
-                    VStack(spacing: 10) {
-                        ForEach(summary.subscriptions.prefix(5)) { item in
-                            SubscriptionQuotaCard(item: item)
-                        }
-                    }
-                }
+                SubscriptionSection(summary: summary)
             }
 
             if let models = model.snapshot.modelDistribution, !models.isEmpty {
@@ -761,7 +783,7 @@ struct MonitorPanel: View {
     }
 }
 
-private enum PanelPage: String, CaseIterable, Identifiable {
+private enum PanelPage: String, CaseIterable, Identifiable, Equatable {
     case overview
     case settings
 
@@ -781,41 +803,80 @@ private struct PanelPageTabs: View {
     @Binding var selection: PanelPage
     let strings: AppStrings
     let onSelect: (PanelPage) -> Void
+    @State private var hoveredPage: PanelPage?
+
+    private let tabHeight: CGFloat = 34
+    private let cornerRadius: CGFloat = 10
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             ForEach(PanelPage.allCases) { page in
-                Button {
-                    guard selection != page else {
-                        return
-                    }
-                    selection = page
-                    onSelect(page)
-                } label: {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(selection == page ? ClaudeTheme.tabSelected : Color.clear)
-                        Text(page.title(strings: strings))
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(selection == page ? ClaudeTheme.primaryText : ClaudeTheme.secondaryText)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 34)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-                .accessibilityLabel(page.title(strings: strings))
-                .accessibilityAddTraits(selection == page ? [.isSelected] : [])
+                tabButton(for: page)
             }
         }
-        .padding(3)
-        .background(ClaudeTheme.tabBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .padding(4)
+        .frame(height: tabHeight + 8)
+        .background(ClaudeTheme.tabBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .stroke(ClaudeTheme.border, lineWidth: 1)
         )
-        .animation(nil, value: selection)
+        .fixedSize(horizontal: false, vertical: true)
+        .animation(.easeOut(duration: 0.16), value: selection)
+        .animation(.easeOut(duration: 0.12), value: hoveredPage)
+    }
+
+    private func tabButton(for page: PanelPage) -> some View {
+        let isSelected = selection == page
+        let isHovered = hoveredPage == page
+
+        return Button {
+            guard selection != page else {
+                return
+            }
+            selection = page
+            onSelect(page)
+        } label: {
+            Text(page.title(strings: strings))
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(isSelected ? ClaudeTheme.primaryText : ClaudeTheme.secondaryText)
+                .frame(maxWidth: .infinity)
+                .frame(height: tabHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(tabFill(isSelected: isSelected, isHovered: isHovered))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(isSelected ? ClaudeTheme.border : Color.clear, lineWidth: 1)
+                )
+                .overlay(alignment: .bottom) {
+                    if isSelected {
+                        Capsule()
+                            .fill(ClaudeTheme.accent.opacity(0.72))
+                            .frame(width: 26, height: 2)
+                            .padding(.bottom, 4)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .onHover { isHovered in
+            hoveredPage = isHovered ? page : nil
+        }
+        .accessibilityLabel(page.title(strings: strings))
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private func tabFill(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected {
+            return ClaudeTheme.tabSelected
+        }
+        if isHovered {
+            return ClaudeTheme.elevatedCard.opacity(0.55)
+        }
+        return .clear
     }
 }
 
@@ -1493,6 +1554,93 @@ struct SubscriptionQuotaCard: View {
                 resetInSeconds: item.monthlyResetInSeconds
             )
         }
+    }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
+}
+
+struct SubscriptionSection: View {
+    @Environment(\.appLanguage) private var language
+
+    let summary: SubscriptionSummary
+
+    private var visibleSubscriptions: [SubscriptionSummaryItem] {
+        Array(summary.subscriptions.prefix(5))
+    }
+
+    var body: some View {
+        SectionBlock(title: strings.phrase("订阅", "Subscriptions")) {
+            if visibleSubscriptions.isEmpty {
+                SubscriptionEmptyState(activeCount: summary.activeCount)
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(visibleSubscriptions) { item in
+                        SubscriptionQuotaCard(item: item)
+                    }
+                }
+            }
+        }
+    }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
+}
+
+struct SubscriptionEmptyState: View {
+    @Environment(\.appLanguage) private var language
+
+    let activeCount: Int
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ClaudeTheme.slate.opacity(0.14))
+                Image(systemName: "tray")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(ClaudeTheme.slate)
+            }
+            .frame(width: 40, height: 40)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(strings.phrase("暂无订阅", "No Subscriptions"))
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(ClaudeTheme.primaryText)
+                Text(emptyDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            if activeCount > 0 {
+                Text(strings.phrase("\(activeCount) 个活跃", "\(activeCount) active"))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(ClaudeTheme.success)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(ClaudeTheme.success.opacity(0.14), in: Capsule())
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+
+    private var emptyDescription: String {
+        if activeCount > 0 {
+            return strings.phrase(
+                "服务返回了活跃数量，但没有订阅明细。",
+                "The service returned active counts but no subscription details."
+            )
+        }
+        return strings.phrase(
+            "该账号当前没有可展示的订阅配额。",
+            "This account has no subscription quotas to display."
+        )
     }
 
     private var strings: AppStrings {

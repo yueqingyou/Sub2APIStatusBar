@@ -21,6 +21,17 @@ struct AppStrings {
         }
     }
 
+    func appearanceName(_ value: AppAppearance) -> String {
+        switch value {
+        case .system:
+            return phrase("跟随系统", "System")
+        case .light:
+            return phrase("浅色", "Light")
+        case .dark:
+            return phrase("深色", "Dark")
+        }
+    }
+
     func statusLabel(for snapshot: MonitorSnapshot) -> String {
         if !snapshot.connected {
             return phrase("未连接", "Disconnected")

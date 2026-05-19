@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.14
+
+- Added a Light/Dark/System appearance setting that defaults to matching the current macOS appearance.
+- Applied the selected appearance to both the login and monitoring popovers immediately after saving.
+- Reworked the warm Claude-inspired palette into adaptive light and dark variants so custom cards, fields, tabs, and backgrounds change with the selected mode.
+
 ## v0.1.13
 
 - Fixed the Overview/Settings switcher so the selected tab no longer expands into an oversized panel.

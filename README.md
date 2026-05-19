@@ -11,6 +11,7 @@ Sub2API Status Bar is a macOS menu bar companion for Sub2API users. It keeps dai
 - Optional configurable menu bar text summary, for example `$120.75 · gpt-5.5 · xhigh · 88.4K ctx · Fast · 3 RPM`
 - First-run login and optional manual Bearer token setup
 - Optional Open at Login setting for starting the menu bar app automatically after signing in
+- Light, dark, and system-matching appearance modes
 - Keychain-backed token storage; no telemetry or third-party analytics
 - GitHub Releases update checking from Settings
 
@@ -64,17 +65,20 @@ SUB2API_BASE_URL=https://sub2api.example.com \
 SUB2API_AUTH_TOKEN=your-token \
 SUB2API_SHOW_MENU_BAR_TEXT=true \
 SUB2API_LAUNCH_AT_LOGIN=false \
+SUB2API_APPEARANCE=system \
 SUB2API_MENU_BAR_USAGE_WINDOW=last24Hours \
 SUB2API_MENU_BAR_ITEMS=totalCost,model,reasoningEffort,contextLength,fast,rpm \
 swift run Sub2APIStatusBar
 ```
+
+The default appearance follows the current macOS Light/Dark Mode setting. Settings lets users override it to Light or Dark.
 
 When menu bar text is enabled, the default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, fast status, input price, output price, and realtime RPM. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
 
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.13 ./scripts/build-app.sh
+VERSION=v0.1.14 ./scripts/build-app.sh
 ```
 
 Output:
@@ -89,21 +93,21 @@ Release builds are host-native. Building on an Intel Mac produces an `x86_64` ap
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.13 \
+VERSION=v0.1.14 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.13 ./scripts/package-release.sh
+VERSION=v0.1.14 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.13-macOS.zip
-dist/Sub2APIStatusBar-0.1.13-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.14-macOS.zip
+dist/Sub2APIStatusBar-0.1.14-macOS.zip.sha256
 ```
 
 ## Notarize A Release
@@ -115,7 +119,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.13 \
+VERSION=v0.1.14 \
 ./scripts/notarize-release.sh
 ```
 

@@ -22,12 +22,13 @@
 - [x] GitHub Releases update checking with launch-time and manual checks
 - [x] Direct in-app update installation from the published macOS zip asset
 - [x] Open at Login preference backed by a user LaunchAgent
+- [x] Light, dark, and system-matching appearance preference
 - [x] Troubleshooting path for stale Swift build cache errors
 - [x] macOS 12 and Swift 5.7 compatibility for Intel Mac builds
 
 ## Before Public Distribution
 
-- [x] Choose a public version tag, for example `v0.1.13`
+- [x] Choose a public version tag, for example `v0.1.14`
 - [ ] Build with a Developer ID Application certificate
 - [ ] Notarize the app with Apple
 - [x] Attach the release zip and checksum to a GitHub Release
@@ -39,15 +40,15 @@
 ```bash
 swift test
 swift build
-VERSION=v0.1.13 ./scripts/package-release.sh
-VERSION=v0.1.13 ./scripts/verify-release.sh
+VERSION=v0.1.14 ./scripts/package-release.sh
+VERSION=v0.1.14 ./scripts/verify-release.sh
 ```
 
 Developer ID signing:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.13 \
+VERSION=v0.1.14 \
 ./scripts/package-release.sh
 ```
 
@@ -58,6 +59,6 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.13 \
+VERSION=v0.1.14 \
 ./scripts/notarize-release.sh
 ```

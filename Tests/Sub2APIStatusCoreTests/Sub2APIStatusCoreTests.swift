@@ -51,11 +51,27 @@ func testAppConfigDefaultsToChineseLanguage() {
     XCTAssert(config.language == .zhHans)
 }
 
+func testAppConfigDefaultsToSystemAppearance() {
+    let config = AppConfig(baseURL: "http://127.0.0.1:8080")
+
+    XCTAssert(config.appearance == .system)
+}
+
 func testAppLanguageFallsBackToChineseWhenEnvironmentIsMissingOrUnknown() {
     XCTAssert(AppLanguage.fromEnvironment(nil) == .zhHans)
     XCTAssert(AppLanguage.fromEnvironment("") == .zhHans)
     XCTAssert(AppLanguage.fromEnvironment("auto") == .zhHans)
     XCTAssert(AppLanguage.fromEnvironment("english") == .en)
+}
+
+func testAppAppearanceFallsBackToSystemWhenEnvironmentIsMissingOrUnknown() {
+    XCTAssert(AppAppearance.fromEnvironment(nil) == .system)
+    XCTAssert(AppAppearance.fromEnvironment("") == .system)
+    XCTAssert(AppAppearance.fromEnvironment("auto") == .system)
+    XCTAssert(AppAppearance.fromEnvironment("system") == .system)
+    XCTAssert(AppAppearance.fromEnvironment("light") == .light)
+    XCTAssert(AppAppearance.fromEnvironment("dark-aqua") == .dark)
+    XCTAssert(AppAppearance.fromEnvironment("unknown") == .system)
 }
 
 func testLegacyAutoLanguageNormalizesToChinese() throws {
@@ -69,6 +85,19 @@ func testLegacyAutoLanguageNormalizesToChinese() throws {
     let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
 
     XCTAssert(config.language == .zhHans)
+}
+
+func testLegacyConfigWithoutAppearanceDefaultsToSystem() throws {
+    let data = """
+    {
+      "baseURL": "http://127.0.0.1:8080",
+      "language": "zhHans"
+    }
+    """.data(using: .utf8)!
+
+    let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
+
+    XCTAssert(config.appearance == .system)
 }
 
 func testAppConfigPersistsMenuBarTextPreference() throws {
@@ -102,6 +131,19 @@ func testAppConfigPersistsMenuBarDetailPreferences() throws {
 
     XCTAssert(loaded.menuBarUsageWindow == .today)
     XCTAssert(loaded.menuBarDisplayItems == [.totalRequests, .inputPrice, .outputPrice])
+}
+
+func testAppConfigPersistsAppearancePreference() throws {
+    let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("config.json")
+    let store = ConfigStore(configURL: configURL, tokenStore: MemoryTokenStore())
+    let config = AppConfig(baseURL: "http://127.0.0.1:8080", appearance: .dark)
+
+    try store.save(config)
+    let loaded = store.load()
+
+    XCTAssert(loaded.appearance == .dark)
 }
 
 func testAppConfigPersistsLaunchAtLoginPreference() throws {

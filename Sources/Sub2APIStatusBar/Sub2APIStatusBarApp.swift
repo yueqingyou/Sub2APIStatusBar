@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.contentViewController = NSHostingController(
             rootView: MonitorPanel(model: model)
             .environment(\.appLanguage, model.config.language)
+            .appAppearance(model.config.appearance)
             .tint(ClaudeTheme.accent)
         )
 
@@ -516,6 +517,7 @@ struct MonitorPanel: View {
         .frame(width: 520, height: 680)
         .background(PanelBackground())
         .environment(\.appLanguage, model.config.language)
+        .appAppearance(activeAppearance)
     }
 
     private var header: some View {
@@ -781,6 +783,10 @@ struct MonitorPanel: View {
     private var strings: AppStrings {
         AppStrings(model.config.language)
     }
+
+    private var activeAppearance: AppAppearance {
+        model.config.authToken.isEmpty ? model.settingsDraft.appearance : model.config.appearance
+    }
 }
 
 private enum PanelPage: String, CaseIterable, Identifiable, Equatable {
@@ -921,6 +927,13 @@ struct LoginPanel: View {
                     }
                     .pickerStyle(.segmented)
 
+                    Picker(strings.phrase("外观", "Appearance"), selection: $model.settingsDraft.appearance) {
+                        ForEach(AppAppearance.allCases) { appearance in
+                            Text(strings.appearanceName(appearance)).tag(appearance)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
                     TextField(strings.phrase("服务地址", "Server URL"), text: $model.settingsDraft.baseURL)
                         .themedTextField()
 
@@ -1003,6 +1016,7 @@ struct LoginPanel: View {
         .frame(width: 520, height: 680)
         .background(PanelBackground())
         .environment(\.appLanguage, model.settingsDraft.language)
+        .appAppearance(model.settingsDraft.appearance)
     }
 
     private var strings: AppStrings {
@@ -1032,6 +1046,7 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .environment(\.appLanguage, model.settingsDraft.language)
+        .appAppearance(model.settingsDraft.appearance)
     }
 
     private var settingsHeader: some View {
@@ -1048,7 +1063,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(strings.phrase("设置", "Settings"))
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
-                Text(strings.phrase("语言、连接、菜单栏显示和更新在同一控制台中管理。", "Manage language, connection, menu bar display, and updates in this console."))
+                Text(strings.phrase("语言、外观、连接、菜单栏显示和更新在同一控制台中管理。", "Manage language, appearance, connection, menu bar display, and updates in this console."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1066,6 +1081,16 @@ struct SettingsView: View {
                         Picker("", selection: $model.settingsDraft.language) {
                             ForEach([AppLanguage.zhHans, .en]) { language in
                                 Text(strings.languageName(language)).tag(language)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                    }
+
+                    settingsRow(strings.phrase("外观", "Appearance")) {
+                        Picker("", selection: $model.settingsDraft.appearance) {
+                            ForEach(AppAppearance.allCases) { appearance in
+                                Text(strings.appearanceName(appearance)).tag(appearance)
                             }
                         }
                         .labelsHidden()
@@ -1854,48 +1879,78 @@ struct InfoRow: View {
     }
 }
 
+extension AppAppearance {
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
+}
+
 enum ClaudeTheme {
     static let background = LinearGradient(
         colors: [
-            Color(red: 0.055, green: 0.060, blue: 0.064),
-            Color(red: 0.090, green: 0.086, blue: 0.078),
-            Color(red: 0.130, green: 0.106, blue: 0.086),
+            adaptive(light: rgb(0.992, 0.970, 0.930), dark: rgb(0.055, 0.060, 0.064)),
+            adaptive(light: rgb(0.965, 0.925, 0.858), dark: rgb(0.090, 0.086, 0.078)),
+            adaptive(light: rgb(0.940, 0.868, 0.780), dark: rgb(0.130, 0.106, 0.086)),
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
-    static let header = Color(red: 0.105, green: 0.104, blue: 0.098)
-    static let footer = Color(red: 0.085, green: 0.082, blue: 0.076)
-    static let card = Color(red: 0.150, green: 0.143, blue: 0.132)
-    static let elevatedCard = Color(red: 0.180, green: 0.170, blue: 0.156)
-    static let tabBackground = Color(red: 0.115, green: 0.110, blue: 0.102)
-    static let tabSelected = Color(red: 0.245, green: 0.222, blue: 0.196)
-    static let border = Color(red: 0.82, green: 0.76, blue: 0.66).opacity(0.18)
-    static let primaryText = Color(red: 0.94, green: 0.91, blue: 0.86)
-    static let secondaryText = Color(red: 0.66, green: 0.62, blue: 0.55)
-    static let muted = Color(red: 0.62, green: 0.59, blue: 0.52)
-    static let accent = Color(red: 0.86, green: 0.38, blue: 0.19)
-    static let success = Color(red: 0.71, green: 0.58, blue: 0.38)
-    static let slate = Color(red: 0.55, green: 0.60, blue: 0.60)
-    static let sand = Color(red: 0.72, green: 0.62, blue: 0.48)
-    static let gold = Color(red: 0.84, green: 0.58, blue: 0.29)
-    static let warm = Color(red: 0.82, green: 0.45, blue: 0.25)
-    static let ink = Color(red: 0.64, green: 0.55, blue: 0.46)
-    static let warning = Color(red: 0.86, green: 0.58, blue: 0.22)
-    static let danger = Color(red: 0.86, green: 0.31, blue: 0.25)
-    static let textFieldBackground = Color(red: 0.060, green: 0.058, blue: 0.054)
+    static let header = adaptive(light: rgb(0.982, 0.950, 0.900), dark: rgb(0.105, 0.104, 0.098))
+    static let footer = adaptive(light: rgb(0.965, 0.930, 0.878), dark: rgb(0.085, 0.082, 0.076))
+    static let card = adaptive(light: rgb(1.000, 0.978, 0.934), dark: rgb(0.150, 0.143, 0.132))
+    static let elevatedCard = adaptive(light: rgb(0.992, 0.950, 0.880), dark: rgb(0.180, 0.170, 0.156))
+    static let tabBackground = adaptive(light: rgb(0.930, 0.875, 0.790), dark: rgb(0.115, 0.110, 0.102))
+    static let tabSelected = adaptive(light: rgb(1.000, 0.970, 0.905), dark: rgb(0.245, 0.222, 0.196))
+    static let border = adaptive(light: rgb(0.55, 0.44, 0.31), dark: rgb(0.82, 0.76, 0.66)).opacity(0.22)
+    static let primaryText = adaptive(light: rgb(0.180, 0.145, 0.105), dark: rgb(0.94, 0.91, 0.86))
+    static let secondaryText = adaptive(light: rgb(0.460, 0.395, 0.310), dark: rgb(0.66, 0.62, 0.55))
+    static let muted = adaptive(light: rgb(0.560, 0.480, 0.380), dark: rgb(0.62, 0.59, 0.52))
+    static let accent = adaptive(light: rgb(0.760, 0.310, 0.145), dark: rgb(0.86, 0.38, 0.19))
+    static let success = adaptive(light: rgb(0.500, 0.410, 0.245), dark: rgb(0.71, 0.58, 0.38))
+    static let slate = adaptive(light: rgb(0.400, 0.470, 0.480), dark: rgb(0.55, 0.60, 0.60))
+    static let sand = adaptive(light: rgb(0.650, 0.500, 0.315), dark: rgb(0.72, 0.62, 0.48))
+    static let gold = adaptive(light: rgb(0.760, 0.450, 0.160), dark: rgb(0.84, 0.58, 0.29))
+    static let warm = adaptive(light: rgb(0.760, 0.340, 0.160), dark: rgb(0.82, 0.45, 0.25))
+    static let ink = adaptive(light: rgb(0.410, 0.320, 0.245), dark: rgb(0.64, 0.55, 0.46))
+    static let warning = adaptive(light: rgb(0.780, 0.440, 0.120), dark: rgb(0.86, 0.58, 0.22))
+    static let danger = adaptive(light: rgb(0.760, 0.190, 0.160), dark: rgb(0.86, 0.31, 0.25))
+    static let textFieldBackground = adaptive(light: rgb(1.000, 0.988, 0.952), dark: rgb(0.060, 0.058, 0.054))
     static let avatarBackground = LinearGradient(
         colors: [
-            Color(red: 0.70, green: 0.48, blue: 0.30),
-            Color(red: 0.42, green: 0.30, blue: 0.22),
+            adaptive(light: rgb(0.880, 0.570, 0.330), dark: rgb(0.70, 0.48, 0.30)),
+            adaptive(light: rgb(0.650, 0.350, 0.210), dark: rgb(0.42, 0.30, 0.22)),
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
-    static let avatarForeground = Color(red: 0.98, green: 0.90, blue: 0.78)
+    static let avatarForeground = adaptive(light: rgb(1.000, 0.955, 0.880), dark: rgb(0.98, 0.90, 0.78))
+
+    private static func rgb(_ red: CGFloat, _ green: CGFloat, _ blue: CGFloat) -> NSColor {
+        NSColor(srgbRed: red, green: green, blue: blue, alpha: 1)
+    }
+
+    private static func adaptive(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+                return dark
+            }
+            return light
+        })
+    }
 }
 
 extension View {
+    func appAppearance(_ appearance: AppAppearance) -> some View {
+        preferredColorScheme(appearance.preferredColorScheme)
+    }
+
     func themedTextField() -> some View {
         self
             .textFieldStyle(.plain)

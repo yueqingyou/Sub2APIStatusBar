@@ -36,6 +36,42 @@ public enum AppLanguage: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public enum AppAppearance: String, Codable, CaseIterable, Identifiable, Sendable {
+    case system
+    case light
+    case dark
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .system:
+            return "System"
+        case .light:
+            return "Light"
+        case .dark:
+            return "Dark"
+        }
+    }
+
+    public static func fromEnvironment(_ value: String?) -> AppAppearance {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !value.isEmpty else {
+            return .system
+        }
+
+        switch value {
+        case "light", "aqua":
+            return .light
+        case "dark", "dark-aqua", "darkaqua":
+            return .dark
+        case "system", "auto", "default", "macos", "mac":
+            return .system
+        default:
+            return .system
+        }
+    }
+}
+
 public enum MonitorMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case user
 
@@ -184,6 +220,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var refreshToken: String
     public var refreshIntervalSeconds: Double
     public var language: AppLanguage
+    public var appearance: AppAppearance
     public var monitorMode: MonitorMode
     public var showsMenuBarText: Bool
     public var launchAtLogin: Bool
@@ -196,6 +233,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         refreshToken: String = "",
         refreshIntervalSeconds: Double = 15,
         language: AppLanguage = .zhHans,
+        appearance: AppAppearance = .system,
         monitorMode: MonitorMode = .user,
         showsMenuBarText: Bool = false,
         launchAtLogin: Bool = false,
@@ -207,6 +245,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.refreshToken = refreshToken
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.language = language
+        self.appearance = appearance
         self.monitorMode = monitorMode
         self.showsMenuBarText = showsMenuBarText
         self.launchAtLogin = launchAtLogin
@@ -221,6 +260,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case refreshToken
         case refreshIntervalSeconds
         case language
+        case appearance
         case monitorMode
         case showsMenuBarText
         case launchAtLogin
@@ -235,6 +275,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? ""
         refreshIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .refreshIntervalSeconds) ?? 15
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .zhHans
+        appearance = try container.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? .system
         monitorMode = try container.decodeIfPresent(MonitorMode.self, forKey: .monitorMode) ?? .user
         showsMenuBarText = try container.decodeIfPresent(Bool.self, forKey: .showsMenuBarText) ?? false
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
@@ -252,6 +293,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         try container.encode(baseURL, forKey: .baseURL)
         try container.encode(refreshIntervalSeconds, forKey: .refreshIntervalSeconds)
         try container.encode(language, forKey: .language)
+        try container.encode(appearance, forKey: .appearance)
         try container.encode(monitorMode, forKey: .monitorMode)
         try container.encode(showsMenuBarText, forKey: .showsMenuBarText)
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
@@ -267,6 +309,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
             refreshToken: env["SUB2API_REFRESH_TOKEN"] ?? "",
             refreshIntervalSeconds: Double(env["SUB2API_REFRESH_SECONDS"] ?? "") ?? 15,
             language: AppLanguage.fromEnvironment(env["SUB2API_LANGUAGE"]),
+            appearance: AppAppearance.fromEnvironment(env["SUB2API_APPEARANCE"]),
             monitorMode: .user,
             showsMenuBarText: ["1", "true", "yes", "on"].contains((env["SUB2API_SHOW_MENU_BAR_TEXT"] ?? "").lowercased()),
             launchAtLogin: ["1", "true", "yes", "on"].contains((env["SUB2API_LAUNCH_AT_LOGIN"] ?? "").lowercased()),

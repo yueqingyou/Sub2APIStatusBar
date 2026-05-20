@@ -25,7 +25,7 @@ func testAppConfigNormalizesBaseURLAndRefreshInterval() {
 
     XCTAssert(config.baseURL == "http://127.0.0.1:8080")
     XCTAssert(config.authToken == "token")
-    XCTAssert(config.refreshIntervalSeconds == 5)
+    XCTAssert(config.refreshIntervalSeconds == 1)
     XCTAssert(config.monitorMode == .user)
     XCTAssert(config.showsMenuBarText == false)
     XCTAssert(config.launchAtLogin == false)

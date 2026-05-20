@@ -3,13 +3,15 @@ import SwiftUI
 import Sub2APIStatusCore
 
 @main
-struct Sub2APIStatusBarApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+enum Sub2APIStatusBarApp {
+    private static var appDelegate: AppDelegate?
 
-    var body: some Scene {
-        Settings {
-            EmptyView()
-        }
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        appDelegate = delegate
+        app.delegate = delegate
+        app.run()
     }
 }
 
@@ -566,10 +568,8 @@ struct MonitorPanel: View {
 
                     content
 
-                    if selectedPage == .overview {
-                        Divider()
-                        overviewFooter
-                    }
+                    Divider()
+                    PanelFooter(model: model, strings: strings)
                 }
             }
         }
@@ -737,28 +737,6 @@ struct MonitorPanel: View {
         }
     }
 
-    private var overviewFooter: some View {
-        HStack(spacing: 12) {
-            Button {
-                model.openDashboard()
-            } label: {
-                Label(strings.phrase("打开控制台", "Open"), systemImage: "safari")
-            }
-            .disabled(model.config.baseURL.isEmpty)
-
-            Spacer()
-
-            Button {
-                model.quit()
-            } label: {
-                Label(strings.phrase("退出", "Quit"), systemImage: "power")
-            }
-        }
-        .buttonStyle(.borderless)
-        .padding(12)
-        .background(ClaudeTheme.footer)
-    }
-
     private var iconName: String {
         switch model.snapshot.severity {
         case .healthy:
@@ -812,6 +790,33 @@ struct MonitorPanel: View {
 
     private var activeAppearance: AppAppearance {
         model.config.authToken.isEmpty ? model.settingsDraft.appearance : model.config.appearance
+    }
+}
+
+private struct PanelFooter: View {
+    @ObservedObject var model: MonitorViewModel
+    let strings: AppStrings
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                model.openDashboard()
+            } label: {
+                Label(strings.phrase("打开控制台", "Open"), systemImage: "safari")
+            }
+            .disabled(model.config.baseURL.isEmpty)
+
+            Spacer()
+
+            Button {
+                model.quit()
+            } label: {
+                Label(strings.phrase("退出", "Quit"), systemImage: "power")
+            }
+        }
+        .buttonStyle(.borderless)
+        .padding(12)
+        .background(ClaudeTheme.footer)
     }
 }
 
@@ -974,7 +979,7 @@ struct LoginPanel: View {
                         Text(strings.phrase("刷新", "Refresh"))
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                        Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
+                        Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 1...300, step: 1)
                             .onChange(of: model.settingsDraft.refreshIntervalSeconds) { _ in
                                 model.scheduleSettingsAutosave(refreshAfterSave: false)
                             }
@@ -1167,7 +1172,7 @@ struct SettingsView: View {
 
                     settingsRow(strings.phrase("刷新", "Refresh")) {
                         HStack {
-                            Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 5...300, step: 5)
+                            Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 1...300, step: 1)
                                 .onChange(of: model.settingsDraft.refreshIntervalSeconds) { _ in
                                     model.scheduleSettingsAutosave(refreshAfterSave: false)
                                 }

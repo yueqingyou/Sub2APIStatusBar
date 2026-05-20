@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.16
+
+- Keep the Open Console and Quit footer visible on both Overview and Settings inside the popover.
+- Remove the redundant standalone Settings scene so settings are managed only from the menu bar popover.
+- Allow one-second refresh intervals across config normalization, login setup, and Settings controls.
+
 ## v0.1.15
 
 - Store access and refresh tokens in one Keychain item to avoid duplicate authorization prompts.

@@ -329,7 +329,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
 
         authToken = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshToken = refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        refreshIntervalSeconds = min(max(refreshIntervalSeconds, 5), 300)
+        refreshIntervalSeconds = min(max(refreshIntervalSeconds, 1), 300)
         if language == .auto {
             language = .zhHans
         }

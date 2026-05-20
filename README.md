@@ -78,7 +78,7 @@ When menu bar text is enabled, the default usage window is **Last 24 Hours**. Se
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.15 ./scripts/build-app.sh
+VERSION=v0.1.16 ./scripts/build-app.sh
 ```
 
 Output:
@@ -95,28 +95,28 @@ Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.15 \
+VERSION=v0.1.16 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.15 ./scripts/package-release.sh
+VERSION=v0.1.16 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.15-macOS.zip
-dist/Sub2APIStatusBar-0.1.15-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.16-macOS.zip
+dist/Sub2APIStatusBar-0.1.16-macOS.zip.sha256
 ```
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.15 \
+VERSION=v0.1.16 \
 ./scripts/package-release.sh
 ```
 
@@ -131,7 +131,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.15 \
+VERSION=v0.1.16 \
 ./scripts/notarize-release.sh
 ```
 

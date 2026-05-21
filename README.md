@@ -13,7 +13,7 @@ Sub2API Status Bar is a macOS menu bar companion for Sub2API users. It keeps dai
 - First-run login and optional manual Bearer token setup
 - Optional Open at Login setting for starting the menu bar app automatically after signing in
 - Light, dark, and system-matching appearance modes
-- Keychain-backed token storage; no telemetry or third-party analytics
+- Private local credential storage with legacy Keychain migration; no telemetry or third-party analytics
 - GitHub Releases update checking from Settings
 
 ## Requirements
@@ -73,7 +73,7 @@ Non-secret preferences are saved at:
 ~/Library/Application Support/Sub2APIStatusBar/config.json
 ```
 
-Login tokens are stored in the macOS Keychain. Existing config files from older builds are migrated automatically on launch.
+Login tokens are stored in a private local credentials file under Application Support with current-user read/write permissions. Existing config files from older builds are migrated automatically on launch, and older Keychain credentials are imported only when macOS allows a no-prompt read.
 
 To switch accounts or remove saved credentials, open Settings and choose **Disconnect**.
 
@@ -99,7 +99,7 @@ Admin accounts can additionally enable realtime concurrency and normal account c
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.18 ./scripts/build-app.sh
+VERSION=v0.1.19 ./scripts/build-app.sh
 ```
 
 Output:
@@ -116,32 +116,32 @@ Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.18 \
+VERSION=v0.1.19 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.18 ./scripts/package-release.sh
+VERSION=v0.1.19 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.18-macOS.zip
-dist/Sub2APIStatusBar-0.1.18-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.19-macOS.zip
+dist/Sub2APIStatusBar-0.1.19-macOS.zip.sha256
 ```
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.18 \
+VERSION=v0.1.19 \
 ./scripts/package-release.sh
 ```
 
-For GitHub-only ad-hoc releases, auth tokens are stored in a single Keychain item with a shared access-control list. That avoids the repeated per-update macOS password prompt that happens when Keychain access is tied to each ad-hoc build's changing code signature.
+For GitHub-only ad-hoc releases, auth tokens are stored outside the macOS Keychain in a private local credentials file. Ad-hoc signatures change their code hash on every rebuild, so Keychain access-control prompts cannot be made stable without a persistent Developer ID or other stable signing identity.
 
 ## Notarize A Release
 
@@ -152,7 +152,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.18 \
+VERSION=v0.1.19 \
 ./scripts/notarize-release.sh
 ```
 
@@ -184,7 +184,7 @@ swift run Sub2APIStatusBar
 
 ## Privacy
 
-Sub2API Status Bar stores the server URL, display preferences, and refresh interval in the local Application Support config file. Auth and refresh tokens are stored in one macOS Keychain item with shared local access so ad-hoc GitHub updates do not repeatedly ask for Keychain authorization. It does not send data anywhere except the configured Sub2API server.
+Sub2API Status Bar stores the server URL, display preferences, and refresh interval in the local Application Support config file. Auth and refresh tokens are stored in a separate private local credentials file with current-user read/write permissions; older Keychain credentials are imported only without showing an authorization prompt. It does not send data anywhere except the configured Sub2API server.
 
 ## Acknowledgements
 Thanks to the [LinuxDo](https://linux.do/) community for the discussions, sharing, and feedback.

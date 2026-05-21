@@ -417,11 +417,74 @@ public protocol TokenStore: Sendable {
     func saveTokens(_ tokens: StoredAuthTokens) throws
 }
 
+public final class LocalCredentialsTokenStore: TokenStore, Sendable {
+    private let credentialsURL: URL
+    private let legacyTokenStore: (any TokenStore)?
+
+    public init(
+        credentialsURL: URL? = nil,
+        legacyTokenStore: (any TokenStore)? = KeychainTokenStore(),
+        fileManager: FileManager = .default
+    ) {
+        self.legacyTokenStore = legacyTokenStore
+        if let credentialsURL {
+            self.credentialsURL = credentialsURL
+            return
+        }
+
+        let baseDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+        self.credentialsURL = baseDir
+            .appendingPathComponent("Sub2APIStatusBar", isDirectory: true)
+            .appendingPathComponent("credentials.json")
+    }
+
+    public func loadTokens() -> StoredAuthTokens {
+        if let tokens = loadLocalTokens() {
+            return tokens
+        }
+
+        guard let legacyTokens = legacyTokenStore?.loadTokens(), !legacyTokens.isEmpty else {
+            return StoredAuthTokens()
+        }
+
+        try? saveTokens(legacyTokens)
+        return legacyTokens
+    }
+
+    public func saveTokens(_ tokens: StoredAuthTokens) throws {
+        if tokens.isEmpty {
+            try saveLocalTokens(tokens)
+            try legacyTokenStore?.saveTokens(tokens)
+            return
+        }
+
+        try saveLocalTokens(tokens)
+    }
+
+    private func saveLocalTokens(_ tokens: StoredAuthTokens) throws {
+        try FileManager.default.createDirectory(at: credentialsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = try JSONEncoder.sub2api.encode(tokens)
+        try data.write(to: credentialsURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))], ofItemAtPath: credentialsURL.path)
+    }
+
+    private func loadLocalTokens() -> StoredAuthTokens? {
+        guard let data = try? Data(contentsOf: credentialsURL),
+              let tokens = try? JSONDecoder.sub2api.decode(StoredAuthTokens.self, from: data) else {
+            return nil
+        }
+        return tokens
+    }
+}
+
 public final class ConfigStore: Sendable {
     private let configURL: URL
     private let tokenStore: any TokenStore
 
-    public init(configURL: URL? = nil, tokenStore: any TokenStore = KeychainTokenStore()) {
+    public init(configURL: URL? = nil, tokenStore: any TokenStore = LocalCredentialsTokenStore()) {
         self.tokenStore = tokenStore
         if let configURL {
             self.configURL = configURL

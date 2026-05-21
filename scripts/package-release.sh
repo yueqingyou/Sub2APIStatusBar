@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sub2APIStatusBar"
-VERSION="${VERSION:-v0.1.18}"
+VERSION="${VERSION:-v0.1.19}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
@@ -13,7 +13,7 @@ CHECKSUM_PATH="$ZIP_PATH.sha256"
 
 if [[ -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" ]]; then
   SIGN_IDENTITY="-"
-  echo "Packaging an ad-hoc signed release. The app stores tokens in a shared Keychain item to avoid per-update authorization prompts." >&2
+  echo "Packaging an ad-hoc signed release. The app stores tokens in a private local credentials file because ad-hoc Keychain ACLs bind to changing code hashes." >&2
 fi
 
 cd "$ROOT_DIR"

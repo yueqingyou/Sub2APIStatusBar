@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.19
+
+- Fixed administrator monitoring disconnecting after v0.1.18 when `/api/v1/admin/users/{id}` returns the real admin user detail payload without `current_concurrency`.
+- Kept selected-user realtime concurrency sourced only from `/api/v1/admin/ops/user-concurrency`.
+- Compressed menu bar status text so selected items remain visible within the safe status-bar length limit.
+- Kept the menu bar status item on variable width so short summaries no longer leave empty space after the popover has opened.
+- Moved default token storage out of macOS Keychain into a private local credentials file to avoid repeated authorization prompts for ad-hoc signed updates.
+- Added release verification guidance requiring temporary local app launches without replacing the installed app.
+
 ## v0.1.18
 
 - Fixed administrator monitoring so balance, requests, spend, tokens, latest request metadata, trend, model distribution, and subscriptions all use the selected user's verified admin API data.

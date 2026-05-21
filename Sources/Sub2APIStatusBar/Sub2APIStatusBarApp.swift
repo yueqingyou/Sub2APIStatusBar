@@ -20,7 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private let model = MonitorViewModel()
-    private var frozenStatusItemLength: CGFloat?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -60,17 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
-            freezeStatusItemLengthForPopover()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             DispatchQueue.main.async { [weak self] in
                 self?.popover.contentViewController?.view.window?.makeKey()
             }
         }
-    }
-
-    func popoverDidClose(_ notification: Notification) {
-        restoreVariableStatusItemLength()
     }
 
     private func updateStatusItem(_ snapshot: MonitorSnapshot) {
@@ -121,27 +115,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         button.image = nil
         button.title = fallbackTitle
-    }
-
-    private func freezeStatusItemLengthForPopover() {
-        guard frozenStatusItemLength == nil,
-              let statusItem,
-              let button = statusItem.button else {
-            return
-        }
-
-        let currentWidth = max(button.bounds.width, 24)
-        frozenStatusItemLength = currentWidth
-        statusItem.length = currentWidth
-    }
-
-    private func restoreVariableStatusItemLength() {
-        guard frozenStatusItemLength != nil else {
-            return
-        }
-
-        statusItem?.length = NSStatusItem.variableLength
-        frozenStatusItemLength = nil
     }
 
     private func applyAppearance(_ appearance: AppAppearance) {

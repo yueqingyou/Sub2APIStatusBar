@@ -18,20 +18,20 @@
 - [x] Product-oriented README
 - [x] Changelog
 - [x] Unit tests for config, API decoding, quota progress, menu bar text, and status labels
-- [x] Keychain token storage with legacy config migration
+- [x] Private local credential storage with legacy config and no-prompt Keychain migration
 - [x] Automatic token refresh and dashboard retry on expired access tokens
 - [x] GitHub Releases update checking with launch-time and manual checks
 - [x] Direct in-app update installation from the published macOS zip asset
 - [x] Open at Login preference backed by a user LaunchAgent
 - [x] Light, dark, and system-matching appearance preference
 - [x] GitHub-only ad-hoc release packaging
-- [x] Shared Keychain token item to avoid repeated authorization prompts after ad-hoc in-app updates
+- [x] Private local credential file to avoid repeated Keychain authorization prompts after ad-hoc in-app updates
 - [x] Troubleshooting path for stale Swift build cache errors
 - [x] macOS 12 and Swift 5.7 compatibility for Intel Mac builds
 
 ## Before Public Distribution
 
-- [x] Choose a public version tag, for example `v0.1.18`
+- [x] Choose a public version tag, for example `v0.1.19`
 - [ ] Optional: build with a Developer ID Application certificate
 - [ ] Optional: notarize the app with Apple
 - [x] Attach the release zip and checksum to a GitHub Release
@@ -43,20 +43,20 @@
 ```bash
 swift test
 swift build
-VERSION=v0.1.18 \
+VERSION=v0.1.19 \
 ./scripts/package-release.sh
-VERSION=v0.1.18 ./scripts/verify-release.sh
+VERSION=v0.1.19 ./scripts/verify-release.sh
 ```
 
 Developer ID signing:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.18 \
+VERSION=v0.1.19 \
 ./scripts/package-release.sh
 ```
 
-Default packaging is ad-hoc signed for GitHub-only distribution. Auth tokens use a shared Keychain item so app updates do not depend on a stable paid signing identity for repeated local Keychain authorization.
+Default packaging is ad-hoc signed for GitHub-only distribution. Auth tokens use a private local credentials file because ad-hoc signatures change their code hash on every rebuild and cannot provide stable Keychain ACL authorization without a persistent signing identity.
 
 Notarization requires Apple Developer account credentials and is intentionally not automated until those secrets are available in GitHub Actions or the local keychain.
 
@@ -65,6 +65,6 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.18 \
+VERSION=v0.1.19 \
 ./scripts/notarize-release.sh
 ```

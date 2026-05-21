@@ -16,6 +16,22 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     }
 }
 
+final class StaticTokenStore: TokenStore, @unchecked Sendable {
+    var tokens: StoredAuthTokens
+
+    init(tokens: StoredAuthTokens) {
+        self.tokens = tokens
+    }
+
+    func loadTokens() -> StoredAuthTokens {
+        tokens
+    }
+
+    func saveTokens(_ tokens: StoredAuthTokens) throws {
+        self.tokens = tokens
+    }
+}
+
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     static var responses: [String: Data] = [:]
     static var requestedPaths: [String] = []
@@ -293,7 +309,7 @@ func testConfigStoreMigratesLegacyJSONTokensOutOfConfigFile() throws {
     XCTAssert(!migratedJSON.contains("refreshToken"))
 }
 
-func testStoredAuthTokensEncodeAsSingleKeychainPayload() throws {
+func testStoredAuthTokensEncodeAsSingleCredentialsPayload() throws {
     let tokens = StoredAuthTokens(authToken: "access", refreshToken: "refresh")
 
     let data = try JSONEncoder.sub2api.encode(tokens)
@@ -303,6 +319,36 @@ func testStoredAuthTokensEncodeAsSingleKeychainPayload() throws {
     XCTAssert(rawJSON.contains("auth_token"))
     XCTAssert(rawJSON.contains("refresh_token"))
     XCTAssert(decoded == tokens)
+}
+
+func testLocalCredentialsTokenStorePersistsTokensInPrivateFile() throws {
+    let credentialsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("credentials.json")
+    let store = LocalCredentialsTokenStore(credentialsURL: credentialsURL)
+    let tokens = StoredAuthTokens(authToken: "access-token", refreshToken: "refresh-token")
+
+    try store.saveTokens(tokens)
+    let loaded = store.loadTokens()
+    let attributes = try FileManager.default.attributesOfItem(atPath: credentialsURL.path)
+    let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
+
+    XCTAssertEqual(loaded, tokens)
+    XCTAssertEqual(permissions.intValue & 0o777, 0o600)
+}
+
+func testLocalCredentialsTokenStorePersistsEmptyCredentialsToPreventLegacyRemigration() throws {
+    let credentialsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("credentials.json")
+    let legacyStore = StaticTokenStore(tokens: StoredAuthTokens(authToken: "legacy-access", refreshToken: "legacy-refresh"))
+    let store = LocalCredentialsTokenStore(credentialsURL: credentialsURL, legacyTokenStore: legacyStore)
+
+    try store.saveTokens(StoredAuthTokens(authToken: "access-token", refreshToken: "refresh-token"))
+    try store.saveTokens(StoredAuthTokens())
+
+    XCTAssertEqual(store.loadTokens(), StoredAuthTokens())
+    XCTAssertTrue(FileManager.default.fileExists(atPath: credentialsURL.path))
 }
 
 func testAppConfigDefaultsToUserMode() {
@@ -876,7 +922,7 @@ func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async t
           "balance": 66937.34,
           "status": "active",
           "concurrency": 100,
-          "current_concurrency": 2
+          "notes": "admin detail payload"
         }
         """.utf8),
         "/api/v1/admin/usage/stats?user_id=2&start_date=2026-05-21&end_date=2026-05-21&timezone=Asia/Shanghai": Data("""
@@ -1468,9 +1514,80 @@ func testMonitorSnapshotMenuBarPresentationTruncatesLongStatusTextOnly() {
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
     XCTAssertEqual(fullSummary, "$0.22 · 239 req · gpt-5.5 · xhigh · Fast · 1 CC · 8 normal")
-    XCTAssert(presentation.title.count <= 38)
-    XCTAssert(presentation.title.hasSuffix("…"))
+    XCTAssertEqual(presentation.title, " $0.22·239r·gpt-5.5·xh·F·1CC·8N")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
+}
+
+func testMonitorSnapshotCompactMenuBarSummaryKeepsAllSelectedItemsWhenPossible() {
+    let latestUsage = UsageLog(
+        id: 133605,
+        model: "gpt-5.5",
+        serviceTier: "priority",
+        reasoningEffort: "xhigh",
+        inputTokens: 430,
+        outputTokens: 1172,
+        cacheReadTokens: 164_224,
+        actualCost: 0.238844
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: DashboardStats(todayRequests: 239, todayActualCost: 0.22, rpm: 52),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 239, totalActualCost: 2864.10),
+        latestUsage: latestUsage,
+        realtime: nil,
+        realtimeConcurrency: UserRealtimeConcurrency(userID: 2, userEmail: "target@example.com", username: "target", currentInUse: 1, maxCapacity: 100, loadPercentage: 0.01, waitingInQueue: 0),
+        adminDashboardStats: AdminDashboardStats(totalAccounts: 63, normalAccounts: 52, errorAccounts: 2, ratelimitAccounts: 1, overloadAccounts: 8),
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalCost, .model, .reasoningEffort, .fast, .realtimeConcurrency, .normalAccounts]
+    )
+
+    let fullSummary = snapshot.menuBarSummary(config: config)
+    let compactSummary = snapshot.compactMenuBarSummary(config: config, maxCharacters: 36)
+
+    XCTAssertEqual(fullSummary, "$2864.10 · gpt-5.5 · xhigh · Fast · 1 CC · 52 normal")
+    XCTAssertEqual(compactSummary, "$2.86K·gpt-5.5·xh·F·1CC·52N")
+    XCTAssert(compactSummary.count <= 36)
+}
+
+func testMonitorSnapshotCompactMenuBarSummaryCompressesPricesAndRates() {
+    let latestUsage = UsageLog(
+        id: 133605,
+        model: "gpt-5.5",
+        serviceTier: "priority",
+        inputTokens: 946,
+        outputTokens: 429,
+        inputCost: 0.00946,
+        outputCost: 0.02574,
+        actualCost: 0.124712
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(todayRequests: 2048, todayActualCost: 12.34, rpm: 3),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 2048, totalActualCost: 12.34),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice, .rpm]
+    )
+
+    XCTAssertEqual(snapshot.compactMenuBarSummary(config: config, maxCharacters: 36), "2048r·i$10/M·o$60/M·3rpm")
 }
 
 func testCompactMenuBarSummaryAlwaysRespectsMaximumLength() {

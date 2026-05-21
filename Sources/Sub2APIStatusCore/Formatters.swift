@@ -33,12 +33,40 @@ public enum StatusFormatters {
         return String(format: "$%.2f", value)
     }
 
+    public static func menuBarCurrency(_ value: Double) -> String {
+        let absValue = abs(value)
+        let sign = value < 0 ? "-" : ""
+        if absValue >= 1_000_000 {
+            return String(format: "%@$%.2fM", sign, absValue / 1_000_000)
+        }
+        if absValue >= 1_000 {
+            return String(format: "%@$%.2fK", sign, absValue / 1_000)
+        }
+        if absValue < 0.01, absValue > 0 {
+            return String(format: "%@$%.4f", sign, absValue)
+        }
+        return String(format: "%@$%.2f", sign, absValue)
+    }
+
     public static func preciseCurrency(_ value: Double) -> String {
         String(format: "$%.4f", value)
     }
 
     public static func tokenPricePerMillion(_ value: Double) -> String {
         String(format: "$%.4f", value)
+    }
+
+    public static func menuBarTokenPricePerMillion(_ value: Double) -> String {
+        let formatted: String
+        let absValue = abs(value)
+        if absValue >= 1 {
+            formatted = String(format: "$%.2f", value)
+        } else {
+            formatted = String(format: "$%.4f", value)
+        }
+        return formatted
+            .replacingOccurrences(of: #"(\.\d*?)0+$"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"\.$"#, with: "", options: .regularExpression)
     }
 
     public static func contextLength(_ value: Int64) -> String {

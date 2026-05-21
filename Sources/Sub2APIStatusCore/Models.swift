@@ -125,7 +125,7 @@ public struct AdminUserSummary: Decodable, Identifiable, Equatable, Sendable {
     public let balance: Double
     public let status: String
     public let concurrency: Int
-    public let currentConcurrency: Int
+    public let currentConcurrency: Int?
 
     public init(
         id: Int64,
@@ -135,7 +135,7 @@ public struct AdminUserSummary: Decodable, Identifiable, Equatable, Sendable {
         balance: Double,
         status: String,
         concurrency: Int,
-        currentConcurrency: Int
+        currentConcurrency: Int? = nil
     ) {
         self.id = id
         self.email = email
@@ -145,19 +145,6 @@ public struct AdminUserSummary: Decodable, Identifiable, Equatable, Sendable {
         self.status = status
         self.concurrency = concurrency
         self.currentConcurrency = currentConcurrency
-    }
-
-    public init(currentUser: CurrentUser) {
-        self.init(
-            id: currentUser.id,
-            email: currentUser.email,
-            username: currentUser.username ?? "",
-            role: currentUser.role,
-            balance: currentUser.balance ?? 0,
-            status: currentUser.status ?? "",
-            concurrency: currentUser.concurrency,
-            currentConcurrency: 0
-        )
     }
 
     public var displayName: String {
@@ -1506,6 +1493,73 @@ public struct MonitorSnapshot: Equatable, Sendable {
         return ""
     }
 
+    public func compactMenuBarSummary(config: AppConfig, maxCharacters: Int = 36) -> String {
+        guard connected else {
+            return Self.compactMenuBarSummary(menuBarSummary(config: config), maxCharacters: maxCharacters)
+        }
+
+        guard !config.menuBarDisplayItems.isEmpty else {
+            return ""
+        }
+
+        let selectedItems = Set(config.menuBarDisplayItems)
+        let orderedItems = MenuBarDisplayItem.allCases.filter { selectedItems.contains($0) }
+        var parts: [String] = []
+
+        for item in orderedItems {
+            switch item {
+            case .totalCost:
+                if let cost = selectedTotalActualCost(config: config) {
+                    parts.append(StatusFormatters.menuBarCurrency(cost))
+                }
+            case .totalRequests:
+                if let requests = selectedTotalRequests(config: config) {
+                    parts.append("\(StatusFormatters.menuBarCount(requests))r")
+                }
+            case .model:
+                if let model = latestUsage?.model.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+                    parts.append(model)
+                }
+            case .reasoningEffort:
+                if let effort = latestUsage?.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines), !effort.isEmpty {
+                    parts.append(Self.compactReasoningEffort(effort))
+                }
+            case .contextLength:
+                if let latestUsage {
+                    parts.append(StatusFormatters.contextLength(latestUsage.contextLengthTokens).replacingOccurrences(of: " ctx", with: "c"))
+                }
+            case .fast:
+                if let latestUsage, latestUsage.isFastEnabled {
+                    parts.append("F")
+                }
+            case .inputPrice:
+                if let price = latestUsage?.inputPricePerMillion {
+                    parts.append("i\(StatusFormatters.menuBarTokenPricePerMillion(price))/M")
+                }
+            case .outputPrice:
+                if let price = latestUsage?.outputPricePerMillion {
+                    parts.append("o\(StatusFormatters.menuBarTokenPricePerMillion(price))/M")
+                }
+            case .rpm:
+                if mode != .admin,
+                   let rpm = stats?.rpm ?? realtime?.requestsPerMinute {
+                    parts.append("\(StatusFormatters.menuBarRate(rpm))rpm")
+                }
+            case .realtimeConcurrency:
+                if let concurrency = realtimeConcurrency {
+                    parts.append("\(StatusFormatters.menuBarCount(concurrency.currentInUse))CC")
+                }
+            case .normalAccounts:
+                if let normalAccounts = adminDashboardStats?.normalAccounts {
+                    parts.append("\(StatusFormatters.menuBarCount(Int64(normalAccounts)))N")
+                }
+            }
+        }
+
+        let summary = parts.joined(separator: "·")
+        return Self.compactMenuBarSummary(summary, maxCharacters: maxCharacters)
+    }
+
     public func menuBarStatusPresentation(config: AppConfig) -> MenuBarStatusPresentation {
         guard connected, config.showsMenuBarText else {
             return MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false)
@@ -1516,7 +1570,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false)
         }
 
-        return MenuBarStatusPresentation(title: " \(Self.compactMenuBarSummary(summary))", hidesHealthyStatusImage: true)
+        return MenuBarStatusPresentation(title: " \(compactMenuBarSummary(config: config))", hidesHealthyStatusImage: true)
     }
 
     public static func compactMenuBarSummary(_ summary: String, maxCharacters: Int = 36) -> String {
@@ -1529,12 +1583,13 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return String(summary.prefix(max(maxCharacters, 0)))
         }
 
-        let separatorMarker = " · \(marker)"
+        let separator = summary.contains(" · ") ? " · " : "·"
+        let separatorMarker = "\(separator)\(marker)"
         let contentLimit = maxCharacters - separatorMarker.count
-        let parts = summary.components(separatedBy: " · ")
+        let parts = summary.components(separatedBy: separator)
         var visibleParts: [String] = []
         for part in parts {
-            let candidate = (visibleParts + [part]).joined(separator: " · ")
+            let candidate = (visibleParts + [part]).joined(separator: separator)
             if candidate.count <= contentLimit {
                 visibleParts.append(part)
             } else {
@@ -1545,7 +1600,24 @@ public struct MonitorSnapshot: Equatable, Sendable {
         if visibleParts.isEmpty {
             return String(summary.prefix(maxCharacters - marker.count)) + marker
         }
-        return visibleParts.joined(separator: " · ") + separatorMarker
+        return visibleParts.joined(separator: separator) + separatorMarker
+    }
+
+    private static func compactReasoningEffort(_ effort: String) -> String {
+        switch effort.lowercased() {
+        case "minimal":
+            return "min"
+        case "low":
+            return "lo"
+        case "medium":
+            return "med"
+        case "high":
+            return "hi"
+        case "xhigh":
+            return "xh"
+        default:
+            return effort
+        }
     }
 
     private func selectedTotalActualCost(config: AppConfig) -> Double? {

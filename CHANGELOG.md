@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.1.17
+
+- Added administrator-only monitoring for a selected user's realtime occupied concurrency.
+- Added administrator-only normal account count display from `/api/v1/admin/dashboard/stats`.
+- Kept normal user accounts on the existing dashboard and hid administrator-only menu bar items.
+- Documented the verified admin API endpoints and tightened project constraints around Sub2API contract evidence.
+
 ## v0.1.16
 
 - Keep the Open Console and Quit footer visible on both Overview and Settings inside the popover.

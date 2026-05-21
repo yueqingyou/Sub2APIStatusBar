@@ -16,6 +16,37 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     }
 }
 
+final class StubURLProtocol: URLProtocol, @unchecked Sendable {
+    static var responses: [String: Data] = [:]
+    static var requestedPaths: [String] = []
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: Sub2APIError.invalidBaseURL)
+            return
+        }
+
+        let key = url.path + (url.query.map { "?\($0)" } ?? "")
+        Self.requestedPaths.append(key)
+        let data = Self.responses[key] ?? Data(#"{"code":404,"message":"not found"}"#.utf8)
+        let status = Self.responses[key] == nil ? 404 : 200
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 final class Sub2APIStatusCoreTests: XCTestCase {
 
 func testAppConfigNormalizesBaseURLAndRefreshInterval() {
@@ -280,17 +311,129 @@ func testAppConfigDefaultsToUserMode() {
     XCTAssert(config.monitorMode == .user)
 }
 
-func testAppConfigDecodesLegacyAdminModeAsUserMode() throws {
+func testAppConfigRejectsUnknownMonitorMode() {
     let data = """
     {
       "baseURL": "http://127.0.0.1:8080",
-      "monitorMode": "admin"
+      "monitorMode": "operator"
+    }
+    """.data(using: .utf8)!
+
+    XCTAssertThrowsError(try JSONDecoder.sub2api.decode(AppConfig.self, from: data))
+}
+
+func testUserModeNormalizationRemovesAdminOnlyMenuItems() {
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .user,
+        menuBarDisplayItems: [.totalCost, .realtimeConcurrency, .normalAccounts],
+        adminMonitoredUserID: 42
+    )
+
+    XCTAssert(config.adminMonitoredUserID == nil)
+    XCTAssert(config.menuBarDisplayItems == [.totalCost])
+}
+
+func testAppConfigSupportsAdminModeAndSelectedUser() throws {
+    let data = """
+    {
+      "baseURL": "http://127.0.0.1:8080",
+      "monitorMode": "admin",
+      "adminMonitoredUserID": 42,
+      "menuBarDisplayItems": ["totalCost", "realtimeConcurrency"]
     }
     """.data(using: .utf8)!
 
     let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
 
-    XCTAssert(config.monitorMode == .user)
+    XCTAssert(config.monitorMode == .admin)
+    XCTAssert(config.adminMonitoredUserID == 42)
+    XCTAssert(config.menuBarDisplayItems == [.totalCost, .realtimeConcurrency])
+}
+
+func testMenuBarDisplayItemsExposeAdminOnlyConcurrencySeparately() {
+    XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.realtimeConcurrency) == false)
+    XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.realtimeConcurrency) == false)
+    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.realtimeConcurrency) == true)
+    XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.normalAccounts) == false)
+    XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.normalAccounts) == false)
+    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.normalAccounts) == true)
+}
+
+func testMenuBarSummaryIncludesRealtimeConcurrencyWhenAdminSelectsIt() {
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        menuBarDisplayItems: [.realtimeConcurrency]
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: nil,
+        realtime: nil,
+        realtimeConcurrency: UserRealtimeConcurrency(
+            userID: 42,
+            userEmail: "target@example.com",
+            username: "target",
+            currentInUse: 3,
+            maxCapacity: 100,
+            loadPercentage: 3,
+            waitingInQueue: 0
+        ),
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+
+    XCTAssert(snapshot.menuBarSummary(config: config) == "3 CC")
+}
+
+func testAdminDashboardStatsDecodesNormalAccountCountStrictly() throws {
+    let json = """
+    {
+      "total_accounts": 18,
+      "normal_accounts": 13,
+      "error_accounts": 2,
+      "ratelimit_accounts": 1,
+      "overload_accounts": 2
+    }
+    """.data(using: .utf8)!
+
+    let stats = try JSONDecoder.sub2api.decode(AdminDashboardStats.self, from: json)
+
+    XCTAssert(stats.totalAccounts == 18)
+    XCTAssert(stats.normalAccounts == 13)
+    XCTAssert(stats.errorAccounts == 2)
+    XCTAssert(stats.ratelimitAccounts == 1)
+    XCTAssert(stats.overloadAccounts == 2)
+}
+
+func testMenuBarSummaryIncludesNormalAccountsWhenAdminSelectsIt() {
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        menuBarDisplayItems: [.normalAccounts]
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: nil,
+        realtime: nil,
+        adminDashboardStats: AdminDashboardStats(
+            totalAccounts: 18,
+            normalAccounts: 13,
+            errorAccounts: 2,
+            ratelimitAccounts: 1,
+            overloadAccounts: 2
+        ),
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+
+    XCTAssert(snapshot.menuBarSummary(config: config) == "13 normal")
 }
 
 func testAppConfigClearsAuthTokens() {
@@ -530,14 +673,195 @@ func testCurrentUserResponseDecodesDirectUserPayload() throws {
       "username": "das",
       "role": "user",
       "balance": 12.34,
+      "concurrency": 100,
       "status": "active"
     }
     """.data(using: .utf8)!
 
     let response = try JSONDecoder.sub2api.decode(CurrentUserResponse.self, from: json)
 
-    XCTAssert(response.user?.balance == 12.34)
-    XCTAssert(response.user?.username == "das")
+    XCTAssert(response.user.balance == 12.34)
+    XCTAssert(response.user.username == "das")
+    XCTAssert(response.user.concurrency == 100)
+}
+
+func testCurrentUserResponseRequiresConcurrencyField() {
+    let json = """
+    {
+      "id": 7,
+      "email": "user@example.com",
+      "username": "das",
+      "role": "user",
+      "balance": 12.34,
+      "status": "active"
+    }
+    """.data(using: .utf8)!
+
+    XCTAssertThrowsError(try JSONDecoder.sub2api.decode(CurrentUserResponse.self, from: json))
+}
+
+func testCurrentUserRecognizesAdminRole() throws {
+    let json = """
+    {
+      "id": 1,
+      "email": "admin@example.com",
+      "username": "root",
+      "role": "admin",
+      "balance": 0,
+      "concurrency": 100,
+      "status": "active"
+    }
+    """.data(using: .utf8)!
+
+    let response = try JSONDecoder.sub2api.decode(CurrentUserResponse.self, from: json)
+
+    XCTAssert(response.user.isAdmin == true)
+}
+
+func testAdminUserConcurrencyStatsDecodeRealUserConcurrencyPayload() throws {
+    let json = """
+    {
+      "code": 0,
+      "message": "success",
+      "data": {
+        "enabled": true,
+        "user": {
+          "42": {
+            "user_id": 42,
+            "user_email": "target@example.com",
+            "username": "target",
+            "current_in_use": 3,
+            "max_capacity": 100,
+            "load_percentage": 3,
+            "waiting_in_queue": 1
+          }
+        },
+        "timestamp": "2026-05-21T12:34:56Z"
+      }
+    }
+    """.data(using: .utf8)!
+
+    let stats = try JSONDecoder.sub2api.decode(Sub2APIEnvelope<AdminUserConcurrencyStats>.self, from: json).value()
+    let target = try XCTUnwrap(stats.concurrency(forUserID: 42, userEmail: "target@example.com", username: "target", maxCapacity: 100))
+
+    XCTAssert(stats.enabled == true)
+    XCTAssert(target.userID == 42)
+    XCTAssert(target.currentInUse == 3)
+    XCTAssert(target.maxCapacity == 100)
+    XCTAssert(target.waitingInQueue == 1)
+}
+
+func testAdminUserConcurrencyStatsTreatsMissingActiveUserAsZeroOnlyWhenEnabled() throws {
+    let enabledJSON = """
+    {
+      "enabled": true,
+      "user": {},
+      "timestamp": "2026-05-21T12:34:56Z"
+    }
+    """.data(using: .utf8)!
+    let disabledJSON = """
+    {
+      "enabled": false,
+      "user": {},
+      "timestamp": "2026-05-21T12:34:56Z"
+    }
+    """.data(using: .utf8)!
+
+    let enabled = try JSONDecoder.sub2api.decode(AdminUserConcurrencyStats.self, from: enabledJSON)
+    let disabled = try JSONDecoder.sub2api.decode(AdminUserConcurrencyStats.self, from: disabledJSON)
+
+    XCTAssert(enabled.concurrency(forUserID: 99, userEmail: "idle@example.com", username: nil, maxCapacity: 12)?.currentInUse == 0)
+    XCTAssert(enabled.concurrency(forUserID: 99, userEmail: "idle@example.com", username: nil, maxCapacity: 12)?.maxCapacity == 12)
+    XCTAssert(disabled.concurrency(forUserID: 99, userEmail: "idle@example.com", username: nil, maxCapacity: 12) == nil)
+}
+
+func testAdminUsersPageDecodesStrictUserListShape() throws {
+    let json = """
+    {
+      "items": [
+        {
+          "id": 42,
+          "email": "target@example.com",
+          "username": "target",
+          "role": "user",
+          "balance": 8.25,
+          "status": "active",
+          "concurrency": 100,
+          "current_concurrency": 3
+        }
+      ],
+      "total": 1,
+      "page": 1,
+      "page_size": 20,
+      "pages": 1
+    }
+    """.data(using: .utf8)!
+
+    let page = try JSONDecoder.sub2api.decode(AdminUsersPage.self, from: json)
+
+    XCTAssert(page.items.first?.id == 42)
+    XCTAssert(page.items.first?.email == "target@example.com")
+    XCTAssert(page.items.first?.concurrency == 100)
+    XCTAssert(page.items.first?.currentConcurrency == 3)
+    XCTAssert(page.pageSize == 20)
+}
+
+func testSub2APIClientFetchesAllAdminUsersAcrossPages() async throws {
+    StubURLProtocol.responses = [
+        "/api/v1/admin/users?page=1&page_size=1000": Data("""
+        {
+          "items": [
+            {
+              "id": 1,
+              "email": "one@example.com",
+              "username": "one",
+              "role": "user",
+              "balance": 0,
+              "status": "active",
+              "concurrency": 10,
+              "current_concurrency": 0
+            }
+          ],
+          "total": 2,
+          "page": 1,
+          "page_size": 1000,
+          "pages": 2
+        }
+        """.utf8),
+        "/api/v1/admin/users?page=2&page_size=1000": Data("""
+        {
+          "items": [
+            {
+              "id": 2,
+              "email": "two@example.com",
+              "username": "two",
+              "role": "user",
+              "balance": 0,
+              "status": "active",
+              "concurrency": 10,
+              "current_concurrency": 1
+            }
+          ],
+          "total": 2,
+          "page": 2,
+          "page_size": 1000,
+          "pages": 2
+        }
+        """.utf8),
+    ]
+    StubURLProtocol.requestedPaths = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+
+    let users = try await client.allAdminUsers()
+
+    XCTAssert(users.map(\.id) == [1, 2])
+    XCTAssert(StubURLProtocol.requestedPaths == [
+        "/api/v1/admin/users?page=1&page_size=1000",
+        "/api/v1/admin/users?page=2&page_size=1000",
+    ])
 }
 
 func testDashboardSnapshotDecodesTokenBreakdownAndModelDistribution() throws {

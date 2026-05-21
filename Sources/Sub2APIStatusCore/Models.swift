@@ -82,24 +82,24 @@ public struct AuthResponse: Decodable, Sendable {
 }
 
 public struct CurrentUserResponse: Decodable, Equatable, Sendable {
-    public let user: CurrentUser?
+    public let user: CurrentUser
 
     private enum CodingKeys: String, CodingKey {
         case user
     }
 
-    public init(user: CurrentUser?) {
+    public init(user: CurrentUser) {
         self.user = user
     }
 
     public init(from decoder: Decoder) throws {
         if let wrapped = try? decoder.container(keyedBy: CodingKeys.self),
-           let user = try wrapped.decodeIfPresent(CurrentUser.self, forKey: .user) {
-            self.user = user
+           wrapped.contains(.user) {
+            user = try wrapped.decode(CurrentUser.self, forKey: .user)
             return
         }
 
-        user = try? CurrentUser(from: decoder)
+        user = try CurrentUser(from: decoder)
     }
 }
 
@@ -109,7 +109,167 @@ public struct CurrentUser: Decodable, Identifiable, Equatable, Sendable {
     public let username: String?
     public let role: String
     public let balance: Double?
+    public let concurrency: Int
     public let status: String?
+
+    public var isAdmin: Bool {
+        role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "admin"
+    }
+}
+
+public struct AdminUserSummary: Decodable, Identifiable, Equatable, Sendable {
+    public let id: Int64
+    public let email: String
+    public let username: String
+    public let role: String
+    public let balance: Double
+    public let status: String
+    public let concurrency: Int
+    public let currentConcurrency: Int
+
+    public init(
+        id: Int64,
+        email: String,
+        username: String,
+        role: String,
+        balance: Double,
+        status: String,
+        concurrency: Int,
+        currentConcurrency: Int
+    ) {
+        self.id = id
+        self.email = email
+        self.username = username
+        self.role = role
+        self.balance = balance
+        self.status = status
+        self.concurrency = concurrency
+        self.currentConcurrency = currentConcurrency
+    }
+
+    public init(currentUser: CurrentUser) {
+        self.init(
+            id: currentUser.id,
+            email: currentUser.email,
+            username: currentUser.username ?? "",
+            role: currentUser.role,
+            balance: currentUser.balance ?? 0,
+            status: currentUser.status ?? "",
+            concurrency: currentUser.concurrency,
+            currentConcurrency: 0
+        )
+    }
+
+    public var displayName: String {
+        username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? email : username
+    }
+}
+
+public struct AdminUsersPage: Decodable, Equatable, Sendable {
+    public let items: [AdminUserSummary]
+    public let total: Int
+    public let page: Int
+    public let pageSize: Int
+    public let pages: Int
+}
+
+public struct UserRealtimeConcurrency: Decodable, Identifiable, Equatable, Sendable {
+    public var id: Int64 { userID }
+
+    public let userID: Int64
+    public let userEmail: String
+    public let username: String
+    public let currentInUse: Int64
+    public let maxCapacity: Int64
+    public let loadPercentage: Double
+    public let waitingInQueue: Int64
+
+    public init(
+        userID: Int64,
+        userEmail: String,
+        username: String,
+        currentInUse: Int64,
+        maxCapacity: Int64,
+        loadPercentage: Double,
+        waitingInQueue: Int64
+    ) {
+        self.userID = userID
+        self.userEmail = userEmail
+        self.username = username
+        self.currentInUse = currentInUse
+        self.maxCapacity = maxCapacity
+        self.loadPercentage = loadPercentage
+        self.waitingInQueue = waitingInQueue
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case userID = "userId"
+        case userEmail
+        case username
+        case currentInUse
+        case maxCapacity
+        case loadPercentage
+        case waitingInQueue
+    }
+}
+
+public struct AdminUserConcurrencyStats: Decodable, Equatable, Sendable {
+    public let enabled: Bool
+    public let users: [String: UserRealtimeConcurrency]
+    public let timestamp: Date?
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case users = "user"
+        case timestamp
+    }
+
+    public func concurrency(
+        forUserID userID: Int64,
+        userEmail: String,
+        username: String?,
+        maxCapacity: Int
+    ) -> UserRealtimeConcurrency? {
+        guard enabled else {
+            return nil
+        }
+
+        if let exact = users[String(userID)] {
+            return exact
+        }
+
+        return UserRealtimeConcurrency(
+            userID: userID,
+            userEmail: userEmail,
+            username: username ?? "",
+            currentInUse: 0,
+            maxCapacity: Int64(maxCapacity),
+            loadPercentage: 0,
+            waitingInQueue: 0
+        )
+    }
+}
+
+public struct AdminDashboardStats: Decodable, Equatable, Sendable {
+    public let totalAccounts: Int
+    public let normalAccounts: Int
+    public let errorAccounts: Int
+    public let ratelimitAccounts: Int
+    public let overloadAccounts: Int
+
+    public init(
+        totalAccounts: Int,
+        normalAccounts: Int,
+        errorAccounts: Int,
+        ratelimitAccounts: Int,
+        overloadAccounts: Int
+    ) {
+        self.totalAccounts = totalAccounts
+        self.normalAccounts = normalAccounts
+        self.errorAccounts = errorAccounts
+        self.ratelimitAccounts = ratelimitAccounts
+        self.overloadAccounts = overloadAccounts
+    }
 }
 
 public struct RealtimeMetrics: Decodable, Equatable, Sendable {
@@ -1037,6 +1197,9 @@ public struct MonitorSnapshot: Equatable, Sendable {
     public let trend: [TrendDataPoint]?
     public let modelDistribution: [ModelUsageSummary]?
     public let realtime: RealtimeMetrics?
+    public let monitoredUser: AdminUserSummary?
+    public let realtimeConcurrency: UserRealtimeConcurrency?
+    public let adminDashboardStats: AdminDashboardStats?
     public let accountHealth: AccountHealthSummary?
     public let subscriptionSummary: SubscriptionSummary?
     public let lastUpdatedAt: Date?
@@ -1052,6 +1215,9 @@ public struct MonitorSnapshot: Equatable, Sendable {
         trend: [TrendDataPoint]? = nil,
         modelDistribution: [ModelUsageSummary]? = nil,
         realtime: RealtimeMetrics?,
+        monitoredUser: AdminUserSummary? = nil,
+        realtimeConcurrency: UserRealtimeConcurrency? = nil,
+        adminDashboardStats: AdminDashboardStats? = nil,
         accountHealth: AccountHealthSummary?,
         subscriptionSummary: SubscriptionSummary?,
         lastUpdatedAt: Date?,
@@ -1066,6 +1232,9 @@ public struct MonitorSnapshot: Equatable, Sendable {
         self.trend = trend
         self.modelDistribution = modelDistribution
         self.realtime = realtime
+        self.monitoredUser = monitoredUser
+        self.realtimeConcurrency = realtimeConcurrency
+        self.adminDashboardStats = adminDashboardStats
         self.accountHealth = accountHealth
         self.subscriptionSummary = subscriptionSummary
         self.lastUpdatedAt = lastUpdatedAt
@@ -1078,6 +1247,9 @@ public struct MonitorSnapshot: Equatable, Sendable {
             connected: false,
             stats: nil,
             realtime: nil,
+            monitoredUser: nil,
+            realtimeConcurrency: nil,
+            adminDashboardStats: nil,
             accountHealth: nil,
             subscriptionSummary: nil,
             lastUpdatedAt: nil,
@@ -1197,6 +1369,14 @@ public struct MonitorSnapshot: Equatable, Sendable {
             case .rpm:
                 if let rpm = stats?.rpm ?? realtime?.requestsPerMinute {
                     parts.append("\(StatusFormatters.menuBarRate(rpm)) RPM")
+                }
+            case .realtimeConcurrency:
+                if let concurrency = realtimeConcurrency {
+                    parts.append("\(StatusFormatters.menuBarCount(concurrency.currentInUse)) CC")
+                }
+            case .normalAccounts:
+                if let normalAccounts = adminDashboardStats?.normalAccounts {
+                    parts.append("\(StatusFormatters.menuBarCount(Int64(normalAccounts))) normal")
                 }
             }
         }

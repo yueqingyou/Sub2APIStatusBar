@@ -74,15 +74,29 @@ public enum AppAppearance: String, Codable, CaseIterable, Identifiable, Sendable
 
 public enum MonitorMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case user
+    case admin
 
     public var id: String { rawValue }
 
     public var displayName: String {
-        "User"
+        switch self {
+        case .user:
+            return "User"
+        case .admin:
+            return "Admin"
+        }
     }
 
-    public init(from _: Decoder) throws {
-        self = .user
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        guard let mode = MonitorMode(rawValue: rawValue) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid monitor mode: \(rawValue)"
+            )
+        }
+        self = mode
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -166,6 +180,8 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
     case inputPrice
     case outputPrice
     case rpm
+    case realtimeConcurrency
+    case normalAccounts
 
     public var id: String { rawValue }
 
@@ -189,6 +205,19 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
             return "Output Price"
         case .rpm:
             return "Realtime RPM"
+        case .realtimeConcurrency:
+            return "Realtime Concurrency"
+        case .normalAccounts:
+            return "Normal Accounts"
+        }
+    }
+
+    public var isAdminOnly: Bool {
+        switch self {
+        case .realtimeConcurrency, .normalAccounts:
+            return true
+        default:
+            return false
         }
     }
 
@@ -200,6 +229,14 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
         .fast,
         .rpm,
     ]
+
+    public static var userVisibleCases: [MenuBarDisplayItem] {
+        allCases.filter { !$0.isAdminOnly }
+    }
+
+    public static var adminVisibleCases: [MenuBarDisplayItem] {
+        allCases
+    }
 
     public static func fromEnvironment(_ value: String?) -> [MenuBarDisplayItem] {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
@@ -226,6 +263,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var launchAtLogin: Bool
     public var menuBarUsageWindow: MenuBarUsageWindow
     public var menuBarDisplayItems: [MenuBarDisplayItem]
+    public var adminMonitoredUserID: Int64?
 
     public init(
         baseURL: String,
@@ -238,7 +276,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         showsMenuBarText: Bool = false,
         launchAtLogin: Bool = false,
         menuBarUsageWindow: MenuBarUsageWindow = .last24Hours,
-        menuBarDisplayItems: [MenuBarDisplayItem] = MenuBarDisplayItem.defaultSelection
+        menuBarDisplayItems: [MenuBarDisplayItem] = MenuBarDisplayItem.defaultSelection,
+        adminMonitoredUserID: Int64? = nil
     ) {
         self.baseURL = baseURL
         self.authToken = authToken
@@ -251,6 +290,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.launchAtLogin = launchAtLogin
         self.menuBarUsageWindow = menuBarUsageWindow
         self.menuBarDisplayItems = menuBarDisplayItems
+        self.adminMonitoredUserID = adminMonitoredUserID
         normalize()
     }
 
@@ -266,6 +306,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case launchAtLogin
         case menuBarUsageWindow
         case menuBarDisplayItems
+        case adminMonitoredUserID
     }
 
     public init(from decoder: Decoder) throws {
@@ -280,6 +321,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         showsMenuBarText = try container.decodeIfPresent(Bool.self, forKey: .showsMenuBarText) ?? false
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
         menuBarUsageWindow = try container.decodeIfPresent(MenuBarUsageWindow.self, forKey: .menuBarUsageWindow) ?? .last24Hours
+        adminMonitoredUserID = try container.decodeIfPresent(Int64.self, forKey: .adminMonitoredUserID)
         if let rawItems = try container.decodeIfPresent([String].self, forKey: .menuBarDisplayItems) {
             menuBarDisplayItems = rawItems.compactMap(MenuBarDisplayItem.init(rawValue:))
         } else {
@@ -299,6 +341,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(menuBarUsageWindow, forKey: .menuBarUsageWindow)
         try container.encode(menuBarDisplayItems.map(\.rawValue), forKey: .menuBarDisplayItems)
+        try container.encodeIfPresent(adminMonitoredUserID, forKey: .adminMonitoredUserID)
     }
 
     public static func defaults() -> AppConfig {
@@ -333,7 +376,10 @@ public struct AppConfig: Codable, Equatable, Sendable {
         if language == .auto {
             language = .zhHans
         }
-        monitorMode = .user
+        if monitorMode == .user {
+            adminMonitoredUserID = nil
+            menuBarDisplayItems.removeAll { $0.isAdminOnly }
+        }
         var seen = Set<MenuBarDisplayItem>()
         menuBarDisplayItems = menuBarDisplayItems.filter { seen.insert($0).inserted }
     }

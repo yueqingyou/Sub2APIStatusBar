@@ -78,6 +78,39 @@ public struct Sub2APIClient: Sendable {
         try await get("/subscriptions/summary")
     }
 
+    public func adminUsers(page: Int = 1, pageSize: Int = 100, search: String? = nil) async throws -> AdminUsersPage {
+        var query = [
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "page_size", value: String(pageSize)),
+        ]
+        if let search, !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            query.append(URLQueryItem(name: "search", value: search))
+        }
+        return try await get("/admin/users", query: query)
+    }
+
+    public func allAdminUsers(pageSize: Int = 1000) async throws -> [AdminUserSummary] {
+        var page = 1
+        var users: [AdminUserSummary] = []
+
+        while true {
+            let response = try await adminUsers(page: page, pageSize: pageSize)
+            users.append(contentsOf: response.items)
+            guard page < response.pages, !response.items.isEmpty else {
+                return users
+            }
+            page += 1
+        }
+    }
+
+    public func adminUserConcurrencyStats() async throws -> AdminUserConcurrencyStats {
+        try await get("/admin/ops/user-concurrency")
+    }
+
+    public func adminDashboardStats() async throws -> AdminDashboardStats {
+        try await get("/admin/dashboard/stats")
+    }
+
     public func refreshToken(_ refreshToken: String) async throws -> AuthResponse {
         struct RefreshRequest: Encodable, Sendable {
             let refreshToken: String

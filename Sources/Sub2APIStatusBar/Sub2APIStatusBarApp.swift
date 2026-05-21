@@ -162,6 +162,7 @@ final class MonitorViewModel: ObservableObject {
     @Published var isCheckingForUpdates = false
     @Published var isInstallingUpdate = false
     @Published var updateStatusMessage: String?
+    @Published var adminUsers: [AdminUserSummary] = []
 
     var onSnapshotChange: ((MonitorSnapshot) -> Void)?
     var onAppearanceChange: ((AppAppearance) -> Void)?
@@ -232,7 +233,7 @@ final class MonitorViewModel: ObservableObject {
     }
 
     private func userSnapshot(client: Sub2APIClient) async throws -> MonitorSnapshot {
-        let currentUser = try? await client.currentUser().user
+        let currentUser = try await client.currentUser().user
         async let summaryTask = client.subscriptionSummary()
         async let statsTask = client.usageDashboardStats()
         let timezone = TimeZone.current.identifier
@@ -248,8 +249,9 @@ final class MonitorViewModel: ObservableObject {
         let latestUsage = try? await latestUsageTask
         let trend = try? await trendTask
         let models = try? await modelsTask
+        let adminContext = await adminMonitoringContext(for: currentUser, client: client)
         return MonitorSnapshot(
-            mode: .user,
+            mode: adminContext.mode,
             connected: true,
             currentUser: currentUser,
             stats: stats,
@@ -258,11 +260,101 @@ final class MonitorViewModel: ObservableObject {
             trend: trend?.trend,
             modelDistribution: models?.models,
             realtime: nil,
+            monitoredUser: adminContext.monitoredUser,
+            realtimeConcurrency: adminContext.realtimeConcurrency,
+            adminDashboardStats: adminContext.adminDashboardStats,
             accountHealth: nil,
             subscriptionSummary: summary,
             lastUpdatedAt: Date(),
-            message: nil
+            message: adminContext.message
         )
+    }
+
+    private func adminMonitoringContext(
+        for currentUser: CurrentUser,
+        client: Sub2APIClient
+    ) async -> (
+        mode: MonitorMode,
+        monitoredUser: AdminUserSummary?,
+        realtimeConcurrency: UserRealtimeConcurrency?,
+        adminDashboardStats: AdminDashboardStats?,
+        message: String?
+    ) {
+        guard currentUser.isAdmin else {
+            adminUsers = []
+            clearAdminSettingsForNormalUserIfNeeded()
+            return (.user, nil, nil, nil, nil)
+        }
+
+        async let usersTask = client.allAdminUsers()
+        async let concurrencyTask = client.adminUserConcurrencyStats()
+        async let adminStatsTask = client.adminDashboardStats()
+
+        var messages: [String] = []
+        let users: [AdminUserSummary]
+        do {
+            users = try await usersTask
+            adminUsers = users
+        } catch {
+            adminUsers = []
+            users = []
+            messages.append(error.localizedDescription)
+        }
+
+        let selectedUserID = config.adminMonitoredUserID ?? currentUser.id
+        let fallbackUser = AdminUserSummary(currentUser: currentUser)
+        guard let target = users.first(where: { $0.id == selectedUserID }) ?? (selectedUserID == currentUser.id ? fallbackUser : nil) else {
+            messages.append(AppStrings(config.language).phrase("未找到选定监控用户。", "The selected monitored user was not found."))
+            let adminStats = try? await adminStatsTask
+            _ = try? await concurrencyTask
+            return (.admin, nil, nil, adminStats, messages.first)
+        }
+
+        let adminStats: AdminDashboardStats?
+        do {
+            adminStats = try await adminStatsTask
+        } catch {
+            adminStats = nil
+            messages.append(error.localizedDescription)
+        }
+
+        let concurrency: UserRealtimeConcurrency?
+        do {
+            let stats = try await concurrencyTask
+            concurrency = stats.concurrency(
+                forUserID: target.id,
+                userEmail: target.email,
+                username: target.username,
+                maxCapacity: target.concurrency
+            )
+            if concurrency == nil {
+                messages.append(AppStrings(config.language).phrase("实时并发监控未启用。", "Realtime concurrency monitoring is disabled."))
+            }
+        } catch {
+            concurrency = nil
+            messages.append(error.localizedDescription)
+        }
+        return (.admin, target, concurrency, adminStats, messages.first)
+    }
+
+    private func clearAdminSettingsForNormalUserIfNeeded() {
+        guard config.monitorMode != .user ||
+              config.adminMonitoredUserID != nil ||
+              config.menuBarDisplayItems.contains(where: \.isAdminOnly) else {
+            return
+        }
+
+        var next = config
+        next.monitorMode = .user
+        next.adminMonitoredUserID = nil
+        next.menuBarDisplayItems.removeAll { $0.isAdminOnly }
+        do {
+            try store.save(next)
+            config = next
+            settingsDraft = next
+        } catch {
+            settingsError = error.localizedDescription
+        }
     }
 
     private func menuBarUsageStats(client: Sub2APIClient, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
@@ -698,27 +790,18 @@ struct MonitorPanel: View {
                 UserAccountCard(user: user)
             }
 
+            if model.snapshot.mode == .admin,
+               let monitoredUser = model.snapshot.monitoredUser {
+                MonitoredUserCard(user: monitoredUser, concurrency: model.snapshot.realtimeConcurrency)
+            }
+
             if let stats = model.snapshot.stats {
-                MetricGrid(items: [
-                    MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, caption: strings.phrase("可用", "Available"), systemImage: "banknote", tint: ClaudeTheme.accent),
-                    MetricItem(title: "API Keys", value: "\(stats.totalAPIKeys)", caption: strings.phrase("\(stats.activeAPIKeys) 个活跃", "\(stats.activeAPIKeys) active"), systemImage: "key", tint: ClaudeTheme.slate),
-                    MetricItem(title: strings.phrase("今日请求", "Today Requests"), value: StatusFormatters.menuBarCount(stats.todayRequests), caption: strings.phrase("总计 \(StatusFormatters.compactNumber(stats.totalRequests))", "Total \(StatusFormatters.compactNumber(stats.totalRequests))"), systemImage: "chart.bar", tint: ClaudeTheme.accent),
-                    MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: strings.phrase("总计 \(StatusFormatters.preciseCurrency(stats.totalActualCost))", "Total \(StatusFormatters.preciseCurrency(stats.totalActualCost))"), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
-                    MetricItem(title: strings.phrase("今日 Token", "Today Tokens"), value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: ClaudeTheme.warm),
-                    MetricItem(title: strings.phrase("总 Token", "Total Tokens"), value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.ink),
-                    MetricItem(title: strings.phrase("性能", "Performance"), value: "\(StatusFormatters.menuBarRate(stats.rpm)) RPM", caption: "\(StatusFormatters.compactNumber(Int64(stats.tpm))) TPM", systemImage: "bolt", tint: ClaudeTheme.gold),
-                    MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), caption: strings.phrase("平均耗时", "Average time"), systemImage: "clock", tint: ClaudeTheme.danger),
-                ])
+                MetricGrid(items: primaryMetrics(stats: stats))
             }
 
             if let summary = model.snapshot.subscriptionSummary {
                 if model.snapshot.stats == nil {
-                    MetricGrid(items: [
-                        MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, systemImage: "banknote", tint: ClaudeTheme.accent),
-                        MetricItem(title: strings.phrase("活跃订阅", "Active Subs"), value: "\(summary.activeCount)", systemImage: "checkmark.seal", tint: ClaudeTheme.accent),
-                        MetricItem(title: strings.phrase("峰值用量", "Peak Usage"), value: StatusFormatters.percent(summary.highestProgress), systemImage: "gauge.with.dots.needle.67percent", tint: ClaudeTheme.warning),
-                        MetricItem(title: strings.phrase("已用总额", "Total Used"), value: StatusFormatters.preciseCurrency(summary.totalUsedUSD), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
-                    ])
+                    MetricGrid(items: fallbackMetrics(summary: summary))
                 }
 
                 SubscriptionSection(summary: summary)
@@ -735,6 +818,70 @@ struct MonitorPanel: View {
                 }
             }
         }
+    }
+
+    private func primaryMetrics(stats: DashboardStats) -> [MetricItem] {
+        var items: [MetricItem] = []
+        if let concurrency = model.snapshot.realtimeConcurrency {
+            items.append(realtimeConcurrencyMetric(concurrency))
+        }
+        if let adminStats = model.snapshot.adminDashboardStats {
+            items.append(normalAccountsMetric(adminStats))
+        }
+        items.append(contentsOf: [
+            MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, caption: strings.phrase("可用", "Available"), systemImage: "banknote", tint: ClaudeTheme.accent),
+            MetricItem(title: "API Keys", value: "\(stats.totalAPIKeys)", caption: strings.phrase("\(stats.activeAPIKeys) 个活跃", "\(stats.activeAPIKeys) active"), systemImage: "key", tint: ClaudeTheme.slate),
+            MetricItem(title: strings.phrase("今日请求", "Today Requests"), value: StatusFormatters.menuBarCount(stats.todayRequests), caption: strings.phrase("总计 \(StatusFormatters.compactNumber(stats.totalRequests))", "Total \(StatusFormatters.compactNumber(stats.totalRequests))"), systemImage: "chart.bar", tint: ClaudeTheme.accent),
+            MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: strings.phrase("总计 \(StatusFormatters.preciseCurrency(stats.totalActualCost))", "Total \(StatusFormatters.preciseCurrency(stats.totalActualCost))"), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
+            MetricItem(title: strings.phrase("今日 Token", "Today Tokens"), value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: ClaudeTheme.warm),
+            MetricItem(title: strings.phrase("总 Token", "Total Tokens"), value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.ink),
+            MetricItem(title: strings.phrase("性能", "Performance"), value: "\(StatusFormatters.menuBarRate(stats.rpm)) RPM", caption: "\(StatusFormatters.compactNumber(Int64(stats.tpm))) TPM", systemImage: "bolt", tint: ClaudeTheme.gold),
+            MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), caption: strings.phrase("平均耗时", "Average time"), systemImage: "clock", tint: ClaudeTheme.danger),
+        ])
+        return items
+    }
+
+    private func fallbackMetrics(summary: SubscriptionSummary) -> [MetricItem] {
+        var items: [MetricItem] = []
+        if let concurrency = model.snapshot.realtimeConcurrency {
+            items.append(realtimeConcurrencyMetric(concurrency))
+        }
+        if let adminStats = model.snapshot.adminDashboardStats {
+            items.append(normalAccountsMetric(adminStats))
+        }
+        items.append(contentsOf: [
+            MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, systemImage: "banknote", tint: ClaudeTheme.accent),
+            MetricItem(title: strings.phrase("活跃订阅", "Active Subs"), value: "\(summary.activeCount)", systemImage: "checkmark.seal", tint: ClaudeTheme.accent),
+            MetricItem(title: strings.phrase("峰值用量", "Peak Usage"), value: StatusFormatters.percent(summary.highestProgress), systemImage: "gauge.with.dots.needle.67percent", tint: ClaudeTheme.warning),
+            MetricItem(title: strings.phrase("已用总额", "Total Used"), value: StatusFormatters.preciseCurrency(summary.totalUsedUSD), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
+        ])
+        return items
+    }
+
+    private func realtimeConcurrencyMetric(_ concurrency: UserRealtimeConcurrency) -> MetricItem {
+        MetricItem(
+            title: strings.phrase("实时并发", "Realtime Concurrency"),
+            value: StatusFormatters.menuBarCount(concurrency.currentInUse),
+            caption: strings.phrase(
+                "等待 \(concurrency.waitingInQueue) / 上限 \(concurrency.maxCapacity)",
+                "Waiting \(concurrency.waitingInQueue) / Cap \(concurrency.maxCapacity)"
+            ),
+            systemImage: "arrow.triangle.2.circlepath.circle",
+            tint: ClaudeTheme.warning
+        )
+    }
+
+    private func normalAccountsMetric(_ stats: AdminDashboardStats) -> MetricItem {
+        MetricItem(
+            title: strings.phrase("正常账号", "Normal Accounts"),
+            value: StatusFormatters.menuBarCount(Int64(stats.normalAccounts)),
+            caption: strings.phrase(
+                "总计 \(stats.totalAccounts) / 异常 \(stats.errorAccounts + stats.ratelimitAccounts + stats.overloadAccounts)",
+                "Total \(stats.totalAccounts) / Other \(stats.errorAccounts + stats.ratelimitAccounts + stats.overloadAccounts)"
+            ),
+            systemImage: "checkmark.seal",
+            tint: ClaudeTheme.success
+        )
     }
 
     private var iconName: String {
@@ -1215,9 +1362,40 @@ struct SettingsView: View {
                             .font(.callout.weight(.semibold))
                             .foregroundStyle(.secondary)
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
-                            ForEach(MenuBarDisplayItem.allCases) { item in
+                            ForEach(availableMenuBarDisplayItems) { item in
                                 Toggle(strings.menuBarItemName(item), isOn: menuBarItemBinding(item))
                             }
+                        }
+                    }
+                }
+            }
+
+            if isAdminAccount {
+                GlassCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(strings.phrase("管理员监控", "Admin Monitoring"))
+                            .font(.headline)
+
+                        Text(strings.phrase("使用当前管理员账号权限选择要监控的用户。普通用户账号不会显示这些项目。", "Use the current admin account to choose which user to monitor. Normal user accounts do not show these items."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        settingsRow(strings.phrase("监控用户", "Monitor User")) {
+                            Picker("", selection: adminMonitoredUserBinding) {
+                                ForEach(adminUserOptions) { user in
+                                    Text(userOptionTitle(user))
+                                        .tag(user.id)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity)
+                        }
+
+                        if model.snapshot.realtimeConcurrency != nil {
+                            Text(strings.phrase("实时并发来自管理员运维接口。", "Realtime concurrency comes from the admin ops endpoint."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -1316,6 +1494,47 @@ struct SettingsView: View {
         )
     }
 
+    private var isAdminAccount: Bool {
+        model.snapshot.currentUser?.isAdmin == true
+    }
+
+    private var availableMenuBarDisplayItems: [MenuBarDisplayItem] {
+        isAdminAccount ? MenuBarDisplayItem.adminVisibleCases : MenuBarDisplayItem.userVisibleCases
+    }
+
+    private var adminUserOptions: [AdminUserSummary] {
+        if model.adminUsers.isEmpty,
+           let currentUser = model.snapshot.currentUser {
+            return [AdminUserSummary(currentUser: currentUser)]
+        }
+        return model.adminUsers
+    }
+
+    private var adminMonitoredUserBinding: Binding<Int64> {
+        Binding(
+            get: {
+                model.settingsDraft.adminMonitoredUserID
+                    ?? model.snapshot.currentUser?.id
+                    ?? adminUserOptions.first?.id
+                    ?? 0
+            },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: true) { draft in
+                    draft.monitorMode = .admin
+                    draft.adminMonitoredUserID = value
+                }
+            }
+        )
+    }
+
+    private func userOptionTitle(_ user: AdminUserSummary) -> String {
+        let name = user.displayName
+        if name == user.email {
+            return user.email
+        }
+        return "\(name) <\(user.email)>"
+    }
+
     private func menuBarItemBinding(_ item: MenuBarDisplayItem) -> Binding<Bool> {
         Binding(
             get: {
@@ -1323,6 +1542,13 @@ struct SettingsView: View {
             },
             set: { isEnabled in
                 model.applySettingsChange(refreshAfterSave: false) { draft in
+                    if item.isAdminOnly {
+                        guard isAdminAccount else {
+                            draft.menuBarDisplayItems.removeAll { $0 == item }
+                            return
+                        }
+                        draft.monitorMode = .admin
+                    }
                     if isEnabled {
                         if !draft.menuBarDisplayItems.contains(item) {
                             draft.menuBarDisplayItems.append(item)
@@ -1558,6 +1784,68 @@ struct UserAccountCard: View {
         }
         .padding(12)
         .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var strings: AppStrings {
+        AppStrings(language)
+    }
+}
+
+struct MonitoredUserCard: View {
+    @Environment(\.appLanguage) private var language
+
+    let user: AdminUserSummary
+    let concurrency: UserRealtimeConcurrency?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(ClaudeTheme.warning.opacity(0.16))
+                Image(systemName: "scope")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(ClaudeTheme.warning)
+            }
+            .frame(width: 42, height: 42)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(strings.phrase("监控用户", "Monitored User"))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(user.displayName)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(user.email)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(strings.phrase("并发占用", "Concurrency"))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(concurrencyText)
+                    .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    .foregroundStyle(ClaudeTheme.warning)
+            }
+        }
+        .padding(12)
+        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(ClaudeTheme.warning.opacity(0.2), lineWidth: 1)
+        )
+    }
+
+    private var concurrencyText: String {
+        guard let concurrency else {
+            return "--"
+        }
+        return "\(concurrency.currentInUse)/\(concurrency.maxCapacity)"
     }
 
     private var strings: AppStrings {

@@ -88,6 +88,10 @@ struct AppStrings {
             return phrase("输出价格", "Output Price")
         case .rpm:
             return phrase("实时 RPM", "Realtime RPM")
+        case .realtimeConcurrency:
+            return phrase("实时并发", "Realtime Concurrency")
+        case .normalAccounts:
+            return phrase("正常账号数", "Normal Accounts")
         }
     }
 

@@ -358,6 +358,7 @@ func testMenuBarDisplayItemsExposeAdminOnlyConcurrencySeparately() {
     XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.normalAccounts) == false)
     XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.normalAccounts) == false)
     XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.normalAccounts) == true)
+    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.rpm) == false)
 }
 
 func testMenuBarSummaryIncludesRealtimeConcurrencyWhenAdminSelectsIt() {
@@ -864,6 +865,116 @@ func testSub2APIClientFetchesAllAdminUsersAcrossPages() async throws {
     ])
 }
 
+func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async throws {
+    StubURLProtocol.responses = [
+        "/api/v1/admin/users/2": Data("""
+        {
+          "id": 2,
+          "email": "target@example.com",
+          "username": "target",
+          "role": "user",
+          "balance": 66937.34,
+          "status": "active",
+          "concurrency": 100,
+          "current_concurrency": 2
+        }
+        """.utf8),
+        "/api/v1/admin/usage/stats?user_id=2&start_date=2026-05-21&end_date=2026-05-21&timezone=Asia/Shanghai": Data("""
+        {
+          "total_requests": 3953,
+          "total_actual_cost": 1010.5504306,
+          "total_tokens": 511283323,
+          "total_input_tokens": 38967768,
+          "total_output_tokens": 3026083,
+          "total_cache_creation_tokens": 0,
+          "total_cache_read_tokens": 469289472,
+          "average_duration_ms": 14514.63
+        }
+        """.utf8),
+        "/api/v1/admin/usage?user_id=2&page=1&page_size=1&sort_by=created_at&sort_order=desc&timezone=Asia/Shanghai": Data("""
+        {
+          "items": [
+            {
+              "id": 133605,
+              "user_id": 2,
+              "model": "gpt-5.5",
+              "service_tier": "priority",
+              "reasoning_effort": "xhigh",
+              "input_tokens": 430,
+              "output_tokens": 1172,
+              "cache_creation_tokens": 0,
+              "cache_read_tokens": 164224,
+              "actual_cost": 0.238844,
+              "created_at": "2026-05-21T15:37:40.960689+08:00"
+            }
+          ],
+          "total": 1,
+          "page": 1,
+          "page_size": 1,
+          "pages": 1
+        }
+        """.utf8),
+        "/api/v1/admin/dashboard/trend?user_id=2&start_date=2026-05-15&end_date=2026-05-21&granularity=day&timezone=Asia/Shanghai": Data("""
+        {
+          "trend": [
+            {
+              "date": "2026-05-21",
+              "requests": 3955,
+              "input_tokens": 38968948,
+              "output_tokens": 3027292,
+              "cache_read_tokens": 469653760,
+              "total_tokens": 511650000,
+              "cost": 1010.9990586,
+              "actual_cost": 1010.9990586
+            }
+          ]
+        }
+        """.utf8),
+        "/api/v1/admin/dashboard/models?user_id=2&start_date=2026-05-15&end_date=2026-05-21&timezone=Asia/Shanghai": Data("""
+        {
+          "models": [
+            {
+              "model": "gpt-5.5",
+              "requests": 38595,
+              "input_tokens": 355961052,
+              "output_tokens": 28255560,
+              "cache_read_tokens": 4380570437,
+              "total_tokens": 4772887049,
+              "cost": 6224.069159,
+              "actual_cost": 6224.069159
+            }
+          ]
+        }
+        """.utf8),
+    ]
+    StubURLProtocol.requestedPaths = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+
+    let user = try await client.adminUser(id: 2)
+    let stats = try await client.adminUsageStats(userID: 2, startDate: "2026-05-21", endDate: "2026-05-21", timezone: "Asia/Shanghai")
+    let latest = try await client.adminUsageLogs(userID: 2, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: "Asia/Shanghai")
+    let trend = try await client.adminDashboardTrend(userID: 2, startDate: "2026-05-15", endDate: "2026-05-21", granularity: "day", timezone: "Asia/Shanghai")
+    let models = try await client.adminDashboardModels(userID: 2, startDate: "2026-05-15", endDate: "2026-05-21", timezone: "Asia/Shanghai")
+
+    XCTAssert(user.balance == 66937.34)
+    XCTAssert(stats.totalRequests == 3953)
+    XCTAssert(stats.totalCacheReadTokens == 469_289_472)
+    XCTAssert(latest.items.first?.model == "gpt-5.5")
+    XCTAssert(latest.items.first?.reasoningEffort == "xhigh")
+    XCTAssert(trend.trend.first?.requests == 3955)
+    XCTAssert(models.models.first?.model == "gpt-5.5")
+    XCTAssert(StubURLProtocol.requestedPaths == [
+        "/api/v1/admin/users/2",
+        "/api/v1/admin/usage/stats?user_id=2&start_date=2026-05-21&end_date=2026-05-21&timezone=Asia/Shanghai",
+        "/api/v1/admin/usage?user_id=2&page=1&page_size=1&sort_by=created_at&sort_order=desc&timezone=Asia/Shanghai",
+        "/api/v1/admin/dashboard/trend?user_id=2&start_date=2026-05-15&end_date=2026-05-21&granularity=day&timezone=Asia/Shanghai",
+        "/api/v1/admin/dashboard/models?user_id=2&start_date=2026-05-15&end_date=2026-05-21&timezone=Asia/Shanghai",
+    ])
+}
+
 func testDashboardSnapshotDecodesTokenBreakdownAndModelDistribution() throws {
     let json = """
     {
@@ -1122,6 +1233,42 @@ func testSubscriptionSummaryDecodesUsdUsageIntoProgress() throws {
     XCTAssert(summary.subscriptions.first?.daysRemaining == 22)
 }
 
+func testAdminUserSubscriptionBuildsSelectedUserSubscriptionSummary() throws {
+    let json = """
+    [
+      {
+        "id": 9,
+        "user_id": 2,
+        "group_id": 3,
+        "starts_at": "2026-05-01T00:00:00+08:00",
+        "expires_at": "2026-05-23T00:00:00+08:00",
+        "status": "active",
+        "daily_usage_usd": 117.25,
+        "weekly_usage_usd": 153.11,
+        "monthly_usage_usd": 498.38,
+        "group": {
+          "id": 3,
+          "name": "codex",
+          "daily_limit_usd": 125,
+          "weekly_limit_usd": 500,
+          "monthly_limit_usd": 2000
+        }
+      }
+    ]
+    """.data(using: .utf8)!
+    let referenceDate = ISO8601DateFormatter().date(from: "2026-05-21T00:00:00+08:00")!
+
+    let subscriptions = try JSONDecoder.sub2api.decode([AdminUserSubscription].self, from: json)
+    let summary = SubscriptionSummary(adminSubscriptions: subscriptions, referenceDate: referenceDate)
+
+    XCTAssert(subscriptions.first?.userID == 2)
+    XCTAssert(summary.activeCount == 1)
+    XCTAssertEqual(summary.totalUsedUSD, 498.38, accuracy: 0.000001)
+    XCTAssert(summary.subscriptions.first?.groupName == "codex")
+    XCTAssertEqual(summary.subscriptions.first?.dailyProgress ?? 0, 0.938, accuracy: 0.000001)
+    XCTAssert(summary.subscriptions.first?.daysRemaining == 2)
+}
+
 func testMonitorSnapshotEscalatesSeverityFromSignals() {
     let healthy = MonitorSnapshot(
         mode: .user,
@@ -1283,6 +1430,58 @@ func testMonitorSnapshotMenuBarPresentationHidesHealthyImageWhenTextIsShown() {
 
     XCTAssert(presentation.title == " gpt-5.5")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
+}
+
+func testMonitorSnapshotMenuBarPresentationTruncatesLongStatusTextOnly() {
+    let latestUsage = UsageLog(
+        id: 133605,
+        model: "gpt-5.5",
+        serviceTier: "priority",
+        reasoningEffort: "xhigh",
+        inputTokens: 430,
+        outputTokens: 1172,
+        cacheReadTokens: 164_224,
+        actualCost: 0.238844
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: DashboardStats(todayRequests: 239, todayActualCost: 0.22, rpm: 52),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 239, totalActualCost: 0.22),
+        latestUsage: latestUsage,
+        realtime: nil,
+        realtimeConcurrency: UserRealtimeConcurrency(userID: 2, userEmail: "target@example.com", username: "target", currentInUse: 1, maxCapacity: 100, loadPercentage: 0.01, waitingInQueue: 0),
+        adminDashboardStats: AdminDashboardStats(totalAccounts: 13, normalAccounts: 8, errorAccounts: 2, ratelimitAccounts: 1, overloadAccounts: 2),
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalCost, .totalRequests, .model, .reasoningEffort, .fast, .rpm, .realtimeConcurrency, .normalAccounts]
+    )
+
+    let fullSummary = snapshot.menuBarSummary(config: config)
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(fullSummary, "$0.22 · 239 req · gpt-5.5 · xhigh · Fast · 1 CC · 8 normal")
+    XCTAssert(presentation.title.count <= 38)
+    XCTAssert(presentation.title.hasSuffix("…"))
+    XCTAssert(presentation.hidesHealthyStatusImage == true)
+}
+
+func testCompactMenuBarSummaryAlwaysRespectsMaximumLength() {
+    let summary = "$0.22 · 239 req · gpt-5.5 · xhigh · Fast · 1 CC · 8 normal"
+
+    XCTAssertEqual(MonitorSnapshot.compactMenuBarSummary(summary, maxCharacters: summary.count), summary)
+
+    for limit in 1...40 {
+        let compacted = MonitorSnapshot.compactMenuBarSummary(summary, maxCharacters: limit)
+        XCTAssert(compacted.count <= limit)
+    }
 }
 
 func testMonitorSnapshotMenuBarPresentationUsesEmptyTitleWhenOnlyDisabledFastIsSelected() {

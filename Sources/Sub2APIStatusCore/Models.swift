@@ -272,6 +272,48 @@ public struct AdminDashboardStats: Decodable, Equatable, Sendable {
     }
 }
 
+public struct AdminSubscriptionGroup: Decodable, Equatable, Sendable {
+    public let id: Int64
+    public let name: String
+    public let dailyLimitUSD: Double?
+    public let weeklyLimitUSD: Double?
+    public let monthlyLimitUSD: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case dailyLimitUSD = "dailyLimitUsd"
+        case weeklyLimitUSD = "weeklyLimitUsd"
+        case monthlyLimitUSD = "monthlyLimitUsd"
+    }
+}
+
+public struct AdminUserSubscription: Decodable, Identifiable, Equatable, Sendable {
+    public let id: Int64
+    public let userID: Int64
+    public let groupID: Int64
+    public let startsAt: String?
+    public let expiresAt: String?
+    public let status: String
+    public let dailyUsageUSD: Double
+    public let weeklyUsageUSD: Double
+    public let monthlyUsageUSD: Double
+    public let group: AdminSubscriptionGroup?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case userID = "userId"
+        case groupID = "groupId"
+        case startsAt
+        case expiresAt
+        case status
+        case dailyUsageUSD = "dailyUsageUsd"
+        case weeklyUsageUSD = "weeklyUsageUsd"
+        case monthlyUsageUSD = "monthlyUsageUsd"
+        case group
+    }
+}
+
 public struct RealtimeMetrics: Decodable, Equatable, Sendable {
     public let activeRequests: Int
     public let requestsPerMinute: Double
@@ -739,6 +781,30 @@ public struct UsagePeriodStats: Decodable, Equatable, Sendable {
 
 }
 
+public extension DashboardStats {
+    init(monitoredUsageStats stats: UsagePeriodStats) {
+        self.init(
+            totalRequests: stats.totalRequests,
+            totalTokens: stats.totalTokens,
+            totalInputTokens: stats.totalInputTokens,
+            totalOutputTokens: stats.totalOutputTokens,
+            totalCacheCreationTokens: stats.totalCacheCreationTokens,
+            totalCacheReadTokens: stats.totalCacheReadTokens,
+            totalCost: stats.totalCost,
+            totalActualCost: stats.totalActualCost,
+            todayRequests: stats.totalRequests,
+            todayTokens: stats.totalTokens,
+            todayInputTokens: stats.totalInputTokens,
+            todayOutputTokens: stats.totalOutputTokens,
+            todayCacheCreationTokens: stats.totalCacheCreationTokens,
+            todayCacheReadTokens: stats.totalCacheReadTokens,
+            todayCost: stats.totalCost,
+            todayActualCost: stats.totalActualCost,
+            averageDurationMs: stats.averageDurationMs
+        )
+    }
+}
+
 public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
     public let id: Int64
     public let model: String
@@ -1025,6 +1091,15 @@ public struct SubscriptionSummary: Decodable, Equatable, Sendable {
             return days <= 3
         }.count
     }
+
+    public init(adminSubscriptions: [AdminUserSubscription], referenceDate: Date = Date()) {
+        let items = adminSubscriptions.map { SubscriptionSummaryItem(adminSubscription: $0, referenceDate: referenceDate) }
+        self.init(
+            activeCount: items.filter { $0.status == "active" }.count,
+            totalUsedUSD: items.reduce(0) { $0 + ($1.monthlyUsedUSD ?? $1.weeklyUsedUSD ?? $1.dailyUsedUSD ?? 0) },
+            subscriptions: items
+        )
+    }
 }
 
 public struct SubscriptionSummaryItem: Decodable, Identifiable, Equatable, Sendable {
@@ -1133,6 +1208,48 @@ public struct SubscriptionSummaryItem: Decodable, Identifiable, Equatable, Senda
             return nil
         }
         return used / limit
+    }
+
+    public init(adminSubscription: AdminUserSubscription, referenceDate: Date = Date()) {
+        let dailyLimit = adminSubscription.group?.dailyLimitUSD
+        let weeklyLimit = adminSubscription.group?.weeklyLimitUSD
+        let monthlyLimit = adminSubscription.group?.monthlyLimitUSD
+        self.init(
+            id: adminSubscription.id,
+            groupName: adminSubscription.group?.name ?? "Subscription",
+            status: adminSubscription.status,
+            dailyUsedUSD: adminSubscription.dailyUsageUSD,
+            dailyLimitUSD: dailyLimit,
+            weeklyUsedUSD: adminSubscription.weeklyUsageUSD,
+            weeklyLimitUSD: weeklyLimit,
+            monthlyUsedUSD: adminSubscription.monthlyUsageUSD,
+            monthlyLimitUSD: monthlyLimit,
+            dailyResetInSeconds: nil,
+            weeklyResetInSeconds: nil,
+            monthlyResetInSeconds: nil,
+            dailyProgress: Self.ratio(used: adminSubscription.dailyUsageUSD, limit: dailyLimit),
+            weeklyProgress: Self.ratio(used: adminSubscription.weeklyUsageUSD, limit: weeklyLimit),
+            monthlyProgress: Self.ratio(used: adminSubscription.monthlyUsageUSD, limit: monthlyLimit),
+            expiresAt: adminSubscription.expiresAt,
+            daysRemaining: Self.daysRemaining(until: adminSubscription.expiresAt, referenceDate: referenceDate)
+        )
+    }
+
+    private static func daysRemaining(until rawDate: String?, referenceDate: Date) -> Int? {
+        guard let rawDate else {
+            return nil
+        }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standard = ISO8601DateFormatter()
+        guard let date = fractional.date(from: rawDate) ?? standard.date(from: rawDate) else {
+            return nil
+        }
+        let seconds = date.timeIntervalSince(referenceDate)
+        guard seconds > 0 else {
+            return 0
+        }
+        return Int(seconds / 86_400)
     }
 }
 
@@ -1367,7 +1484,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
                     parts.append("out \(StatusFormatters.tokenPricePerMillion(price))/1M")
                 }
             case .rpm:
-                if let rpm = stats?.rpm ?? realtime?.requestsPerMinute {
+                if mode != .admin,
+                   let rpm = stats?.rpm ?? realtime?.requestsPerMinute {
                     parts.append("\(StatusFormatters.menuBarRate(rpm)) RPM")
                 }
             case .realtimeConcurrency:
@@ -1398,7 +1516,36 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false)
         }
 
-        return MenuBarStatusPresentation(title: " \(summary)", hidesHealthyStatusImage: true)
+        return MenuBarStatusPresentation(title: " \(Self.compactMenuBarSummary(summary))", hidesHealthyStatusImage: true)
+    }
+
+    public static func compactMenuBarSummary(_ summary: String, maxCharacters: Int = 36) -> String {
+        guard summary.count > maxCharacters else {
+            return summary
+        }
+
+        let marker = "…"
+        guard maxCharacters > marker.count else {
+            return String(summary.prefix(max(maxCharacters, 0)))
+        }
+
+        let separatorMarker = " · \(marker)"
+        let contentLimit = maxCharacters - separatorMarker.count
+        let parts = summary.components(separatedBy: " · ")
+        var visibleParts: [String] = []
+        for part in parts {
+            let candidate = (visibleParts + [part]).joined(separator: " · ")
+            if candidate.count <= contentLimit {
+                visibleParts.append(part)
+            } else {
+                break
+            }
+        }
+
+        if visibleParts.isEmpty {
+            return String(summary.prefix(maxCharacters - marker.count)) + marker
+        }
+        return visibleParts.joined(separator: " · ") + separatorMarker
     }
 
     private func selectedTotalActualCost(config: AppConfig) -> Double? {

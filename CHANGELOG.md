@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.18
+
+- Fixed administrator monitoring so balance, requests, spend, tokens, latest request metadata, trend, model distribution, and subscriptions all use the selected user's verified admin API data.
+- Kept realtime occupied concurrency and normal account count as administrator-only metrics from verified admin endpoints.
+- Hid selected-user realtime RPM in administrator mode until Sub2API provides a verified user-filtered realtime RPM contract.
+- Limited menu bar text length with tooltip/detail access to the full summary to avoid obscuring the macOS menu bar.
+- Improved popover focus and admin monitored-user picker behavior.
+- Added regression coverage for selected-user admin endpoints, admin subscriptions, admin-only menu bar items, and strict menu bar truncation.
+
 ## v0.1.17
 
 - Added administrator-only monitoring for a selected user's realtime occupied concurrency.

@@ -235,7 +235,7 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
     }
 
     public static var adminVisibleCases: [MenuBarDisplayItem] {
-        allCases
+        allCases.filter { $0 != .rpm }
     }
 
     public static func fromEnvironment(_ value: String?) -> [MenuBarDisplayItem] {

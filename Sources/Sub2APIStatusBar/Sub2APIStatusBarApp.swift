@@ -61,8 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.performClose(nil)
         } else {
             freezeStatusItemLengthForPopover()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            DispatchQueue.main.async { [weak self] in
+                self?.popover.contentViewController?.view.window?.makeKey()
+            }
         }
     }
 
@@ -234,6 +237,11 @@ final class MonitorViewModel: ObservableObject {
 
     private func userSnapshot(client: Sub2APIClient) async throws -> MonitorSnapshot {
         let currentUser = try await client.currentUser().user
+        if currentUser.isAdmin {
+            return try await adminSnapshot(currentUser: currentUser, client: client)
+        }
+
+        clearAdminSettingsForNormalUserIfNeeded()
         async let summaryTask = client.subscriptionSummary()
         async let statsTask = client.usageDashboardStats()
         let timezone = TimeZone.current.identifier
@@ -249,9 +257,8 @@ final class MonitorViewModel: ObservableObject {
         let latestUsage = try? await latestUsageTask
         let trend = try? await trendTask
         let models = try? await modelsTask
-        let adminContext = await adminMonitoringContext(for: currentUser, client: client)
         return MonitorSnapshot(
-            mode: adminContext.mode,
+            mode: .user,
             connected: true,
             currentUser: currentUser,
             stats: stats,
@@ -260,54 +267,55 @@ final class MonitorViewModel: ObservableObject {
             trend: trend?.trend,
             modelDistribution: models?.models,
             realtime: nil,
-            monitoredUser: adminContext.monitoredUser,
-            realtimeConcurrency: adminContext.realtimeConcurrency,
-            adminDashboardStats: adminContext.adminDashboardStats,
+            monitoredUser: nil,
+            realtimeConcurrency: nil,
+            adminDashboardStats: nil,
             accountHealth: nil,
             subscriptionSummary: summary,
             lastUpdatedAt: Date(),
-            message: adminContext.message
+            message: nil
         )
     }
 
-    private func adminMonitoringContext(
-        for currentUser: CurrentUser,
-        client: Sub2APIClient
-    ) async -> (
-        mode: MonitorMode,
-        monitoredUser: AdminUserSummary?,
-        realtimeConcurrency: UserRealtimeConcurrency?,
-        adminDashboardStats: AdminDashboardStats?,
-        message: String?
-    ) {
-        guard currentUser.isAdmin else {
-            adminUsers = []
-            clearAdminSettingsForNormalUserIfNeeded()
-            return (.user, nil, nil, nil, nil)
-        }
+    private func adminSnapshot(currentUser: CurrentUser, client: Sub2APIClient) async throws -> MonitorSnapshot {
+        let timezone = TimeZone.current.identifier
+        let selectedUserID = config.adminMonitoredUserID ?? currentUser.id
 
         async let usersTask = client.allAdminUsers()
+        async let selectedUserTask = client.adminUser(id: selectedUserID)
         async let concurrencyTask = client.adminUserConcurrencyStats()
         async let adminStatsTask = client.adminDashboardStats()
+        async let menuBarStatsTask = adminMenuBarUsageStats(client: client, userID: selectedUserID, timezone: timezone)
+        async let latestUsageTask = client.adminUsageLogs(userID: selectedUserID, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: timezone)
+        let today = Self.todayString()
+        let range = Self.lastSevenDayRange()
+        async let dayStatsTask = client.adminUsageStats(userID: selectedUserID, startDate: today, endDate: today, timezone: timezone)
+        async let trendTask = client.adminDashboardTrend(userID: selectedUserID, startDate: range.start, endDate: range.end, granularity: "day", timezone: timezone)
+        async let modelsTask = client.adminDashboardModels(userID: selectedUserID, startDate: range.start, endDate: range.end, timezone: timezone)
+        async let subscriptionsTask = client.adminUserSubscriptions(userID: selectedUserID)
 
         var messages: [String] = []
-        let users: [AdminUserSummary]
+
         do {
-            users = try await usersTask
-            adminUsers = users
+            adminUsers = try await usersTask
         } catch {
             adminUsers = []
-            users = []
             messages.append(error.localizedDescription)
         }
 
-        let selectedUserID = config.adminMonitoredUserID ?? currentUser.id
-        let fallbackUser = AdminUserSummary(currentUser: currentUser)
-        guard let target = users.first(where: { $0.id == selectedUserID }) ?? (selectedUserID == currentUser.id ? fallbackUser : nil) else {
-            messages.append(AppStrings(config.language).phrase("未找到选定监控用户。", "The selected monitored user was not found."))
-            let adminStats = try? await adminStatsTask
+        let target: AdminUserSummary
+        do {
+            target = try await selectedUserTask
+        } catch {
             _ = try? await concurrencyTask
-            return (.admin, nil, nil, adminStats, messages.first)
+            _ = try? await adminStatsTask
+            _ = try? await menuBarStatsTask
+            _ = try? await latestUsageTask
+            _ = try? await dayStatsTask
+            _ = try? await trendTask
+            _ = try? await modelsTask
+            _ = try? await subscriptionsTask
+            throw error
         }
 
         let adminStats: AdminDashboardStats?
@@ -334,7 +342,31 @@ final class MonitorViewModel: ObservableObject {
             concurrency = nil
             messages.append(error.localizedDescription)
         }
-        return (.admin, target, concurrency, adminStats, messages.first)
+
+        let dayStats = try? await dayStatsTask
+        let menuBarStats = try? await menuBarStatsTask
+        let latestUsage = try? await latestUsageTask
+        let trend = try? await trendTask
+        let models = try? await modelsTask
+        let subscriptions = try? await subscriptionsTask
+        return MonitorSnapshot(
+            mode: .admin,
+            connected: true,
+            currentUser: currentUser,
+            stats: dayStats.map(DashboardStats.init(monitoredUsageStats:)),
+            menuBarUsageStats: menuBarStats,
+            latestUsage: latestUsage?.items.first,
+            trend: trend?.trend,
+            modelDistribution: models?.models,
+            realtime: nil,
+            monitoredUser: target,
+            realtimeConcurrency: concurrency,
+            adminDashboardStats: adminStats,
+            accountHealth: nil,
+            subscriptionSummary: subscriptions.map { SubscriptionSummary(adminSubscriptions: $0) },
+            lastUpdatedAt: Date(),
+            message: messages.first
+        )
     }
 
     private func clearAdminSettingsForNormalUserIfNeeded() {
@@ -360,6 +392,11 @@ final class MonitorViewModel: ObservableObject {
     private func menuBarUsageStats(client: Sub2APIClient, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
         let range = config.menuBarUsageWindow.dateRange(now: now)
         return try await client.usageStats(startDate: range.start, endDate: range.end, timezone: timezone)
+    }
+
+    private func adminMenuBarUsageStats(client: Sub2APIClient, userID: Int64, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
+        let range = config.menuBarUsageWindow.dateRange(now: now)
+        return try await client.adminUsageStats(userID: userID, startDate: range.start, endDate: range.end, timezone: timezone)
     }
 
     private func refreshAuthTokenIfNeeded(after error: Error) async -> Bool {
@@ -643,6 +680,10 @@ final class MonitorViewModel: ObservableObject {
         formatter.dateFormat = "yyyy-MM-dd"
         return (formatter.string(from: start), formatter.string(from: today))
     }
+
+    private static func todayString() -> String {
+        lastSevenDayRange().end
+    }
 }
 
 struct MonitorPanel: View {
@@ -763,7 +804,7 @@ struct MonitorPanel: View {
                             .foregroundStyle(iconColor)
                     }
                     Spacer()
-                    Text(strings.phrase("用户用量", "User Usage"))
+                    Text(statusScopeLabel)
                         .font(.caption.weight(.medium))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -830,14 +871,14 @@ struct MonitorPanel: View {
         }
         items.append(contentsOf: [
             MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, caption: strings.phrase("可用", "Available"), systemImage: "banknote", tint: ClaudeTheme.accent),
-            MetricItem(title: "API Keys", value: "\(stats.totalAPIKeys)", caption: strings.phrase("\(stats.activeAPIKeys) 个活跃", "\(stats.activeAPIKeys) active"), systemImage: "key", tint: ClaudeTheme.slate),
-            MetricItem(title: strings.phrase("今日请求", "Today Requests"), value: StatusFormatters.menuBarCount(stats.todayRequests), caption: strings.phrase("总计 \(StatusFormatters.compactNumber(stats.totalRequests))", "Total \(StatusFormatters.compactNumber(stats.totalRequests))"), systemImage: "chart.bar", tint: ClaudeTheme.accent),
-            MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: strings.phrase("总计 \(StatusFormatters.preciseCurrency(stats.totalActualCost))", "Total \(StatusFormatters.preciseCurrency(stats.totalActualCost))"), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
+            userAPIKeysMetric(stats),
+            MetricItem(title: strings.phrase("今日请求", "Today Requests"), value: StatusFormatters.menuBarCount(stats.todayRequests), caption: requestCaption(stats), systemImage: "chart.bar", tint: ClaudeTheme.accent),
+            MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: costCaption(stats), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
             MetricItem(title: strings.phrase("今日 Token", "Today Tokens"), value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: ClaudeTheme.warm),
-            MetricItem(title: strings.phrase("总 Token", "Total Tokens"), value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.ink),
-            MetricItem(title: strings.phrase("性能", "Performance"), value: "\(StatusFormatters.menuBarRate(stats.rpm)) RPM", caption: "\(StatusFormatters.compactNumber(Int64(stats.tpm))) TPM", systemImage: "bolt", tint: ClaudeTheme.gold),
+            MetricItem(title: totalTokenTitle, value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.ink),
+            performanceMetric(stats),
             MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), caption: strings.phrase("平均耗时", "Average time"), systemImage: "clock", tint: ClaudeTheme.danger),
-        ])
+        ].compactMap { $0 })
         return items
     }
 
@@ -911,10 +952,60 @@ struct MonitorPanel: View {
     }
 
     private var balanceText: String {
-        guard let balance = model.snapshot.currentUser?.balance else {
+        let balance: Double?
+        if model.snapshot.mode == .admin,
+           let monitoredUser = model.snapshot.monitoredUser {
+            balance = monitoredUser.balance
+        } else {
+            balance = model.snapshot.currentUser?.balance
+        }
+
+        guard let balance else {
             return "--"
         }
         return StatusFormatters.currency(balance)
+    }
+
+    private var statusScopeLabel: String {
+        if model.snapshot.mode == .admin {
+            return strings.phrase("管理员监控", "Admin Monitor")
+        }
+        return strings.phrase("用户用量", "User Usage")
+    }
+
+    private var totalTokenTitle: String {
+        if model.snapshot.mode == .admin {
+            return strings.phrase("窗口 Token", "Window Tokens")
+        }
+        return strings.phrase("总 Token", "Total Tokens")
+    }
+
+    private func userAPIKeysMetric(_ stats: DashboardStats) -> MetricItem? {
+        guard model.snapshot.mode != .admin else {
+            return nil
+        }
+        return MetricItem(title: "API Keys", value: "\(stats.totalAPIKeys)", caption: strings.phrase("\(stats.activeAPIKeys) 个活跃", "\(stats.activeAPIKeys) active"), systemImage: "key", tint: ClaudeTheme.slate)
+    }
+
+    private func performanceMetric(_ stats: DashboardStats) -> MetricItem? {
+        guard model.snapshot.mode != .admin else {
+            return nil
+        }
+        return MetricItem(title: strings.phrase("性能", "Performance"), value: "\(StatusFormatters.menuBarRate(stats.rpm)) RPM", caption: "\(StatusFormatters.compactNumber(Int64(stats.tpm))) TPM", systemImage: "bolt", tint: ClaudeTheme.gold)
+    }
+
+    private func requestCaption(_ stats: DashboardStats) -> String {
+        if model.snapshot.mode == .admin {
+            return strings.phrase("所选用户", "Selected user")
+        }
+        return strings.phrase("总计 \(StatusFormatters.compactNumber(stats.totalRequests))", "Total \(StatusFormatters.compactNumber(stats.totalRequests))")
+    }
+
+    private func costCaption(_ stats: DashboardStats) -> String {
+        if model.snapshot.mode == .admin {
+            return strings.phrase("所选用户", "Selected user")
+        }
+        return strings.phrase("总计 \(StatusFormatters.preciseCurrency(stats.totalActualCost))", "Total \(StatusFormatters.preciseCurrency(stats.totalActualCost))")
     }
 
     private func tokenBreakdown(input: Int64, output: Int64) -> String {
@@ -1064,6 +1155,7 @@ private struct PanelPageTabs: View {
 
 struct LoginPanel: View {
     @ObservedObject var model: MonitorViewModel
+    @FocusState private var focusedField: LoginField?
 
     private var formState: LoginFormState {
         LoginFormState(
@@ -1112,15 +1204,18 @@ struct LoginPanel: View {
 
                     TextField(strings.phrase("服务地址", "Server URL"), text: $model.settingsDraft.baseURL)
                         .themedTextField()
+                        .focused($focusedField, equals: .baseURL)
                         .onChange(of: model.settingsDraft.baseURL) { _ in
                             model.scheduleSettingsAutosave(refreshAfterSave: false)
                         }
 
                     TextField(strings.phrase("账号", "Account"), text: $model.loginEmail)
                         .themedTextField()
+                        .focused($focusedField, equals: .email)
 
                     SecureField(strings.phrase("密码", "Password"), text: $model.loginPassword)
                         .themedTextField()
+                        .focused($focusedField, equals: .password)
 
                     HStack {
                         Text(strings.phrase("刷新", "Refresh"))
@@ -1165,6 +1260,7 @@ struct LoginPanel: View {
                         .font(.headline)
                     SecureField("Bearer Token", text: $model.settingsDraft.authToken)
                         .themedTextField()
+                        .focused($focusedField, equals: .authToken)
                         .onChange(of: model.settingsDraft.authToken) { _ in
                             model.scheduleSettingsAutosave(refreshAfterSave: false)
                         }
@@ -1202,6 +1298,11 @@ struct LoginPanel: View {
         .background(PanelBackground())
         .environment(\.appLanguage, model.settingsDraft.language)
         .appAppearance(model.settingsDraft.appearance)
+        .onAppear {
+            DispatchQueue.main.async {
+                focusedField = model.settingsDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .baseURL : .email
+            }
+        }
     }
 
     private var strings: AppStrings {
@@ -1389,7 +1490,16 @@ struct SettingsView: View {
                                 }
                             }
                             .labelsHidden()
-                            .frame(maxWidth: .infinity)
+                            .pickerStyle(.menu)
+                            .controlSize(.regular)
+                            .disabled(adminUserOptions.isEmpty)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        if adminUserOptions.isEmpty {
+                            Text(strings.phrase("未获取到管理员用户列表，刷新后重试。", "Admin user list is unavailable. Refresh and try again."))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
 
                         if model.snapshot.realtimeConcurrency != nil {
@@ -1503,10 +1613,6 @@ struct SettingsView: View {
     }
 
     private var adminUserOptions: [AdminUserSummary] {
-        if model.adminUsers.isEmpty,
-           let currentUser = model.snapshot.currentUser {
-            return [AdminUserSummary(currentUser: currentUser)]
-        }
         return model.adminUsers
     }
 
@@ -1564,6 +1670,13 @@ struct SettingsView: View {
 
 private enum SettingsField: Hashable {
     case baseURL
+    case authToken
+}
+
+private enum LoginField: Hashable {
+    case baseURL
+    case email
+    case password
     case authToken
 }
 

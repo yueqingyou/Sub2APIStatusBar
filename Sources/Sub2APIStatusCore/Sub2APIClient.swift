@@ -89,6 +89,10 @@ public struct Sub2APIClient: Sendable {
         return try await get("/admin/users", query: query)
     }
 
+    public func adminUser(id: Int64) async throws -> AdminUserSummary {
+        try await get("/admin/users/\(id)")
+    }
+
     public func allAdminUsers(pageSize: Int = 1000) async throws -> [AdminUserSummary] {
         var page = 1
         var users: [AdminUserSummary] = []
@@ -109,6 +113,92 @@ public struct Sub2APIClient: Sendable {
 
     public func adminDashboardStats() async throws -> AdminDashboardStats {
         try await get("/admin/dashboard/stats")
+    }
+
+    public func adminUsageStats(
+        userID: Int64,
+        startDate: String,
+        endDate: String,
+        timezone: String? = nil
+    ) async throws -> UsagePeriodStats {
+        var query = [
+            URLQueryItem(name: "user_id", value: String(userID)),
+            URLQueryItem(name: "start_date", value: startDate),
+            URLQueryItem(name: "end_date", value: endDate),
+        ]
+        if let timezone, !timezone.isEmpty {
+            query.append(URLQueryItem(name: "timezone", value: timezone))
+        }
+        return try await get("/admin/usage/stats", query: query)
+    }
+
+    public func adminUsageLogs(
+        userID: Int64,
+        page: Int = 1,
+        pageSize: Int = 20,
+        sortBy: String = "created_at",
+        sortOrder: String = "desc",
+        startDate: String? = nil,
+        endDate: String? = nil,
+        timezone: String? = nil
+    ) async throws -> PaginatedResponse<UsageLog> {
+        var query = [
+            URLQueryItem(name: "user_id", value: String(userID)),
+            URLQueryItem(name: "page", value: String(page)),
+            URLQueryItem(name: "page_size", value: String(pageSize)),
+            URLQueryItem(name: "sort_by", value: sortBy),
+            URLQueryItem(name: "sort_order", value: sortOrder),
+        ]
+        if let startDate, !startDate.isEmpty {
+            query.append(URLQueryItem(name: "start_date", value: startDate))
+        }
+        if let endDate, !endDate.isEmpty {
+            query.append(URLQueryItem(name: "end_date", value: endDate))
+        }
+        if let timezone, !timezone.isEmpty {
+            query.append(URLQueryItem(name: "timezone", value: timezone))
+        }
+        return try await get("/admin/usage", query: query)
+    }
+
+    public func adminDashboardTrend(
+        userID: Int64,
+        startDate: String,
+        endDate: String,
+        granularity: String = "day",
+        timezone: String? = nil
+    ) async throws -> DashboardTrendResponse {
+        var query = [
+            URLQueryItem(name: "user_id", value: String(userID)),
+            URLQueryItem(name: "start_date", value: startDate),
+            URLQueryItem(name: "end_date", value: endDate),
+            URLQueryItem(name: "granularity", value: granularity),
+        ]
+        if let timezone, !timezone.isEmpty {
+            query.append(URLQueryItem(name: "timezone", value: timezone))
+        }
+        return try await get("/admin/dashboard/trend", query: query)
+    }
+
+    public func adminDashboardModels(
+        userID: Int64,
+        startDate: String,
+        endDate: String,
+        timezone: String? = nil
+    ) async throws -> DashboardModelsResponse {
+        var query = [
+            URLQueryItem(name: "user_id", value: String(userID)),
+            URLQueryItem(name: "start_date", value: startDate),
+            URLQueryItem(name: "end_date", value: endDate),
+        ]
+        if let timezone, !timezone.isEmpty {
+            query.append(URLQueryItem(name: "timezone", value: timezone))
+        }
+        return try await get("/admin/dashboard/models", query: query)
+    }
+
+    public func adminUserSubscriptions(userID: Int64) async throws -> [AdminUserSubscription] {
+        try await get("/admin/users/\(userID)/subscriptions")
     }
 
     public func refreshToken(_ refreshToken: String) async throws -> AuthResponse {

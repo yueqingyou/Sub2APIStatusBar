@@ -44,10 +44,16 @@ When the logged-in Sub2API account has the `admin` role, the app uses that same 
 Administrator-only metrics use these real Sub2API admin endpoints:
 
 - `GET /api/v1/admin/users`
+- `GET /api/v1/admin/users/{id}`
 - `GET /api/v1/admin/ops/user-concurrency`
 - `GET /api/v1/admin/dashboard/stats`
+- `GET /api/v1/admin/usage`
+- `GET /api/v1/admin/usage/stats`
+- `GET /api/v1/admin/dashboard/trend`
+- `GET /api/v1/admin/dashboard/models`
+- `GET /api/v1/admin/users/{id}/subscriptions`
 
-Realtime concurrency means the selected user's occupied concurrency slots from `/api/v1/admin/ops/user-concurrency`. Normal account count comes from `normal_accounts` in `/api/v1/admin/dashboard/stats`.
+Realtime concurrency means the selected user's occupied concurrency slots from `/api/v1/admin/ops/user-concurrency`. Normal account count comes from `normal_accounts` in `/api/v1/admin/dashboard/stats`. Selected-user usage, latest request metadata, trend, model distribution, balance, and subscriptions are read through administrator endpoints filtered by the monitored user ID, not from the administrator account's own `/usage/*` endpoints.
 
 ## Run From Source
 
@@ -88,12 +94,12 @@ The default appearance follows the current macOS Light/Dark Mode setting. Settin
 
 When menu bar text is enabled, the default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, fast status, input price, output price, and realtime RPM. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
 
-Admin accounts can additionally enable realtime concurrency and normal account count in the menu bar text. These items are hidden for normal user accounts.
+Admin accounts can additionally enable realtime concurrency and normal account count in the menu bar text. These items are hidden for normal user accounts. Realtime RPM remains a normal-user item because the current administrator usage endpoints do not provide a selected-user realtime RPM contract.
 
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.17 ./scripts/build-app.sh
+VERSION=v0.1.18 ./scripts/build-app.sh
 ```
 
 Output:
@@ -110,28 +116,28 @@ Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.17 \
+VERSION=v0.1.18 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.17 ./scripts/package-release.sh
+VERSION=v0.1.18 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.17-macOS.zip
-dist/Sub2APIStatusBar-0.1.17-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.18-macOS.zip
+dist/Sub2APIStatusBar-0.1.18-macOS.zip.sha256
 ```
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.17 \
+VERSION=v0.1.18 \
 ./scripts/package-release.sh
 ```
 
@@ -146,7 +152,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.17 \
+VERSION=v0.1.18 \
 ./scripts/notarize-release.sh
 ```
 

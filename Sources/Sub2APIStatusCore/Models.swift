@@ -27,6 +27,15 @@ public enum Sub2APIError: Error, LocalizedError, Equatable, Sendable {
             return false
         }
     }
+
+    public var isTransientFailure: Bool {
+        switch self {
+        case let .badStatus(status, _):
+            return status == 429 || (500..<600).contains(status)
+        default:
+            return false
+        }
+    }
 }
 
 public struct Sub2APIEnvelope<Value: Decodable & Sendable>: Decodable, Sendable {
@@ -1308,6 +1317,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
     public let subscriptionSummary: SubscriptionSummary?
     public let lastUpdatedAt: Date?
     public let message: String?
+    public let isStale: Bool
 
     public init(
         mode: MonitorMode,
@@ -1325,7 +1335,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
         accountHealth: AccountHealthSummary?,
         subscriptionSummary: SubscriptionSummary?,
         lastUpdatedAt: Date?,
-        message: String?
+        message: String?,
+        isStale: Bool = false
     ) {
         self.mode = mode
         self.connected = connected
@@ -1343,6 +1354,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
         self.subscriptionSummary = subscriptionSummary
         self.lastUpdatedAt = lastUpdatedAt
         self.message = message
+        self.isStale = isStale
     }
 
     public static func idle(mode: MonitorMode) -> MonitorSnapshot {
@@ -1361,9 +1373,35 @@ public struct MonitorSnapshot: Equatable, Sendable {
         )
     }
 
+    public func retainingDataAfterRefreshFailure(_ message: String) -> MonitorSnapshot {
+        MonitorSnapshot(
+            mode: mode,
+            connected: connected,
+            currentUser: currentUser,
+            stats: stats,
+            menuBarUsageStats: menuBarUsageStats,
+            latestUsage: latestUsage,
+            trend: trend,
+            modelDistribution: modelDistribution,
+            realtime: realtime,
+            monitoredUser: monitoredUser,
+            realtimeConcurrency: realtimeConcurrency,
+            adminDashboardStats: adminDashboardStats,
+            accountHealth: accountHealth,
+            subscriptionSummary: subscriptionSummary,
+            lastUpdatedAt: lastUpdatedAt,
+            message: message,
+            isStale: true
+        )
+    }
+
     public var severity: MonitorSeverity {
         if !connected {
             return .error
+        }
+
+        if isStale {
+            return .warning
         }
 
         if (realtime?.errorRate ?? 0) >= 0.1 {
@@ -1395,6 +1433,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
     public var statusLabel: String {
         if !connected {
             return "Disconnected"
+        }
+
+        if isStale {
+            return "Refresh Failed"
         }
 
         if let subscriptionSummary {

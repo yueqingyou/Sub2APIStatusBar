@@ -34,6 +34,7 @@ final class StaticTokenStore: TokenStore, @unchecked Sendable {
 
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
     static var responses: [String: Data] = [:]
+    static var responseQueues: [String: [(status: Int, data: Data)]] = [:]
     static var requestedPaths: [String] = []
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -52,8 +53,15 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 
         let key = url.path + (url.query.map { "?\($0)" } ?? "")
         Self.requestedPaths.append(key)
-        let data = Self.responses[key] ?? Data(#"{"code":404,"message":"not found"}"#.utf8)
-        let status = Self.responses[key] == nil ? 404 : 200
+        let queuedResponse: (status: Int, data: Data)?
+        if var queue = Self.responseQueues[key], !queue.isEmpty {
+            queuedResponse = queue.removeFirst()
+            Self.responseQueues[key] = queue
+        } else {
+            queuedResponse = nil
+        }
+        let data = queuedResponse?.data ?? Self.responses[key] ?? Data(#"{"code":404,"message":"not found"}"#.utf8)
+        let status = queuedResponse?.status ?? (Self.responses[key] == nil ? 404 : 200)
         let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
@@ -64,6 +72,13 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class Sub2APIStatusCoreTests: XCTestCase {
+
+override func setUp() {
+    super.setUp()
+    StubURLProtocol.responses = [:]
+    StubURLProtocol.responseQueues = [:]
+    StubURLProtocol.requestedPaths = []
+}
 
 func testAppConfigNormalizesBaseURLAndRefreshInterval() {
     var config = AppConfig(baseURL: " http://127.0.0.1:8080/api/v1/// ", authToken: " token ", refreshIntervalSeconds: 1, language: .zhHans, monitorMode: .user)
@@ -1663,6 +1678,113 @@ func testMonitorSnapshotAllowsEmptyMenuBarItemSelection() {
     let config = AppConfig(baseURL: "http://127.0.0.1:8080", menuBarDisplayItems: [])
 
     XCTAssert(snapshot.menuBarSummary(config: config) == "")
+}
+
+func testSub2APIClientRetriesTransientFailuresBeforeDecodingSuccess() async throws {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    StubURLProtocol.responses = [:]
+    StubURLProtocol.responseQueues = [
+        "/api/v1/auth/me": [
+            (status: 500, data: Data(#"{"code":500,"message":"temporary"}"#.utf8)),
+            (status: 200, data: Data(#"{"code":0,"message":"ok","data":{"user":{"id":7,"email":"a@example.com","role":"user","concurrency":4}}}"#.utf8)),
+        ],
+    ]
+    StubURLProtocol.requestedPaths = []
+    let client = Sub2APIClient(
+        config: AppConfig(baseURL: "http://127.0.0.1:8080", authToken: "token"),
+        session: session,
+        retryPolicy: HTTPRetryPolicy(maxRetries: 2, baseDelaySeconds: 0)
+    )
+
+    let response = try await client.currentUser()
+
+    XCTAssert(response.user.id == 7)
+    XCTAssert(StubURLProtocol.requestedPaths == ["/api/v1/auth/me", "/api/v1/auth/me"])
+}
+
+func testSub2APIClientDoesNotRetryUnauthorizedResponses() async {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    StubURLProtocol.responses = [:]
+    StubURLProtocol.responseQueues = [
+        "/api/v1/auth/me": [
+            (status: 401, data: Data(#"{"code":401,"message":"unauthorized"}"#.utf8)),
+            (status: 200, data: Data(#"{"code":0,"message":"ok","data":{"user":{"id":7,"email":"a@example.com","role":"user","concurrency":4}}}"#.utf8)),
+        ],
+    ]
+    StubURLProtocol.requestedPaths = []
+    let client = Sub2APIClient(
+        config: AppConfig(baseURL: "http://127.0.0.1:8080", authToken: "expired"),
+        session: session,
+        retryPolicy: HTTPRetryPolicy(maxRetries: 2, baseDelaySeconds: 0)
+    )
+
+    do {
+        _ = try await client.currentUser()
+        XCTFail("401 should throw without retrying so the auth refresh path can handle it.")
+    } catch {
+        XCTAssert((error as? Sub2APIError)?.isUnauthorized == true)
+        XCTAssert(StubURLProtocol.requestedPaths == ["/api/v1/auth/me"])
+    }
+}
+
+func testSub2APIClientDoesNotRetryPostRequests() async {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    StubURLProtocol.responses = [:]
+    StubURLProtocol.responseQueues = [
+        "/api/v1/auth/login": [
+            (status: 500, data: Data(#"{"code":500,"message":"temporary"}"#.utf8)),
+            (status: 200, data: Data(#"{"code":0,"message":"ok","data":{"accessToken":"access","refreshToken":"refresh"}}"#.utf8)),
+        ],
+    ]
+    StubURLProtocol.requestedPaths = []
+    let client = Sub2APIClient(
+        config: AppConfig(baseURL: "http://127.0.0.1:8080"),
+        session: session,
+        retryPolicy: HTTPRetryPolicy(maxRetries: 2, baseDelaySeconds: 0)
+    )
+
+    do {
+        _ = try await client.login(email: "a@example.com", password: "secret")
+        XCTFail("POST login should not retry automatically.")
+    } catch {
+        XCTAssert(StubURLProtocol.requestedPaths == ["/api/v1/auth/login"])
+    }
+}
+
+func testMonitorSnapshotRetainsLastSuccessDataWhenRefreshFails() {
+    let previous = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        currentUser: CurrentUser(id: 7, email: "a@example.com", username: "alice", role: "user", balance: 12.5, concurrency: 4, status: "active"),
+        stats: DashboardStats(todayRequests: 1119, todayActualCost: 113.3052, rpm: 3),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 2048, totalActualCost: 12.3456),
+        latestUsage: UsageLog(id: 133605, model: "gpt-5.5"),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 100),
+        message: nil
+    )
+    let stale = previous.retainingDataAfterRefreshFailure("temporary timeout")
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalCost, .model, .rpm]
+    )
+
+    XCTAssert(stale.connected == true)
+    XCTAssert(stale.isStale == true)
+    XCTAssert(stale.severity == .warning)
+    XCTAssert(stale.statusLabel == "Refresh Failed")
+    XCTAssert(stale.lastUpdatedAt == Date(timeIntervalSince1970: 100))
+    XCTAssert(stale.menuBarSummary(config: config) == "$12.35 · gpt-5.5 · 3 RPM")
+    XCTAssert(stale.menuBarStatusPresentation(config: config).title == " $12.35·gpt-5.5·3rpm")
 }
 
 func testLoginFormStateRequiresURLAccountAndPassword() {

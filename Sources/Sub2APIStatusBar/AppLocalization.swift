@@ -37,6 +37,10 @@ struct AppStrings {
             return phrase("未连接", "Disconnected")
         }
 
+        if snapshot.isStale {
+            return phrase("刷新失败", "Refresh Failed")
+        }
+
         if let summary = snapshot.subscriptionSummary {
             if summary.highestProgress >= 0.95 {
                 return phrase("接近限额", "Near Limit")

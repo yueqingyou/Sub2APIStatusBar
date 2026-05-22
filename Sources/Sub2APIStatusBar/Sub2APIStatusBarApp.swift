@@ -147,6 +147,7 @@ final class MonitorViewModel: ObservableObject {
     private let updateChecker = GitHubUpdateChecker()
     private let updateInstaller = AppUpdateInstaller()
     private let launchAtLoginManager = LaunchAtLoginManager(appBundleURL: Bundle.main.bundleURL)
+    private let transientRefreshRetryPolicy = HTTPRetryPolicy.default
     private var refreshTimer: Timer?
     private var settingsAutosaveTask: Task<Void, Never>?
 
@@ -396,6 +397,11 @@ final class MonitorViewModel: ObservableObject {
     }
 
     private func publishDisconnected(_ error: Error) {
+        if snapshot.connected, isTransientRefreshFailure(error) {
+            publish(snapshot.retainingDataAfterRefreshFailure(staleRefreshMessage(error)))
+            return
+        }
+
         publish(MonitorSnapshot(
             mode: config.monitorMode,
             connected: false,
@@ -406,6 +412,18 @@ final class MonitorViewModel: ObservableObject {
             lastUpdatedAt: snapshot.lastUpdatedAt,
             message: error.localizedDescription
         ))
+    }
+
+    private func isTransientRefreshFailure(_ error: Error) -> Bool {
+        transientRefreshRetryPolicy.shouldRetry(error: error, attempt: 0)
+    }
+
+    private func staleRefreshMessage(_ error: Error) -> String {
+        let detail = error.localizedDescription
+        return AppStrings(config.language).phrase(
+            "本次刷新失败，已保留上次成功数据并将按刷新间隔重试。\(detail)",
+            "Refresh failed. Keeping the last successful data and retrying on the next interval. \(detail)"
+        )
     }
 
     @discardableResult
@@ -707,13 +725,12 @@ struct MonitorPanel: View {
 
                 Spacer()
 
-                Button {
+                RefreshActionButton(
+                    isRefreshing: model.isRefreshing,
+                    label: strings.phrase("刷新", "Refresh")
+                ) {
                     model.refresh()
-                } label: {
-                    Image(systemName: model.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
                 }
-                .disabled(model.isRefreshing)
-                .help(strings.phrase("刷新", "Refresh"))
             }
             .buttonStyle(.borderless)
 
@@ -790,7 +807,7 @@ struct MonitorPanel: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(model.snapshot.connected ? strings.phrase("监控已连接，数据会按刷新间隔自动更新。", "Monitoring is connected and updates on your refresh interval.") : strings.phrase("当前无法连接服务，检查网络或登录状态。", "The server is not reachable. Check network or login state."))
+                    Text(statusDescription)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -924,6 +941,25 @@ struct MonitorPanel: View {
         strings.updated(at: model.snapshot.lastUpdatedAt)
     }
 
+    private var statusDescription: String {
+        if model.snapshot.isStale {
+            return strings.phrase(
+                "本次刷新失败，仍显示上次成功数据，并会按刷新间隔自动重试。",
+                "Refresh failed. Showing the last successful data and retrying on the refresh interval."
+            )
+        }
+        if model.snapshot.connected {
+            return strings.phrase(
+                "监控已连接，数据会按刷新间隔自动更新。",
+                "Monitoring is connected and updates on your refresh interval."
+            )
+        }
+        return strings.phrase(
+            "当前无法连接服务，检查网络或登录状态。",
+            "The server is not reachable. Check network or login state."
+        )
+    }
+
     private var balanceText: String {
         let balance: Double?
         if model.snapshot.mode == .admin,
@@ -1043,6 +1079,99 @@ private enum PanelPage: String, CaseIterable, Identifiable, Equatable {
             return strings.phrase("概览", "Overview")
         case .settings:
             return strings.phrase("设置", "Settings")
+        }
+    }
+}
+
+private struct RefreshActionButton: View {
+    let isRefreshing: Bool
+    let label: String
+    let action: () -> Void
+    @State private var rotation = 0.0
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(isRefreshing ? ClaudeTheme.accent.opacity(0.13) : ClaudeTheme.elevatedCard.opacity(0.54))
+                    .frame(width: 30, height: 30)
+                Image(systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(isRefreshing ? ClaudeTheme.accent : ClaudeTheme.secondaryText)
+                    .rotationEffect(.degrees(rotation))
+            }
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isRefreshing)
+        .help(label)
+        .accessibilityLabel(label)
+        .onChange(of: isRefreshing) { refreshing in
+            if refreshing {
+                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
+                    rotation = 360
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    rotation = 0
+                }
+            }
+        }
+        .onAppear {
+            if isRefreshing {
+                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
+                    rotation = 360
+                }
+            }
+        }
+    }
+}
+
+private struct RefreshIntervalControl: View {
+    @Binding var seconds: Double
+    let strings: AppStrings
+    var title: String?
+    let onChange: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let title {
+                Text(title)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(ClaudeTheme.secondaryText)
+            }
+
+            HStack(spacing: 10) {
+                Slider(value: $seconds, in: 1...300, step: 1)
+                    .tint(ClaudeTheme.accent)
+                    .onChange(of: seconds) { _ in
+                        onChange()
+                    }
+
+                Text("\(Int(seconds))s")
+                    .font(.system(.callout, design: .rounded).monospacedDigit().weight(.semibold))
+                    .foregroundStyle(ClaudeTheme.primaryText)
+                    .frame(minWidth: 46, alignment: .trailing)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(ClaudeTheme.elevatedCard, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(ClaudeTheme.border, lineWidth: 1)
+                    )
+            }
+
+            HStack(spacing: 8) {
+                Text("1s")
+                Spacer()
+                Text(strings.phrase("请求失败会自动重试，失败后保留上次成功数据", "Failed requests retry automatically; last good data is kept"))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                Spacer()
+                Text("300s")
+            }
+            .font(.caption2)
+            .foregroundStyle(ClaudeTheme.secondaryText)
         }
     }
 }
@@ -1190,17 +1319,12 @@ struct LoginPanel: View {
                         .themedTextField()
                         .focused($focusedField, equals: .password)
 
-                    HStack {
-                        Text(strings.phrase("刷新", "Refresh"))
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 1...300, step: 1)
-                            .onChange(of: model.settingsDraft.refreshIntervalSeconds) { _ in
-                                model.scheduleSettingsAutosave(refreshAfterSave: false)
-                            }
-                        Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
-                            .font(.callout.monospacedDigit())
-                            .frame(width: 42, alignment: .trailing)
+                    RefreshIntervalControl(
+                        seconds: $model.settingsDraft.refreshIntervalSeconds,
+                        strings: strings,
+                        title: strings.phrase("刷新间隔", "Refresh Interval")
+                    ) {
+                        model.scheduleSettingsAutosave(refreshAfterSave: false)
                     }
                 }
             }
@@ -1392,14 +1516,11 @@ struct SettingsView: View {
                     }
 
                     settingsRow(strings.phrase("刷新", "Refresh")) {
-                        HStack {
-                            Slider(value: $model.settingsDraft.refreshIntervalSeconds, in: 1...300, step: 1)
-                                .onChange(of: model.settingsDraft.refreshIntervalSeconds) { _ in
-                                    model.scheduleSettingsAutosave(refreshAfterSave: false)
-                                }
-                            Text("\(Int(model.settingsDraft.refreshIntervalSeconds))s")
-                                .font(.callout.monospacedDigit())
-                                .frame(width: 42, alignment: .trailing)
+                        RefreshIntervalControl(
+                            seconds: $model.settingsDraft.refreshIntervalSeconds,
+                            strings: strings
+                        ) {
+                            model.scheduleSettingsAutosave(refreshAfterSave: false)
                         }
                     }
 

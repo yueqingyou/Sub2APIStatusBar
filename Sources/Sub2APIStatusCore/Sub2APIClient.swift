@@ -3,10 +3,12 @@ import Foundation
 public struct Sub2APIClient: Sendable {
     public var config: AppConfig
     public var session: URLSession
+    public var retryPolicy: HTTPRetryPolicy
 
-    public init(config: AppConfig, session: URLSession = .shared) {
+    public init(config: AppConfig, session: URLSession = .shared, retryPolicy: HTTPRetryPolicy = .default) {
         self.config = config
         self.session = session
+        self.retryPolicy = retryPolicy
     }
 
     public func login(email: String, password: String) async throws -> AuthResponse {
@@ -211,7 +213,7 @@ public struct Sub2APIClient: Sendable {
     public func get<Value: Decodable & Sendable>(_ path: String, query: [URLQueryItem] = []) async throws -> Value {
         var request = try makeRequest(path: path, query: query)
         request.httpMethod = "GET"
-        return try await send(request)
+        return try await send(request, allowsRetry: true)
     }
 
     public func post<Body: Encodable & Sendable, Value: Decodable & Sendable>(_ path: String, body: Body) async throws -> Value {
@@ -219,7 +221,7 @@ public struct Sub2APIClient: Sendable {
         request.httpMethod = "POST"
         request.httpBody = try JSONEncoder.sub2api.encode(body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        return try await send(request)
+        return try await send(request, allowsRetry: false)
     }
 
     private func makeRequest(path: String, query: [URLQueryItem] = []) throws -> URLRequest {
@@ -244,17 +246,78 @@ public struct Sub2APIClient: Sendable {
         return request
     }
 
-    private func send<Value: Decodable & Sendable>(_ request: URLRequest) async throws -> Value {
-        let (data, response) = try await session.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            let message = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
-            throw Sub2APIError.badStatus(http.statusCode, message)
+    private func send<Value: Decodable & Sendable>(_ request: URLRequest, allowsRetry: Bool) async throws -> Value {
+        var attempt = 0
+        while true {
+            do {
+                let (data, response) = try await session.data(for: request)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    let message = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                    throw Sub2APIError.badStatus(http.statusCode, message)
+                }
+
+                let decoder = JSONDecoder.sub2api
+                if let envelope = try? decoder.decode(Sub2APIEnvelope<Value>.self, from: data) {
+                    return try envelope.value()
+                }
+                return try decoder.decode(Value.self, from: data)
+            } catch {
+                guard allowsRetry,
+                      retryPolicy.shouldRetry(error: error, attempt: attempt) else {
+                    throw error
+                }
+                let delay = retryPolicy.delayBeforeRetry(attempt: attempt)
+                attempt += 1
+                if delay > 0 {
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+            }
+        }
+    }
+}
+
+public struct HTTPRetryPolicy: Equatable, Sendable {
+    public let maxRetries: Int
+    public let baseDelaySeconds: Double
+
+    public init(maxRetries: Int, baseDelaySeconds: Double) {
+        self.maxRetries = max(maxRetries, 0)
+        self.baseDelaySeconds = max(baseDelaySeconds, 0)
+    }
+
+    public static let `default` = HTTPRetryPolicy(maxRetries: 2, baseDelaySeconds: 0.25)
+
+    public func shouldRetry(error: Error, attempt: Int) -> Bool {
+        guard attempt < maxRetries else {
+            return false
         }
 
-        let decoder = JSONDecoder.sub2api
-        if let envelope = try? decoder.decode(Sub2APIEnvelope<Value>.self, from: data) {
-            return try envelope.value()
+        if let apiError = error as? Sub2APIError {
+            return apiError.isTransientFailure
         }
-        return try decoder.decode(Value.self, from: data)
+
+        let urlError = error as NSError
+        guard urlError.domain == NSURLErrorDomain else {
+            return false
+        }
+
+        switch urlError.code {
+        case NSURLErrorTimedOut,
+             NSURLErrorCannotFindHost,
+             NSURLErrorCannotConnectToHost,
+             NSURLErrorNetworkConnectionLost,
+             NSURLErrorDNSLookupFailed,
+             NSURLErrorNotConnectedToInternet,
+             NSURLErrorInternationalRoamingOff,
+             NSURLErrorCallIsActive,
+             NSURLErrorDataNotAllowed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    public func delayBeforeRetry(attempt: Int) -> Double {
+        baseDelaySeconds * Double(1 << max(attempt, 0))
     }
 }

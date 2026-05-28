@@ -451,26 +451,6 @@ func testMenuBarSummaryIncludesRealtimeConcurrencyWhenAdminSelectsIt() {
     XCTAssert(snapshot.menuBarSummary(config: config) == "3 CC")
 }
 
-func testAdminDashboardStatsDecodesNormalAccountCountStrictly() throws {
-    let json = """
-    {
-      "total_accounts": 18,
-      "normal_accounts": 13,
-      "error_accounts": 2,
-      "ratelimit_accounts": 1,
-      "overload_accounts": 2
-    }
-    """.data(using: .utf8)!
-
-    let stats = try JSONDecoder.sub2api.decode(AdminDashboardStats.self, from: json)
-
-    XCTAssert(stats.totalAccounts == 18)
-    XCTAssert(stats.normalAccounts == 13)
-    XCTAssert(stats.errorAccounts == 2)
-    XCTAssert(stats.ratelimitAccounts == 1)
-    XCTAssert(stats.overloadAccounts == 2)
-}
-
 func testMenuBarSummaryIncludesNormalAccountsWhenAdminSelectsIt() {
     let config = AppConfig(
         baseURL: "http://127.0.0.1:8080",
@@ -482,20 +462,14 @@ func testMenuBarSummaryIncludesNormalAccountsWhenAdminSelectsIt() {
         connected: true,
         stats: nil,
         realtime: nil,
-        adminDashboardStats: AdminDashboardStats(
-            totalAccounts: 18,
-            normalAccounts: 13,
-            errorAccounts: 2,
-            ratelimitAccounts: 1,
-            overloadAccounts: 2
-        ),
+        adminNormalAccountCount: 4,
         accountHealth: nil,
         subscriptionSummary: nil,
         lastUpdatedAt: nil,
         message: nil
     )
 
-    XCTAssert(snapshot.menuBarSummary(config: config) == "13 normal")
+    XCTAssert(snapshot.menuBarSummary(config: config) == "4 normal")
 }
 
 func testAppConfigClearsAuthTokens() {
@@ -924,6 +898,72 @@ func testSub2APIClientFetchesAllAdminUsersAcrossPages() async throws {
         "/api/v1/admin/users?page=1&page_size=1000",
         "/api/v1/admin/users?page=2&page_size=1000",
     ])
+}
+
+func testSub2APIClientFetchesNormalAccountCountFromAccountFilterTotal() async throws {
+    StubURLProtocol.responses = [
+        "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true": Data("""
+        {
+          "items": [
+            {
+              "account": {
+                "id": 41,
+                "name": "normal",
+                "platform": "openai",
+                "type": "oauth",
+                "status": "active",
+                "schedulable": true,
+                "error_message": ""
+              },
+              "current_concurrency": 0
+            }
+          ],
+          "total": 4,
+          "page": 1,
+          "page_size": 1,
+          "pages": 4
+        }
+        """.utf8),
+    ]
+    StubURLProtocol.requestedPaths = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+
+    let count = try await client.adminNormalAccountCount()
+
+    XCTAssert(count == 4)
+    XCTAssert(StubURLProtocol.requestedPaths == [
+        "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true",
+    ])
+}
+
+func testSub2APIClientRequiresNormalAccountCountTotal() async throws {
+    StubURLProtocol.responses = [
+        "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true": Data("""
+        {
+          "items": [],
+          "page": 1,
+          "page_size": 1,
+          "pages": 1
+        }
+        """.utf8),
+    ]
+    StubURLProtocol.requestedPaths = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+
+    do {
+        _ = try await client.adminNormalAccountCount()
+        XCTFail("Missing total must not fall back to item count.")
+    } catch {
+        XCTAssert(StubURLProtocol.requestedPaths == [
+            "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true",
+        ])
+    }
 }
 
 func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async throws {
@@ -1512,7 +1552,7 @@ func testMonitorSnapshotMenuBarPresentationTruncatesLongStatusTextOnly() {
         latestUsage: latestUsage,
         realtime: nil,
         realtimeConcurrency: UserRealtimeConcurrency(userID: 2, userEmail: "target@example.com", username: "target", currentInUse: 1, maxCapacity: 100, loadPercentage: 0.01, waitingInQueue: 0),
-        adminDashboardStats: AdminDashboardStats(totalAccounts: 13, normalAccounts: 8, errorAccounts: 2, ratelimitAccounts: 1, overloadAccounts: 2),
+        adminNormalAccountCount: 4,
         accountHealth: nil,
         subscriptionSummary: nil,
         lastUpdatedAt: Date(timeIntervalSince1970: 0),
@@ -1528,8 +1568,8 @@ func testMonitorSnapshotMenuBarPresentationTruncatesLongStatusTextOnly() {
     let fullSummary = snapshot.menuBarSummary(config: config)
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(fullSummary, "$0.22 · 239 req · gpt-5.5 · xhigh · Fast · 1 CC · 8 normal")
-    XCTAssertEqual(presentation.title, " $0.22·239r·gpt-5.5·xh·F·1CC·8N")
+    XCTAssertEqual(fullSummary, "$0.22 · 239 req · gpt-5.5 · xhigh · Fast · 1 CC · 4 normal")
+    XCTAssertEqual(presentation.title, " $0.22·239r·gpt-5.5·xh·F·1CC·4N")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
 }
 
@@ -1552,7 +1592,7 @@ func testMonitorSnapshotCompactMenuBarSummaryKeepsAllSelectedItemsWhenPossible()
         latestUsage: latestUsage,
         realtime: nil,
         realtimeConcurrency: UserRealtimeConcurrency(userID: 2, userEmail: "target@example.com", username: "target", currentInUse: 1, maxCapacity: 100, loadPercentage: 0.01, waitingInQueue: 0),
-        adminDashboardStats: AdminDashboardStats(totalAccounts: 63, normalAccounts: 52, errorAccounts: 2, ratelimitAccounts: 1, overloadAccounts: 8),
+        adminNormalAccountCount: 4,
         accountHealth: nil,
         subscriptionSummary: nil,
         lastUpdatedAt: Date(timeIntervalSince1970: 0),
@@ -1568,8 +1608,8 @@ func testMonitorSnapshotCompactMenuBarSummaryKeepsAllSelectedItemsWhenPossible()
     let fullSummary = snapshot.menuBarSummary(config: config)
     let compactSummary = snapshot.compactMenuBarSummary(config: config, maxCharacters: 36)
 
-    XCTAssertEqual(fullSummary, "$2864.10 · gpt-5.5 · xhigh · Fast · 1 CC · 52 normal")
-    XCTAssertEqual(compactSummary, "$2.86K·gpt-5.5·xh·F·1CC·52N")
+    XCTAssertEqual(fullSummary, "$2864.10 · gpt-5.5 · xhigh · Fast · 1 CC · 4 normal")
+    XCTAssertEqual(compactSummary, "$2.86K·gpt-5.5·xh·F·1CC·4N")
     XCTAssert(compactSummary.count <= 36)
 }
 

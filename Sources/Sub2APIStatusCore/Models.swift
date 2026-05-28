@@ -246,28 +246,6 @@ public struct AdminUserConcurrencyStats: Decodable, Equatable, Sendable {
     }
 }
 
-public struct AdminDashboardStats: Decodable, Equatable, Sendable {
-    public let totalAccounts: Int
-    public let normalAccounts: Int
-    public let errorAccounts: Int
-    public let ratelimitAccounts: Int
-    public let overloadAccounts: Int
-
-    public init(
-        totalAccounts: Int,
-        normalAccounts: Int,
-        errorAccounts: Int,
-        ratelimitAccounts: Int,
-        overloadAccounts: Int
-    ) {
-        self.totalAccounts = totalAccounts
-        self.normalAccounts = normalAccounts
-        self.errorAccounts = errorAccounts
-        self.ratelimitAccounts = ratelimitAccounts
-        self.overloadAccounts = overloadAccounts
-    }
-}
-
 public struct AdminSubscriptionGroup: Decodable, Equatable, Sendable {
     public let id: Int64
     public let name: String
@@ -1312,7 +1290,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
     public let realtime: RealtimeMetrics?
     public let monitoredUser: AdminUserSummary?
     public let realtimeConcurrency: UserRealtimeConcurrency?
-    public let adminDashboardStats: AdminDashboardStats?
+    public let adminNormalAccountCount: Int?
     public let accountHealth: AccountHealthSummary?
     public let subscriptionSummary: SubscriptionSummary?
     public let lastUpdatedAt: Date?
@@ -1331,7 +1309,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
         realtime: RealtimeMetrics?,
         monitoredUser: AdminUserSummary? = nil,
         realtimeConcurrency: UserRealtimeConcurrency? = nil,
-        adminDashboardStats: AdminDashboardStats? = nil,
+        adminNormalAccountCount: Int? = nil,
         accountHealth: AccountHealthSummary?,
         subscriptionSummary: SubscriptionSummary?,
         lastUpdatedAt: Date?,
@@ -1349,7 +1327,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
         self.realtime = realtime
         self.monitoredUser = monitoredUser
         self.realtimeConcurrency = realtimeConcurrency
-        self.adminDashboardStats = adminDashboardStats
+        self.adminNormalAccountCount = adminNormalAccountCount
         self.accountHealth = accountHealth
         self.subscriptionSummary = subscriptionSummary
         self.lastUpdatedAt = lastUpdatedAt
@@ -1365,7 +1343,6 @@ public struct MonitorSnapshot: Equatable, Sendable {
             realtime: nil,
             monitoredUser: nil,
             realtimeConcurrency: nil,
-            adminDashboardStats: nil,
             accountHealth: nil,
             subscriptionSummary: nil,
             lastUpdatedAt: nil,
@@ -1386,7 +1363,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
             realtime: realtime,
             monitoredUser: monitoredUser,
             realtimeConcurrency: realtimeConcurrency,
-            adminDashboardStats: adminDashboardStats,
+            adminNormalAccountCount: adminNormalAccountCount,
             accountHealth: accountHealth,
             subscriptionSummary: subscriptionSummary,
             lastUpdatedAt: lastUpdatedAt,
@@ -1522,7 +1499,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
                     parts.append("\(StatusFormatters.menuBarCount(concurrency.currentInUse)) CC")
                 }
             case .normalAccounts:
-                if let normalAccounts = adminDashboardStats?.normalAccounts {
+                if let normalAccounts = adminNormalAccountCount {
                     parts.append("\(StatusFormatters.menuBarCount(Int64(normalAccounts))) normal")
                 }
             }
@@ -1592,7 +1569,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
                     parts.append("\(StatusFormatters.menuBarCount(concurrency.currentInUse))CC")
                 }
             case .normalAccounts:
-                if let normalAccounts = adminDashboardStats?.normalAccounts {
+                if let normalAccounts = adminNormalAccountCount {
                     parts.append("\(StatusFormatters.menuBarCount(Int64(normalAccounts)))N")
                 }
             }

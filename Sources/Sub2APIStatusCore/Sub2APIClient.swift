@@ -113,8 +113,14 @@ public struct Sub2APIClient: Sendable {
         try await get("/admin/ops/user-concurrency")
     }
 
-    public func adminDashboardStats() async throws -> AdminDashboardStats {
-        try await get("/admin/dashboard/stats")
+    public func adminNormalAccountCount() async throws -> Int {
+        let page: AdminAccountFilterTotal = try await get("/admin/accounts", query: [
+            URLQueryItem(name: "page", value: "1"),
+            URLQueryItem(name: "page_size", value: "1"),
+            URLQueryItem(name: "status", value: "active"),
+            URLQueryItem(name: "lite", value: "true"),
+        ])
+        return page.total
     }
 
     public func adminUsageStats(
@@ -274,6 +280,10 @@ public struct Sub2APIClient: Sendable {
             }
         }
     }
+}
+
+private struct AdminAccountFilterTotal: Decodable, Sendable {
+    let total: Int
 }
 
 public struct HTTPRetryPolicy: Equatable, Sendable {

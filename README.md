@@ -46,14 +46,14 @@ Administrator-only metrics use these real Sub2API admin endpoints:
 - `GET /api/v1/admin/users`
 - `GET /api/v1/admin/users/{id}`
 - `GET /api/v1/admin/ops/user-concurrency`
-- `GET /api/v1/admin/dashboard/stats`
+- `GET /api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true`
 - `GET /api/v1/admin/usage`
 - `GET /api/v1/admin/usage/stats`
 - `GET /api/v1/admin/dashboard/trend`
 - `GET /api/v1/admin/dashboard/models`
 - `GET /api/v1/admin/users/{id}/subscriptions`
 
-Realtime concurrency means the selected user's occupied concurrency slots from `/api/v1/admin/ops/user-concurrency`. Normal account count comes from `normal_accounts` in `/api/v1/admin/dashboard/stats`. Selected-user usage, latest request metadata, trend, model distribution, balance, and subscriptions are read through administrator endpoints filtered by the monitored user ID, not from the administrator account's own `/usage/*` endpoints.
+Realtime concurrency means the selected user's occupied concurrency slots from `/api/v1/admin/ops/user-concurrency`. Normal account count comes from the `total` field of `/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true`, matching the admin account list's **Normal** filter and excluding rate-limited or temporarily unschedulable accounts. Selected-user usage, latest request metadata, trend, model distribution, balance, and subscriptions are read through administrator endpoints filtered by the monitored user ID, not from the administrator account's own `/usage/*` endpoints.
 
 ## Run From Source
 
@@ -99,7 +99,7 @@ Admin accounts can additionally enable realtime concurrency and normal account c
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.20 ./scripts/build-app.sh
+VERSION=v0.1.21 ./scripts/build-app.sh
 ```
 
 Output:
@@ -116,28 +116,28 @@ Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.20 \
+VERSION=v0.1.21 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.20 ./scripts/package-release.sh
+VERSION=v0.1.21 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.20-macOS.zip
-dist/Sub2APIStatusBar-0.1.20-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.21-macOS.zip
+dist/Sub2APIStatusBar-0.1.21-macOS.zip.sha256
 ```
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.20 \
+VERSION=v0.1.21 \
 ./scripts/package-release.sh
 ```
 
@@ -152,7 +152,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.20 \
+VERSION=v0.1.21 \
 ./scripts/notarize-release.sh
 ```
 

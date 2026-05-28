@@ -243,7 +243,6 @@ final class MonitorViewModel: ObservableObject {
             realtime: nil,
             monitoredUser: nil,
             realtimeConcurrency: nil,
-            adminDashboardStats: nil,
             accountHealth: nil,
             subscriptionSummary: summary,
             lastUpdatedAt: Date(),
@@ -258,7 +257,7 @@ final class MonitorViewModel: ObservableObject {
         async let usersTask = client.allAdminUsers()
         async let selectedUserTask = client.adminUser(id: selectedUserID)
         async let concurrencyTask = client.adminUserConcurrencyStats()
-        async let adminStatsTask = client.adminDashboardStats()
+        async let normalAccountCountTask = client.adminNormalAccountCount()
         async let menuBarStatsTask = adminMenuBarUsageStats(client: client, userID: selectedUserID, timezone: timezone)
         async let latestUsageTask = client.adminUsageLogs(userID: selectedUserID, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: timezone)
         let today = Self.todayString()
@@ -282,7 +281,7 @@ final class MonitorViewModel: ObservableObject {
             target = try await selectedUserTask
         } catch {
             _ = try? await concurrencyTask
-            _ = try? await adminStatsTask
+            _ = try? await normalAccountCountTask
             _ = try? await menuBarStatsTask
             _ = try? await latestUsageTask
             _ = try? await dayStatsTask
@@ -292,11 +291,11 @@ final class MonitorViewModel: ObservableObject {
             throw error
         }
 
-        let adminStats: AdminDashboardStats?
+        let normalAccountCount: Int?
         do {
-            adminStats = try await adminStatsTask
+            normalAccountCount = try await normalAccountCountTask
         } catch {
-            adminStats = nil
+            normalAccountCount = nil
             messages.append(error.localizedDescription)
         }
 
@@ -335,7 +334,7 @@ final class MonitorViewModel: ObservableObject {
             realtime: nil,
             monitoredUser: target,
             realtimeConcurrency: concurrency,
-            adminDashboardStats: adminStats,
+            adminNormalAccountCount: normalAccountCount,
             accountHealth: nil,
             subscriptionSummary: subscriptions.map { SubscriptionSummary(adminSubscriptions: $0) },
             lastUpdatedAt: Date(),
@@ -856,8 +855,8 @@ struct MonitorPanel: View {
         if let concurrency = model.snapshot.realtimeConcurrency {
             items.append(realtimeConcurrencyMetric(concurrency))
         }
-        if let adminStats = model.snapshot.adminDashboardStats {
-            items.append(normalAccountsMetric(adminStats))
+        if let normalAccountCount = model.snapshot.adminNormalAccountCount {
+            items.append(normalAccountsMetric(normalAccountCount))
         }
         items.append(contentsOf: [
             MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, caption: strings.phrase("可用", "Available"), systemImage: "banknote", tint: ClaudeTheme.accent),
@@ -877,8 +876,8 @@ struct MonitorPanel: View {
         if let concurrency = model.snapshot.realtimeConcurrency {
             items.append(realtimeConcurrencyMetric(concurrency))
         }
-        if let adminStats = model.snapshot.adminDashboardStats {
-            items.append(normalAccountsMetric(adminStats))
+        if let normalAccountCount = model.snapshot.adminNormalAccountCount {
+            items.append(normalAccountsMetric(normalAccountCount))
         }
         items.append(contentsOf: [
             MetricItem(title: strings.phrase("余额", "Balance"), value: balanceText, systemImage: "banknote", tint: ClaudeTheme.accent),
@@ -902,13 +901,13 @@ struct MonitorPanel: View {
         )
     }
 
-    private func normalAccountsMetric(_ stats: AdminDashboardStats) -> MetricItem {
+    private func normalAccountsMetric(_ count: Int) -> MetricItem {
         MetricItem(
             title: strings.phrase("正常账号", "Normal Accounts"),
-            value: StatusFormatters.menuBarCount(Int64(stats.normalAccounts)),
+            value: StatusFormatters.menuBarCount(Int64(count)),
             caption: strings.phrase(
-                "总计 \(stats.totalAccounts) / 异常 \(stats.errorAccounts + stats.ratelimitAccounts + stats.overloadAccounts)",
-                "Total \(stats.totalAccounts) / Other \(stats.errorAccounts + stats.ratelimitAccounts + stats.overloadAccounts)"
+                "账号筛选：正常",
+                "Account filter: Normal"
             ),
             systemImage: "checkmark.seal",
             tint: ClaudeTheme.success

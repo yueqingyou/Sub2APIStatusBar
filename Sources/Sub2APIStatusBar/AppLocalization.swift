@@ -96,6 +96,8 @@ struct AppStrings {
             return phrase("实时并发", "Realtime Concurrency")
         case .normalAccounts:
             return phrase("正常账号数", "Normal Accounts")
+        case .codexTasks:
+            return phrase("任务", "Tasks")
         }
     }
 

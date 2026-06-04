@@ -123,6 +123,27 @@ public struct Sub2APIClient: Sendable {
         return page.total
     }
 
+    public func adminNormalAccountComposition(pageSize: Int = 1000) async throws -> NormalAccountComposition {
+        var page = 1
+        var accounts: [AccountSummary] = []
+        var total = 0
+
+        while true {
+            let response: AdminNormalAccountsPage = try await get("/admin/accounts", query: [
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "page_size", value: String(pageSize)),
+                URLQueryItem(name: "status", value: "active"),
+                URLQueryItem(name: "lite", value: "true"),
+            ])
+            total = response.total
+            accounts.append(contentsOf: response.items)
+            guard page < response.pages, !response.items.isEmpty else {
+                return NormalAccountComposition(total: total, accounts: accounts)
+            }
+            page += 1
+        }
+    }
+
     public func adminUsageStats(
         userID: Int64,
         startDate: String,
@@ -284,6 +305,22 @@ public struct Sub2APIClient: Sendable {
 
 private struct AdminAccountFilterTotal: Decodable, Sendable {
     let total: Int
+}
+
+private struct AdminNormalAccountsPage: Decodable, Sendable {
+    let items: [AccountSummary]
+    let total: Int
+    let page: Int
+    let pageSize: Int
+    let pages: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case items
+        case total
+        case page
+        case pageSize
+        case pages
+    }
 }
 
 public struct HTTPRetryPolicy: Equatable, Sendable {

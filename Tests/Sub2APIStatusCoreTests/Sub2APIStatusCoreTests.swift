@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import Sub2APIStatusCore
 
@@ -30,6 +31,369 @@ final class StaticTokenStore: TokenStore, @unchecked Sendable {
     func saveTokens(_ tokens: StoredAuthTokens) throws {
         self.tokens = tokens
     }
+}
+
+final class StubSSHTunnelProcessHandle: SSHTunnelProcessHandle, @unchecked Sendable {
+    var isRunning: Bool
+    var terminationStatus: Int32
+    var standardError: String
+    var terminateCallCount = 0
+
+    init(isRunning: Bool = true, terminationStatus: Int32 = 0, standardError: String = "") {
+        self.isRunning = isRunning
+        self.terminationStatus = terminationStatus
+        self.standardError = standardError
+    }
+
+    func terminate() {
+        terminateCallCount += 1
+        isRunning = false
+    }
+}
+
+final class StubSSHTunnelProcessLauncher: SSHTunnelProcessLaunching, @unchecked Sendable {
+    var launchedCommands: [ProcessCommand] = []
+    var nextHandle = StubSSHTunnelProcessHandle()
+
+    func launch(command: ProcessCommand) throws -> any SSHTunnelProcessHandle {
+        launchedCommands.append(command)
+        return nextHandle
+    }
+}
+
+final class TestClock: @unchecked Sendable {
+    var now: Date
+
+    init(_ now: Date) {
+        self.now = now
+    }
+}
+
+final class RecordingCodexHookRemoteInstallRunner: CodexHookRemoteInstallRunning, @unchecked Sendable {
+    var receivedPlans: [CodexHookRemoteInstallerCommandPlan] = []
+    var result = CodexHookRemoteInstallResult(exitCode: 0, standardOutput: "ok", standardError: "")
+
+    func run(_ commandPlan: CodexHookRemoteInstallerCommandPlan) async throws -> CodexHookRemoteInstallResult {
+        receivedPlans.append(commandPlan)
+        return result
+    }
+}
+
+final class RecordingCodexHookRemoteConfigReader: CodexHookRemoteConfigReading, @unchecked Sendable {
+    var receivedPlans: [CodexHookRemoteReadCommandPlan] = []
+    var result = CodexHookRemoteInstallResult(exitCode: 0, standardOutput: #"model = "gpt-5""#, standardError: "")
+
+    func read(_ commandPlan: CodexHookRemoteReadCommandPlan) async throws -> CodexHookRemoteInstallResult {
+        receivedPlans.append(commandPlan)
+        return result
+    }
+}
+
+@MainActor
+private final class LocalReceiverTestRecorder {
+    var states: [LocalCodexHookReceiverState] = []
+    var events: [CodexHookEvent] = []
+
+    func append(state: LocalCodexHookReceiverState) {
+        states.append(state)
+    }
+
+    func append(event: CodexHookEvent) {
+        events.append(event)
+    }
+}
+
+private func availableLoopbackPort() throws -> UInt16 {
+    let socketDescriptor = socket(AF_INET, SOCK_STREAM, 0)
+    guard socketDescriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer {
+        close(socketDescriptor)
+    }
+
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = 0
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+    let bindResult = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            Darwin.bind(socketDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard bindResult == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    var boundAddress = sockaddr_in()
+    var boundAddressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let nameResult = withUnsafeMutablePointer(to: &boundAddress) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            getsockname(socketDescriptor, sockaddrPointer, &boundAddressLength)
+        }
+    }
+    guard nameResult == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    return UInt16(bigEndian: boundAddress.sin_port)
+}
+
+private func sendRawLoopbackHTTPRequest(_ requestData: Data, port: UInt16) throws -> Data {
+    let socketDescriptor = socket(AF_INET, SOCK_STREAM, 0)
+    guard socketDescriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer {
+        close(socketDescriptor)
+    }
+
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+    let connectResult = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            connect(socketDescriptor, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard connectResult == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    try requestData.withUnsafeBytes { rawBuffer in
+        guard let baseAddress = rawBuffer.baseAddress else {
+            return
+        }
+        var sent = 0
+        while sent < rawBuffer.count {
+            let count = Darwin.send(socketDescriptor, baseAddress.advanced(by: sent), rawBuffer.count - sent, 0)
+            guard count > 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            sent += count
+        }
+    }
+    shutdown(socketDescriptor, SHUT_WR)
+
+    var responseData = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let readCount = recv(socketDescriptor, &buffer, buffer.count, 0)
+        if readCount < 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        if readCount == 0 {
+            break
+        }
+        responseData.append(buffer, count: readCount)
+    }
+    return responseData
+}
+
+private func runCodexHookSender(
+    senderURL: URL,
+    eventName: String,
+    nodeConfigURL: URL,
+    stdinPayload: Data
+) throws -> CodexHookRemoteInstallResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = [
+        "python3",
+        senderURL.path,
+        "--managed-by", "Sub2APIStatusBar",
+        "--event", eventName,
+        "--config", nodeConfigURL.path,
+    ]
+
+    let inputPipe = Pipe()
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.standardInput = inputPipe
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+
+    try process.run()
+    inputPipe.fileHandleForWriting.write(stdinPayload)
+    inputPipe.fileHandleForWriting.closeFile()
+    process.waitUntilExit()
+
+    return CodexHookRemoteInstallResult(
+        exitCode: process.terminationStatus,
+        standardOutput: String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+        standardError: String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    )
+}
+
+private enum HookCommandExtractionError: Error {
+    case missingCommand(eventName: String)
+    case malformedTomlString(String)
+}
+
+private enum LocalInstallerTestError: Error, Equatable {
+    case forcedCodexConfigWriteFailure
+}
+
+private func managedHookCommand(eventName: String, in config: String) throws -> String {
+    let lines = config
+        .replacingOccurrences(of: "\r\n", with: "\n")
+        .replacingOccurrences(of: "\r", with: "\n")
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map(String.init)
+    let hookHeader = "[[hooks.\(eventName).hooks]]"
+
+    for index in lines.indices where lines[index].trimmingCharacters(in: .whitespaces) == hookHeader {
+        var lineIndex = lines.index(after: index)
+        while lineIndex < lines.count {
+            let trimmed = lines[lineIndex].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") {
+                break
+            }
+            if trimmed.hasPrefix("command = ") {
+                let rawValue = String(trimmed.dropFirst("command = ".count))
+                return try decodeTomlBasicString(rawValue)
+            }
+            lineIndex += 1
+        }
+    }
+
+    throw HookCommandExtractionError.missingCommand(eventName: eventName)
+}
+
+private func decodeTomlBasicString(_ value: String) throws -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespaces)
+    guard trimmed.hasPrefix("\""), trimmed.hasSuffix("\"") else {
+        throw HookCommandExtractionError.malformedTomlString(value)
+    }
+
+    var result = ""
+    var isEscaped = false
+    for character in trimmed.dropFirst().dropLast() {
+        if isEscaped {
+            result.append(character)
+            isEscaped = false
+        } else if character == "\\" {
+            isEscaped = true
+        } else {
+            result.append(character)
+        }
+    }
+    if isEscaped {
+        throw HookCommandExtractionError.malformedTomlString(value)
+    }
+    return result
+}
+
+private func runShellHookCommand(
+    command: String,
+    stdinPayload: Data
+) throws -> CodexHookRemoteInstallResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = ["-c", command]
+
+    let inputPipe = Pipe()
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.standardInput = inputPipe
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+
+    try process.run()
+    inputPipe.fileHandleForWriting.write(stdinPayload)
+    inputPipe.fileHandleForWriting.closeFile()
+    process.waitUntilExit()
+
+    return CodexHookRemoteInstallResult(
+        exitCode: process.terminationStatus,
+        standardOutput: String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+        standardError: String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    )
+}
+
+private func runShellScript(_ script: String) throws -> CodexHookRemoteInstallResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = ["-s"]
+
+    let inputPipe = Pipe()
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.standardInput = inputPipe
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+
+    try process.run()
+    inputPipe.fileHandleForWriting.write(Data(script.utf8))
+    inputPipe.fileHandleForWriting.closeFile()
+    process.waitUntilExit()
+
+    return CodexHookRemoteInstallResult(
+        exitCode: process.terminationStatus,
+        standardOutput: String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+        standardError: String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    )
+}
+
+private func runShellCommand(
+    _ command: String,
+    environment: [String: String] = [:]
+) throws -> CodexHookRemoteInstallResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = ["-c", command]
+    if !environment.isEmpty {
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+    }
+
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    process.standardOutput = outputPipe
+    process.standardError = errorPipe
+
+    try process.run()
+    process.waitUntilExit()
+
+    return CodexHookRemoteInstallResult(
+        exitCode: process.terminationStatus,
+        standardOutput: String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+        standardError: String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    )
+}
+
+private func shellQuoteForTest(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+}
+
+private func writeFakeSSHExecutable(at url: URL) throws {
+    let script = """
+    #!/bin/sh
+    exec python3 -
+    """
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try script.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: url.path)
+}
+
+@MainActor
+private func waitForListenerReady(
+    _ states: [LocalCodexHookReceiverState],
+    timeout: TimeInterval = 2,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if states.contains(.ready) {
+            return
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    XCTFail("Listener did not become ready: \(states)", file: file, line: line)
 }
 
 final class StubURLProtocol: URLProtocol, @unchecked Sendable {
@@ -93,6 +457,17 @@ func testAppConfigNormalizesBaseURLAndRefreshInterval() {
     XCTAssert(config.launchAtLogin == false)
 }
 
+func testAppConfigNormalizesCodexTaskTimelineEventLimit() {
+    var tooLow = AppConfig(baseURL: "http://127.0.0.1:8080", codexTaskTimelineEventLimit: -4)
+    var tooHigh = AppConfig(baseURL: "http://127.0.0.1:8080", codexTaskTimelineEventLimit: 999)
+
+    tooLow.normalize()
+    tooHigh.normalize()
+
+    XCTAssertEqual(tooLow.codexTaskTimelineEventLimit, 1)
+    XCTAssertEqual(tooHigh.codexTaskTimelineEventLimit, 20)
+}
+
 func testAppConfigDefaultsMenuBarWindowAndItems() {
     let config = AppConfig(baseURL: "http://127.0.0.1:8080")
 
@@ -105,6 +480,7 @@ func testAppConfigDefaultsMenuBarWindowAndItems() {
         .fast,
         .rpm,
     ])
+    XCTAssertEqual(config.codexTaskTimelineEventLimit, AppConfig.defaultCodexTaskTimelineEventLimit)
 }
 
 func testAppConfigDefaultsToChineseLanguage() {
@@ -134,6 +510,3731 @@ func testAppAppearanceFallsBackToSystemWhenEnvironmentIsMissingOrUnknown() {
     XCTAssert(AppAppearance.fromEnvironment("light") == .light)
     XCTAssert(AppAppearance.fromEnvironment("dark-aqua") == .dark)
     XCTAssert(AppAppearance.fromEnvironment("unknown") == .system)
+}
+
+func testCodexHomeResolverPrefersEnvironmentValue() {
+    let resolved = CodexHomeResolver.resolve(environmentValue: " /opt/codex-home/ ", homeDirectory: "/Users/tester")
+
+    XCTAssertEqual(resolved.codexHomePath, "/opt/codex-home")
+    XCTAssertEqual(resolved.configPath, "/opt/codex-home/config.toml")
+    XCTAssertEqual(resolved.userHomePath, "/Users/tester")
+}
+
+func testCodexHomeResolverFallsBackToUserCodexDirectory() {
+    let resolved = CodexHomeResolver.resolve(environmentValue: " ", homeDirectory: "/Users/tester")
+
+    XCTAssertEqual(resolved.codexHomePath, "/Users/tester/.codex")
+    XCTAssertEqual(resolved.configPath, "/Users/tester/.codex/config.toml")
+    XCTAssertEqual(resolved.userHomePath, "/Users/tester")
+}
+
+func testCodexHomeResolverUsesRemoteCodexHomeBeforeRemoteHome() throws {
+    let resolved = try CodexHomeResolver.resolve(
+        remoteEnvironment: CodexRemoteEnvironment(commandOutput: """
+        \(CodexRemoteEnvironment.codexHomeOutputPrefix)/srv/codex
+        \(CodexRemoteEnvironment.homeDirectoryOutputPrefix)/home/deploy
+        """)
+    )
+
+    XCTAssertEqual(resolved.codexHomePath, "/srv/codex")
+    XCTAssertEqual(resolved.configPath, "/srv/codex/config.toml")
+    XCTAssertEqual(resolved.userHomePath, "/home/deploy")
+}
+
+func testCodexHomeResolverReadsMarkedRemoteEnvironmentDespiteShellStartupNoise() throws {
+    let resolved = try CodexHomeResolver.resolve(
+        remoteEnvironment: CodexRemoteEnvironment(commandOutput: """
+        remote shell banner
+        \(CodexRemoteEnvironment.codexHomeOutputPrefix)/srv/codex
+        debug line from profile
+        \(CodexRemoteEnvironment.homeDirectoryOutputPrefix)/home/deploy
+        """)
+    )
+
+    XCTAssertEqual(resolved.codexHomePath, "/srv/codex")
+    XCTAssertEqual(resolved.configPath, "/srv/codex/config.toml")
+    XCTAssertEqual(resolved.userHomePath, "/home/deploy")
+}
+
+func testCodexHomeResolverUsesRemoteOverrideWithoutLosingRemoteHome() throws {
+    let resolved = try CodexHomeResolver.resolve(
+        remoteEnvironment: CodexRemoteEnvironment(commandOutput: """
+        \(CodexRemoteEnvironment.codexHomeOutputPrefix)/srv/codex
+        \(CodexRemoteEnvironment.homeDirectoryOutputPrefix)/home/deploy
+        """),
+        override: " /opt/custom-codex/ "
+    )
+
+    XCTAssertEqual(resolved.codexHomePath, "/opt/custom-codex")
+    XCTAssertEqual(resolved.configPath, "/opt/custom-codex/config.toml")
+    XCTAssertEqual(resolved.userHomePath, "/home/deploy")
+}
+
+func testCodexHomeResolverFallsBackToRemoteHomeDirectory() throws {
+    let resolved = try CodexHomeResolver.resolve(
+        remoteEnvironment: CodexRemoteEnvironment(commandOutput: """
+        \(CodexRemoteEnvironment.codexHomeOutputPrefix)
+        \(CodexRemoteEnvironment.homeDirectoryOutputPrefix)/Users/remote
+        """)
+    )
+
+    XCTAssertEqual(resolved.codexHomePath, "/Users/remote/.codex")
+    XCTAssertEqual(resolved.configPath, "/Users/remote/.codex/config.toml")
+    XCTAssertEqual(resolved.userHomePath, "/Users/remote")
+}
+
+func testCodexHomeResolverRejectsRemoteEnvironmentWithoutHome() {
+    XCTAssertThrowsError(try CodexHomeResolver.resolve(
+        remoteEnvironment: CodexRemoteEnvironment(commandOutput: """
+        \(CodexRemoteEnvironment.codexHomeOutputPrefix)
+        """)
+    )) { error in
+        XCTAssertEqual(error as? CodexHomeResolutionError, .missingRemoteHomeDirectory)
+    }
+}
+
+func testCodexHomeResolverRejectsRemoteOverrideWithoutRemoteHome() {
+    XCTAssertThrowsError(try CodexHomeResolver.resolve(
+        remoteEnvironment: CodexRemoteEnvironment(commandOutput: """
+        \(CodexRemoteEnvironment.codexHomeOutputPrefix)/srv/codex
+        """),
+        override: "/opt/custom-codex"
+    )) { error in
+        XCTAssertEqual(error as? CodexHomeResolutionError, .missingRemoteHomeDirectory)
+    }
+}
+
+func testCodexHookSupportPathUsesRemoteHomeWhenCodexHomeIsCustom() throws {
+    let codexHome = try CodexHomeResolver.resolve(
+        remoteEnvironment: CodexRemoteEnvironment(commandOutput: """
+        \(CodexRemoteEnvironment.codexHomeOutputPrefix)/srv/codex
+        \(CodexRemoteEnvironment.homeDirectoryOutputPrefix)/home/deploy
+        """)
+    )
+
+    let senderPath = try CodexHookSupportPathBuilder.remoteSupportPath(
+        codexHome: codexHome,
+        component: "sub2api-statusbar-hook-sender"
+    )
+    let nodeConfigPath = try CodexHookSupportPathBuilder.remoteNodeConfigPath(
+        codexHome: codexHome,
+        nodeID: "remote-node"
+    )
+
+    XCTAssertEqual(senderPath, "/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender")
+    XCTAssertEqual(nodeConfigPath, "/home/deploy/.sub2api-statusbar/codex-hook-node-remote-node.json")
+}
+
+func testCodexHookSupportPathRequiresRemoteHome() {
+    let codexHome = CodexHomeResolution(codexHomePath: "/srv/codex", configPath: "/srv/codex/config.toml")
+
+    XCTAssertThrowsError(try CodexHookSupportPathBuilder.remoteNodeConfigPath(
+        codexHome: codexHome,
+        nodeID: "remote-node"
+    )) { error in
+        XCTAssertEqual(error as? CodexHomeResolutionError, .missingRemoteHomeDirectory)
+    }
+}
+
+func testCodexHookSupportPathRejectsUnsafeNodeIDForConfigFileName() {
+    XCTAssertEqual(try CodexHookSupportPathBuilder.nodeConfigFileName(nodeID: " remote.node_1-2 "), "codex-hook-node-remote.node_1-2.json")
+    XCTAssertThrowsError(try CodexHookSupportPathBuilder.nodeConfigFileName(nodeID: "../remote")) { error in
+        XCTAssertEqual(error as? CodexNodeValidationError, .invalidID)
+    }
+}
+
+func testCodexNodeNormalizesLocalAndRemoteReceiverURLs() throws {
+    let local = try CodexNode(
+        id: " local-node ",
+        name: " 本机 ",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: " /Users/tester/.codex "
+    )
+    let remote = try CodexNode(
+        id: " remote-node ",
+        name: " 远端 ",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: " example-host ", user: " deploy ", port: 2222, identityFile: " ~/.ssh/id_ed25519 "),
+        codexHomeOverride: nil
+    )
+
+    XCTAssertEqual(local.id, "local-node")
+    XCTAssertEqual(local.codexHomeOverride, "/Users/tester/.codex")
+    XCTAssertEqual(local.hookReceiverURL.absoluteString, "http://127.0.0.1:43210/codex-hooks/events")
+    XCTAssertEqual(local.localHookReceiverURL.absoluteString, "http://127.0.0.1:43210/codex-hooks/events")
+    XCTAssertEqual(remote.id, "remote-node")
+    XCTAssertEqual(remote.ssh?.host, "example-host")
+    XCTAssertEqual(remote.ssh?.user, "deploy")
+    XCTAssertEqual(remote.hookReceiverURL.absoluteString, "http://127.0.0.1:53210/codex-hooks/events")
+    XCTAssertEqual(remote.localHookReceiverURL.absoluteString, "http://127.0.0.1:43210/codex-hooks/events")
+}
+
+func testCodexNodeRejectsRemoteNodeWithoutSSHOrRemotePort() {
+    XCTAssertThrowsError(try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: SSHNodeConnection(host: "example-host"),
+        codexHomeOverride: nil
+    )) { error in
+        XCTAssertEqual(error as? CodexNodeValidationError, .missingRemoteReceiverPort)
+    }
+
+    XCTAssertThrowsError(try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: nil,
+        codexHomeOverride: nil
+    )) { error in
+        XCTAssertEqual(error as? CodexNodeValidationError, .missingSSHConnection)
+    }
+}
+
+func testCodexNodeRejectsPathUnsafeIDAndDecodingBypassesNoValidation() {
+    XCTAssertThrowsError(try CodexNode(
+        id: "../remote",
+        name: "远端",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )) { error in
+        XCTAssertEqual(error as? CodexNodeValidationError, .invalidID)
+    }
+
+    let raw = """
+    {
+      "id": "../remote",
+      "name": "Remote",
+      "kind": "local",
+      "localReceiverPort": 43210
+    }
+    """.data(using: .utf8)!
+
+    XCTAssertThrowsError(try JSONDecoder().decode(CodexNode.self, from: raw))
+}
+
+func testCodexNodeFormBuildsLocalRegisteredNodeWithSecret() throws {
+    var form = CodexNodeFormState.localDefault(id: " local-node ", name: " 本机 ")
+    form.codexHomeOverride = " /Users/tester/.codex "
+    form.secret = " node-secret "
+
+    let registered = try form.registeredNode()
+
+    XCTAssertEqual(registered.node.id, "local-node")
+    XCTAssertEqual(registered.node.name, "本机")
+    XCTAssertEqual(registered.node.kind, .local)
+    XCTAssertEqual(registered.node.localReceiverPort, 43210)
+    XCTAssertNil(registered.node.remoteReceiverPort)
+    XCTAssertNil(registered.node.ssh)
+    XCTAssertEqual(registered.node.codexHomeOverride, "/Users/tester/.codex")
+    XCTAssertEqual(registered.secret, "node-secret")
+}
+
+func testCodexNodeFormBuildsRemoteRegisteredNodeWithSSH() throws {
+    let form = CodexNodeFormState(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: "43210",
+        remoteReceiverPort: "53210",
+        sshHost: " example-host ",
+        sshUser: " deploy ",
+        sshPort: "2222",
+        sshIdentityFile: " ~/.ssh/id_ed25519 ",
+        codexHomeOverride: "",
+        secret: "remote-secret"
+    )
+
+    let registered = try form.registeredNode()
+
+    XCTAssertEqual(registered.node.kind, .remote)
+    XCTAssertEqual(registered.node.remoteReceiverPort, 53210)
+    XCTAssertEqual(registered.node.ssh?.host, "example-host")
+    XCTAssertEqual(registered.node.ssh?.user, "deploy")
+    XCTAssertEqual(registered.node.ssh?.port, 2222)
+    XCTAssertEqual(registered.node.ssh?.identityFile, "~/.ssh/id_ed25519")
+    XCTAssertEqual(registered.secret, "remote-secret")
+}
+
+func testSSHConfigParserBuildsConcreteHostsWithDefaults() {
+    let rawConfig = """
+    Host prod
+      HostName prod.example.com
+      User deploy
+
+    Host staging
+      HostName=staging.example.com
+      IdentityFile "~/.ssh/staging key"
+
+    Host *.internal
+      User ignored
+
+    Host *
+      User shared
+      Port 2200
+      IdentityFile ~/.ssh/shared
+    """
+
+    let hosts = SSHConfigParser.parse(rawConfig)
+
+    XCTAssertEqual(hosts.map(\.alias), ["prod", "staging"])
+    XCTAssertEqual(hosts[0], SSHConfigHost(
+        alias: "prod",
+        hostName: "prod.example.com",
+        user: "deploy",
+        port: 2200,
+        identityFile: "~/.ssh/shared"
+    ))
+    XCTAssertEqual(hosts[1], SSHConfigHost(
+        alias: "staging",
+        hostName: "staging.example.com",
+        user: "shared",
+        port: 2200,
+        identityFile: "~/.ssh/staging key"
+    ))
+    XCTAssertEqual(hosts[0].nodeConnection, SSHNodeConnection(host: "prod.example.com", user: "deploy", port: 2200, identityFile: "~/.ssh/shared"))
+}
+
+func testSSHConfigParserUsesFirstValueAndSkipsComments() {
+    let rawConfig = """
+    # leading comment
+    Host build-box
+      HostName build-1.example.com # inline comment
+      HostName build-2.example.com
+      User first
+      User second
+      Port not-a-number
+      Port 2222
+      IdentityFile '~/.ssh/build'
+    """
+
+    let hosts = SSHConfigParser.parse(rawConfig)
+
+    XCTAssertEqual(hosts, [
+        SSHConfigHost(
+            alias: "build-box",
+            hostName: "build-1.example.com",
+            user: "first",
+            port: 2222,
+            identityFile: "~/.ssh/build"
+        )
+    ])
+}
+
+func testCodexNodeFormRejectsInvalidPortAndEmptySecret() {
+    var form = CodexNodeFormState.localDefault()
+    form.localReceiverPort = "bad"
+    XCTAssertThrowsError(try form.registeredNode()) { error in
+        XCTAssertEqual(error as? CodexNodeFormError, .invalidLocalReceiverPort)
+    }
+
+    form.localReceiverPort = "43210"
+    form.secret = ""
+    XCTAssertThrowsError(try form.registeredNode()) { error in
+        XCTAssertEqual(error as? CodexNodeValidationError, .emptySecret)
+    }
+}
+
+func testCodexNodeStorePersistsNodeMetadataWithoutSecrets() throws {
+    let nodesURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("codex-nodes.json")
+    let secretsURL = nodesURL.deletingLastPathComponent().appendingPathComponent("codex-node-secrets.json")
+    let store = CodexNodeStore(nodesURL: nodesURL, secretsURL: secretsURL)
+    let nodes = [
+        try CodexNode(
+            id: "local-node",
+            name: "本机",
+            kind: .local,
+            localReceiverPort: 43210,
+            remoteReceiverPort: nil,
+            ssh: nil,
+            codexHomeOverride: "/Users/tester/.codex"
+        ),
+        try CodexNode(
+            id: "remote-node",
+            name: "远端",
+            kind: .remote,
+            localReceiverPort: 43210,
+            remoteReceiverPort: 53210,
+            ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+            codexHomeOverride: nil
+        ),
+    ]
+
+    try store.save(nodes)
+    let raw = try String(contentsOf: nodesURL, encoding: .utf8)
+    let loaded = try store.load()
+
+    XCTAssertEqual(loaded, nodes)
+    XCTAssert(raw.contains("local-node"))
+    XCTAssert(raw.contains("remote-node"))
+    XCTAssertFalse(raw.contains("secret"))
+    XCTAssertFalse(raw.contains("token"))
+}
+
+func testCodexNodeStorePersistsRegistrySecretsInPrivateSeparateFile() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let nodesURL = root.appendingPathComponent("codex-nodes.json")
+    let secretsURL = root.appendingPathComponent("codex-node-secrets.json")
+    let store = CodexNodeStore(nodesURL: nodesURL, secretsURL: secretsURL)
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: "/Users/tester/.codex"
+    )
+    let registry = CodexNodeRegistry(registeredNodes: [
+        CodexRegisteredNode(node: node, secret: "node-secret"),
+    ])
+
+    try store.saveRegistry(registry)
+    let loaded = try store.loadRegistry()
+    let nodesRaw = try String(contentsOf: nodesURL, encoding: .utf8)
+    let secretsRaw = try String(contentsOf: secretsURL, encoding: .utf8)
+
+    XCTAssertEqual(loaded.nodes.map(\.id), ["local-node"])
+    XCTAssertEqual(loaded.nodeSecrets, ["local-node": "node-secret"])
+    XCTAssertFalse(nodesRaw.contains("node-secret"))
+    XCTAssert(secretsRaw.contains("node-secret"))
+    XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: secretsURL.path)[.posixPermissions] as? NSNumber, NSNumber(value: Int16(0o600)))
+}
+
+func testCodexNodeRegistryBuildsReceiverSecretsWithoutPersistingThemInNodes() throws {
+    let local = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: "/Users/tester/.codex"
+    )
+    let remote = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy"),
+        codexHomeOverride: nil
+    )
+
+    let registry = CodexNodeRegistry(registeredNodes: [
+        CodexRegisteredNode(node: local, secret: "local-secret"),
+        CodexRegisteredNode(node: remote, secret: "remote-secret"),
+    ])
+
+    XCTAssertEqual(registry.nodes.map(\.id), ["local-node", "remote-node"])
+    XCTAssertEqual(registry.nodeSecrets, ["local-node": "local-secret", "remote-node": "remote-secret"])
+    XCTAssertEqual(registry.node(id: " remote-node ")?.node.hookReceiverURL.absoluteString, "http://127.0.0.1:53210/codex-hooks/events")
+    XCTAssertFalse(String(describing: registry.nodes).contains("secret"))
+}
+
+func testCodexNodeHealthStoreTracksInstallReceiverTunnelAndRealEvents() throws {
+    let local = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let remote = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy"),
+        codexHomeOverride: nil
+    )
+    var store = CodexNodeHealthStore()
+
+    store.configure(nodes: [local, remote], now: Date(timeIntervalSince1970: 100))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .unconfigured)
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.state, .unconfigured)
+
+    store.markReceiverFailed(
+        port: 43210,
+        nodes: [local, remote],
+        detail: "address already in use",
+        now: Date(timeIntervalSince1970: 110)
+    )
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .receiverFailed)
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.state, .receiverFailed)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.detail, "address already in use")
+
+    store.markReceiverReady(port: 43210, nodes: [local, remote], now: Date(timeIntervalSince1970: 120))
+    store.markHooksInstalled(nodeID: "local-node", detail: "installed", now: Date(timeIntervalSince1970: 130))
+    store.markTunnelFailed(nodeID: "remote-node", detail: "exit 255", now: Date(timeIntervalSince1970: 140))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .waitingForTrust)
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.state, .tunnelFailed)
+
+    store.markEventReceived(CodexHookEvent(
+        eventID: "test-event",
+        nodeID: "local-node",
+        observedAt: Date(timeIntervalSince1970: 150),
+        hookEvent: .userPromptSubmit,
+        sessionID: "sub2api-statusbar-test-session",
+        turnID: "sub2api-statusbar-test-turn-150",
+        cwd: nil,
+        model: "test",
+        toolName: nil
+    ), now: Date(timeIntervalSince1970: 151))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .waitingForTrust)
+    XCTAssertNil(store.status(nodeID: "local-node")?.lastSeenAt)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.lastTestEventAt, Date(timeIntervalSince1970: 150))
+
+    store.markEventReceived(CodexHookEvent(
+        eventID: "real-event",
+        nodeID: "local-node",
+        observedAt: Date(timeIntervalSince1970: 160),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: "gpt-5",
+        toolName: nil
+    ), now: Date(timeIntervalSince1970: 161))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .healthy)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.lastSeenAt, Date(timeIntervalSince1970: 160))
+
+    store.markTunnelStopped(
+        nodeID: "local-node",
+        detail: "SSH-R tunnel stopped.",
+        now: Date(timeIntervalSince1970: 170)
+    )
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .installed)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.detail, "SSH-R tunnel stopped.")
+}
+
+func testCodexNodeHealthStoreDoesNotTreatSyntheticTestEventAsPreciseMonitoringWithoutInstall() throws {
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    var store = CodexNodeHealthStore()
+    store.configure(nodes: [node], now: Date(timeIntervalSince1970: 100))
+
+    store.markEventReceived(CodexHookEvent(
+        eventID: "test-event",
+        nodeID: "local-node",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .userPromptSubmit,
+        sessionID: "sub2api-statusbar-test-session",
+        turnID: "sub2api-statusbar-test-turn-120",
+        cwd: nil,
+        model: "test",
+        toolName: nil
+    ), now: Date(timeIntervalSince1970: 121))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .unconfigured)
+    XCTAssertNil(store.status(nodeID: "local-node")?.lastSeenAt)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.lastTestEventAt, Date(timeIntervalSince1970: 120))
+}
+
+func testCodexNodeHealthStoreMarksExistingManagedHooksAsConfiguredWithoutOverwritingHealthyState() throws {
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    var store = CodexNodeHealthStore()
+    store.configure(nodes: [node], now: Date(timeIntervalSince1970: 100))
+
+    store.markHooksConfigured(nodeID: "local-node", detail: "validated config", now: Date(timeIntervalSince1970: 110))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .installed)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.detail, "validated config")
+
+    store.markEventReceived(CodexHookEvent(
+        eventID: "real-event",
+        nodeID: "local-node",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: "gpt-5",
+        toolName: nil
+    ), now: Date(timeIntervalSince1970: 121))
+    store.markHooksConfigured(nodeID: "local-node", detail: "validated again", now: Date(timeIntervalSince1970: 130))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .healthy)
+    XCTAssertNil(store.status(nodeID: "local-node")?.detail)
+}
+
+func testCodexNodeHealthStoreLetsVerifiedHooksRecoverInstallOrTunnelFailures() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host"),
+        codexHomeOverride: nil
+    )
+    var store = CodexNodeHealthStore()
+    store.configure(nodes: [node], now: Date(timeIntervalSince1970: 100))
+
+    store.markTunnelFailed(nodeID: "remote-node", detail: "exit 255", now: Date(timeIntervalSince1970: 110))
+    store.markHooksConfigured(nodeID: "remote-node", detail: "validated config", now: Date(timeIntervalSince1970: 120))
+
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.state, .installed)
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.detail, "validated config")
+
+    store.markInstallFailed(nodeID: "remote-node", detail: "previous failure", now: Date(timeIntervalSince1970: 130))
+    store.markHooksConfigured(nodeID: "remote-node", detail: "validated again", now: Date(timeIntervalSince1970: 140))
+
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.state, .installed)
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.detail, "validated again")
+}
+
+func testCodexNodeHealthStoreUpdatesInstallAndWaitingDetailsAfterVerification() throws {
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    var store = CodexNodeHealthStore()
+    store.configure(nodes: [node], now: Date(timeIntervalSince1970: 100))
+
+    store.markHooksConfigured(nodeID: "local-node", detail: "validated once", now: Date(timeIntervalSince1970: 110))
+    store.markHooksConfigured(nodeID: "local-node", detail: "validated twice", now: Date(timeIntervalSince1970: 120))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .installed)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.detail, "validated twice")
+
+    store.markHooksInstalled(nodeID: "local-node", detail: "waiting for trust", now: Date(timeIntervalSince1970: 130))
+    store.markHooksConfigured(nodeID: "local-node", detail: "verified while waiting", now: Date(timeIntervalSince1970: 140))
+
+    XCTAssertEqual(store.status(nodeID: "local-node")?.state, .waitingForTrust)
+    XCTAssertEqual(store.status(nodeID: "local-node")?.detail, "verified while waiting")
+}
+
+func testCodexNodeHealthStoreUsesSyntheticTestEventOnlyForIngressHealth() throws {
+    let receiverFailed = CodexHookEvent(
+        eventID: "receiver-test-event",
+        nodeID: "receiver-node",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .userPromptSubmit,
+        sessionID: "sub2api-statusbar-test-session",
+        turnID: "sub2api-statusbar-test-turn-120",
+        cwd: nil,
+        model: "test",
+        toolName: nil
+    )
+    let tunnelFailed = CodexHookEvent(
+        eventID: "remote-test-event",
+        nodeID: "remote-node",
+        observedAt: Date(timeIntervalSince1970: 121),
+        hookEvent: .userPromptSubmit,
+        sessionID: "sub2api-statusbar-remote-test-session",
+        turnID: "sub2api-statusbar-remote-test-turn-121",
+        cwd: nil,
+        model: "test",
+        toolName: nil
+    )
+    let installFailed = CodexHookEvent(
+        eventID: "install-test-event",
+        nodeID: "install-node",
+        observedAt: Date(timeIntervalSince1970: 122),
+        hookEvent: .userPromptSubmit,
+        sessionID: "sub2api-statusbar-test-session",
+        turnID: "sub2api-statusbar-test-turn-122",
+        cwd: nil,
+        model: "test",
+        toolName: nil
+    )
+    var store = CodexNodeHealthStore()
+
+    store.markInstallFailed(nodeID: "receiver-node", state: .receiverFailed, detail: "address in use", now: Date(timeIntervalSince1970: 100))
+    store.markTunnelFailed(nodeID: "remote-node", detail: "exit 255", now: Date(timeIntervalSince1970: 101))
+    store.markInstallFailed(nodeID: "install-node", detail: "write failed", now: Date(timeIntervalSince1970: 102))
+
+    store.markEventReceived(receiverFailed, now: Date(timeIntervalSince1970: 130))
+    store.markEventReceived(tunnelFailed, now: Date(timeIntervalSince1970: 131))
+    store.markEventReceived(installFailed, now: Date(timeIntervalSince1970: 132))
+
+    XCTAssertEqual(store.status(nodeID: "receiver-node")?.state, .unconfigured)
+    XCTAssertNil(store.status(nodeID: "receiver-node")?.detail)
+    XCTAssertEqual(store.status(nodeID: "receiver-node")?.lastTestEventAt, Date(timeIntervalSince1970: 120))
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.state, .unconfigured)
+    XCTAssertNil(store.status(nodeID: "remote-node")?.detail)
+    XCTAssertEqual(store.status(nodeID: "remote-node")?.lastTestEventAt, Date(timeIntervalSince1970: 121))
+    XCTAssertEqual(store.status(nodeID: "install-node")?.state, .installFailed)
+    XCTAssertEqual(store.status(nodeID: "install-node")?.detail, "write failed")
+    XCTAssertEqual(store.status(nodeID: "install-node")?.lastTestEventAt, Date(timeIntervalSince1970: 122))
+}
+
+func testSSHTunnelCommandBuilderBindsRemoteLoopbackToLocalReceiver() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+
+    let command = try SSHTunnelCommandBuilder.buildCommand(for: node)
+
+    XCTAssertEqual(command.executable, "/usr/bin/ssh")
+    XCTAssertEqual(command.arguments, [
+        "-N",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=2",
+        "-p", "2222",
+        "-i", "~/.ssh/id_ed25519",
+        "-R", "127.0.0.1:53210:127.0.0.1:43210",
+        "deploy@example-host",
+    ])
+}
+
+func testSSHTunnelManagerStartsStopsAndReportsRemoteTunnelState() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let launcher = StubSSHTunnelProcessLauncher()
+    let clock = TestClock(Date(timeIntervalSince1970: 100))
+    let manager = SSHTunnelManager(
+        launcher: launcher,
+        startupGraceInterval: 1,
+        now: { clock.now }
+    )
+
+    let status = try manager.start(node: node)
+
+    XCTAssertEqual(launcher.launchedCommands.count, 1)
+    XCTAssertEqual(status.state, .starting)
+    XCTAssertEqual(manager.status(nodeID: "remote-node")?.state, .starting)
+
+    clock.now = Date(timeIntervalSince1970: 101.1)
+    XCTAssertEqual(manager.status(nodeID: "remote-node")?.state, .running)
+
+    launcher.nextHandle.isRunning = false
+    launcher.nextHandle.terminationStatus = 255
+    XCTAssertEqual(manager.status(nodeID: "remote-node")?.state, .failed(exitCode: 255))
+
+    manager.stop(nodeID: "remote-node")
+    XCTAssertEqual(launcher.nextHandle.terminateCallCount, 1)
+    XCTAssertNil(manager.status(nodeID: "remote-node"))
+}
+
+func testSSHTunnelManagerEnsureStartedReusesRunningTunnelAndRestartsFailedTunnel() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let launcher = StubSSHTunnelProcessLauncher()
+    let clock = TestClock(Date(timeIntervalSince1970: 100))
+    let manager = SSHTunnelManager(
+        launcher: launcher,
+        startupGraceInterval: 1,
+        now: { clock.now }
+    )
+
+    let starting = try manager.ensureStarted(node: node)
+    let reusedStarting = try manager.ensureStarted(node: node)
+
+    XCTAssertEqual(starting.state, .starting)
+    XCTAssertEqual(reusedStarting.state, .starting)
+    XCTAssertEqual(launcher.launchedCommands.count, 1)
+
+    clock.now = Date(timeIntervalSince1970: 101.2)
+    let running = try manager.ensureStarted(node: node)
+
+    XCTAssertEqual(running.state, .running)
+    XCTAssertEqual(launcher.launchedCommands.count, 1)
+
+    launcher.nextHandle.isRunning = false
+    launcher.nextHandle.terminationStatus = 255
+    launcher.nextHandle = StubSSHTunnelProcessHandle()
+
+    let restarted = try manager.ensureStarted(node: node)
+
+    XCTAssertEqual(restarted.state, .starting)
+    XCTAssertEqual(launcher.launchedCommands.count, 2)
+}
+
+func testSSHTunnelManagerReportsImmediateExitDuringStartupGraceWindow() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let launcher = StubSSHTunnelProcessLauncher()
+    launcher.nextHandle = StubSSHTunnelProcessHandle(isRunning: false, terminationStatus: 255)
+    let clock = TestClock(Date(timeIntervalSince1970: 100))
+    let manager = SSHTunnelManager(
+        launcher: launcher,
+        startupGraceInterval: 1,
+        now: { clock.now }
+    )
+
+    let status = try manager.start(node: node)
+
+    XCTAssertEqual(status.state, .failed(exitCode: 255))
+    XCTAssertEqual(manager.status(nodeID: "remote-node")?.state, .failed(exitCode: 255))
+}
+
+func testSSHTunnelManagerIncludesFailedProcessStandardErrorInStatusDetail() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let launcher = StubSSHTunnelProcessLauncher()
+    launcher.nextHandle = StubSSHTunnelProcessHandle(
+        isRunning: false,
+        terminationStatus: 255,
+        standardError: "Error: remote port forwarding failed for listen port 53210\n"
+    )
+    let manager = SSHTunnelManager(launcher: launcher, startupGraceInterval: 1)
+
+    let status = try manager.start(node: node)
+
+    XCTAssertEqual(status.state, .failed(exitCode: 255))
+    XCTAssertEqual(status.detail, "Error: remote port forwarding failed for listen port 53210")
+    XCTAssertEqual(manager.status(nodeID: "remote-node")?.detail, "Error: remote port forwarding failed for listen port 53210")
+}
+
+func testSSHTunnelManagerStopAllTerminatesManagedTunnels() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: nil),
+        codexHomeOverride: nil
+    )
+    let launcher = StubSSHTunnelProcessLauncher()
+    let manager = SSHTunnelManager(launcher: launcher, startupGraceInterval: 1)
+
+    _ = try manager.start(node: node)
+    manager.stopAll()
+
+    XCTAssertEqual(launcher.nextHandle.terminateCallCount, 1)
+    XCTAssertNil(manager.status(nodeID: "remote-node"))
+}
+
+func testCodexRemoteTestEventTunnelGateUsesRunningTunnelImmediately() throws {
+    let status = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .running
+    )
+
+    XCTAssertEqual(CodexRemoteTestEventTunnelGate.decideBeforeSending(currentStatus: status), .ready)
+    XCTAssertEqual(CodexRemoteTestEventTunnelGate.decideAfterStart(startStatus: status), .ready)
+    XCTAssertEqual(CodexRemoteTestEventTunnelGate.decideAfterWait(waitedStatus: status), .ready)
+}
+
+func testCodexRemoteTestEventTunnelGateStartsWhenMissingOrFailedBeforeSending() throws {
+    let failedStatus = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .failed(exitCode: 255)
+    )
+
+    XCTAssertEqual(CodexRemoteTestEventTunnelGate.decideBeforeSending(currentStatus: nil), .startTunnel)
+    XCTAssertEqual(CodexRemoteTestEventTunnelGate.decideBeforeSending(currentStatus: failedStatus), .startTunnel)
+}
+
+func testCodexRemoteTestEventTunnelGateWaitsForStartingTunnelBeforeSending() throws {
+    let startingStatus = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .starting
+    )
+
+    XCTAssertEqual(CodexRemoteTestEventTunnelGate.decideBeforeSending(currentStatus: startingStatus), .waitForRunning)
+    XCTAssertEqual(
+        CodexRemoteTestEventTunnelGate.decideAfterStart(startStatus: startingStatus),
+        .notReady(.stillStarting)
+    )
+}
+
+func testCodexRemoteTestEventTunnelGateRejectsUnconfirmedTunnelAfterWait() throws {
+    let startingStatus = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .starting
+    )
+    let failedStatus = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .failed(exitCode: 255)
+    )
+
+    XCTAssertEqual(
+        CodexRemoteTestEventTunnelGate.decideAfterWait(waitedStatus: nil),
+        .notReady(.missingStatus)
+    )
+    XCTAssertEqual(
+        CodexRemoteTestEventTunnelGate.decideAfterWait(waitedStatus: startingStatus),
+        .notReady(.stillStarting)
+    )
+    XCTAssertEqual(
+        CodexRemoteTestEventTunnelGate.decideAfterWait(waitedStatus: failedStatus),
+        .notReady(.failed(exitCode: 255))
+    )
+}
+
+func testCodexRemoteTestEventTunnelGateRejectsFailedTunnelAfterStart() throws {
+    let failedStatus = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .failed(exitCode: 255)
+    )
+
+    XCTAssertEqual(
+        CodexRemoteTestEventTunnelGate.decideAfterStart(startStatus: failedStatus),
+        .notReady(.failed(exitCode: 255))
+    )
+    XCTAssertEqual(
+        CodexRemoteTestEventTunnelNotReadyReason.failed(exitCode: 255).statusDescription,
+        "exit 255"
+    )
+}
+
+func testCodexRemoteTunnelPathProbePolicyOnlyProbesRunningTunnelAfterInterval() throws {
+    let runningStatus = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .running
+    )
+    let startingStatus = SSHTunnelStatus(
+        nodeID: "remote-node",
+        command: ProcessCommand(executable: "/usr/bin/ssh", arguments: []),
+        state: .starting
+    )
+    let now = Date(timeIntervalSince1970: 200)
+
+    XCTAssertTrue(CodexRemoteTunnelPathProbePolicy.shouldProbe(
+        status: runningStatus,
+        lastProbeAt: nil,
+        now: now,
+        minimumInterval: 60
+    ))
+    XCTAssertFalse(CodexRemoteTunnelPathProbePolicy.shouldProbe(
+        status: startingStatus,
+        lastProbeAt: nil,
+        now: now,
+        minimumInterval: 60
+    ))
+    XCTAssertFalse(CodexRemoteTunnelPathProbePolicy.shouldProbe(
+        status: runningStatus,
+        lastProbeAt: Date(timeIntervalSince1970: 170),
+        now: now,
+        minimumInterval: 60
+    ))
+    XCTAssertTrue(CodexRemoteTunnelPathProbePolicy.shouldProbe(
+        status: runningStatus,
+        lastProbeAt: Date(timeIntervalSince1970: 120),
+        now: now,
+        minimumInterval: 60
+    ))
+}
+
+func testCodexHookInstallerBuildsLocalDryRunPlan() throws {
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: "/Users/tester/.codex"
+    )
+
+    let plan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: "/Users/tester/.codex", configPath: "/Users/tester/.codex/config.toml"),
+        existingConfig: #"model = "gpt-5""#,
+        senderExecutablePayload: CodexHookSenderScript.payload,
+        senderExecutableInstallPath: "/Users/tester/Library/Application Support/Sub2APIStatusBar/sub2api-statusbar-hook-sender",
+        nodeConfigPath: "/Users/tester/.sub2api-statusbar/codex-hook-node.json",
+        nodeSecret: "node-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+
+    XCTAssertEqual(plan.kind, .local)
+    XCTAssertEqual(plan.codexConfigPath, "/Users/tester/.codex/config.toml")
+    XCTAssertEqual(plan.codexConfigBackupPath, "/Users/tester/.codex/config.toml.sub2api-statusbar.20260601T090000Z.bak")
+    XCTAssertEqual(plan.nodeConfigPath, "/Users/tester/.sub2api-statusbar/codex-hook-node.json")
+    XCTAssertEqual(plan.senderExecutableInstallPath, "/Users/tester/Library/Application Support/Sub2APIStatusBar/sub2api-statusbar-hook-sender")
+    XCTAssert(String(data: plan.senderExecutablePayload, encoding: .utf8)?.contains("#!/usr/bin/env python3") == true)
+    XCTAssert(plan.updatedCodexConfig.contains("hooks = true"))
+    XCTAssert(plan.updatedCodexConfig.contains("'/Users/tester/Library/Application Support/Sub2APIStatusBar/sub2api-statusbar-hook-sender' '--managed-by' 'Sub2APIStatusBar' '--event' 'UserPromptSubmit' '--config' '/Users/tester/.sub2api-statusbar/codex-hook-node.json'"))
+    XCTAssert(plan.nodeConfigJSON.contains("\"nodeId\" : \"local-node\""))
+    XCTAssert(plan.nodeConfigJSON.contains("\"receiverUrl\" : \"http:\\/\\/127.0.0.1:43210\\/codex-hooks\\/events\""))
+    XCTAssert(plan.nodeConfigJSON.contains("\"secret\" : \"node-secret\""))
+    XCTAssertNoThrow(try CodexHookConfigValidator.validateManagedHooks(plan.updatedCodexConfig))
+    XCTAssertNil(plan.sshTunnelCommand)
+}
+
+func testCodexHookInstallerBuildsRemoteDryRunPlanWithTunnelCommand() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+
+    let plan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: "/home/deploy/.codex", configPath: "/home/deploy/.codex/config.toml"),
+        existingConfig: "",
+        senderExecutablePayload: CodexHookSenderScript.payload,
+        senderExecutableInstallPath: "/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender",
+        nodeConfigPath: "/home/deploy/.sub2api-statusbar/codex-hook-node.json",
+        nodeSecret: "remote-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+
+    XCTAssertEqual(plan.kind, .remote)
+    XCTAssertEqual(plan.sshTunnelCommand?.arguments, [
+        "-N",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=2",
+        "-p", "2222",
+        "-i", "~/.ssh/id_ed25519",
+        "-R", "127.0.0.1:53210:127.0.0.1:43210",
+        "deploy@example-host",
+    ])
+    XCTAssert(plan.nodeConfigJSON.contains("\"receiverUrl\" : \"http:\\/\\/127.0.0.1:53210\\/codex-hooks\\/events\""))
+}
+
+func testCodexHookLocalInstallerWritesNodeConfigBacksUpAndUpdatesCodexConfig() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let codexConfigURL = root.appendingPathComponent(".codex/config.toml")
+    let nodeConfigURL = root.appendingPathComponent(".sub2api-statusbar/codex-hook-node.json")
+    let senderURL = root.appendingPathComponent(".sub2api-statusbar/sub2api-statusbar-hook-sender")
+    try FileManager.default.createDirectory(at: codexConfigURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try #"model = "gpt-5""#.write(to: codexConfigURL, atomically: true, encoding: .utf8)
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let plan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: codexConfigURL.deletingLastPathComponent().path, configPath: codexConfigURL.path),
+        existingConfig: #"model = "gpt-5""#,
+        senderExecutablePayload: CodexHookSenderScript.payload,
+        senderExecutableInstallPath: senderURL.path,
+        nodeConfigPath: nodeConfigURL.path,
+        nodeSecret: "node-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+
+    try CodexHookLocalInstaller().apply(plan)
+
+    let updatedConfig = try String(contentsOf: codexConfigURL, encoding: .utf8)
+    let backupConfig = try String(contentsOfFile: plan.codexConfigBackupPath, encoding: .utf8)
+    let nodeConfig = try String(contentsOf: nodeConfigURL, encoding: .utf8)
+    let senderPayload = try String(contentsOf: senderURL, encoding: .utf8)
+    XCTAssertEqual(backupConfig, #"model = "gpt-5""#)
+    XCTAssert(updatedConfig.contains("hooks = true"))
+    XCTAssert(nodeConfig.contains("\"nodeId\" : \"local-node\""))
+    XCTAssertEqual(senderPayload, CodexHookSenderScript.source)
+    XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: senderURL.path)[.posixPermissions] as? NSNumber, NSNumber(value: Int16(0o700)))
+    XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: nodeConfigURL.path)[.posixPermissions] as? NSNumber, NSNumber(value: Int16(0o600)))
+}
+
+func testCodexHookLocalInstallerRollsBackSupportFilesWhenCodexConfigWriteFails() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let codexConfigURL = root.appendingPathComponent(".codex/config.toml")
+    let nodeConfigURL = root.appendingPathComponent(".sub2api-statusbar/codex-hook-node.json")
+    let senderURL = root.appendingPathComponent(".sub2api-statusbar/sub2api-statusbar-hook-sender")
+    let originalConfig = #"model = "gpt-5""#
+    let originalNodeConfig = #"{"nodeId":"old-node"}"#
+    let originalSender = "#!/bin/sh\nexit 0\n"
+    try FileManager.default.createDirectory(at: codexConfigURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: nodeConfigURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try originalConfig.write(to: codexConfigURL, atomically: true, encoding: .utf8)
+    try originalNodeConfig.write(to: nodeConfigURL, atomically: true, encoding: .utf8)
+    try originalSender.write(to: senderURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: NSNumber(value: Int16(0o700))],
+        ofItemAtPath: senderURL.path
+    )
+    try FileManager.default.setAttributes(
+        [.posixPermissions: NSNumber(value: Int16(0o600))],
+        ofItemAtPath: nodeConfigURL.path
+    )
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let plan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: codexConfigURL.deletingLastPathComponent().path, configPath: codexConfigURL.path),
+        existingConfig: originalConfig,
+        senderExecutablePayload: CodexHookSenderScript.payload,
+        senderExecutableInstallPath: senderURL.path,
+        nodeConfigPath: nodeConfigURL.path,
+        nodeSecret: "node-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+    let installer = CodexHookLocalInstaller {
+        throw LocalInstallerTestError.forcedCodexConfigWriteFailure
+    }
+
+    XCTAssertThrowsError(try installer.apply(plan)) { error in
+        XCTAssertEqual(error as? LocalInstallerTestError, .forcedCodexConfigWriteFailure)
+    }
+
+    XCTAssertEqual(try String(contentsOf: codexConfigURL, encoding: .utf8), originalConfig)
+    XCTAssertEqual(try String(contentsOf: nodeConfigURL, encoding: .utf8), originalNodeConfig)
+    XCTAssertEqual(try String(contentsOf: senderURL, encoding: .utf8), originalSender)
+    XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: senderURL.path)[.posixPermissions] as? NSNumber, NSNumber(value: Int16(0o700)))
+    XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: nodeConfigURL.path)[.posixPermissions] as? NSNumber, NSNumber(value: Int16(0o600)))
+}
+
+func testCodexHookLocalInstallerRemovesNewSupportFilesWhenFirstInstallFails() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let codexConfigURL = root.appendingPathComponent(".codex/config.toml")
+    let nodeConfigURL = root.appendingPathComponent(".sub2api-statusbar/codex-hook-node.json")
+    let senderURL = root.appendingPathComponent(".sub2api-statusbar/sub2api-statusbar-hook-sender")
+    let originalConfig = #"model = "gpt-5""#
+    try FileManager.default.createDirectory(at: codexConfigURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try originalConfig.write(to: codexConfigURL, atomically: true, encoding: .utf8)
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let plan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: codexConfigURL.deletingLastPathComponent().path, configPath: codexConfigURL.path),
+        existingConfig: originalConfig,
+        senderExecutablePayload: CodexHookSenderScript.payload,
+        senderExecutableInstallPath: senderURL.path,
+        nodeConfigPath: nodeConfigURL.path,
+        nodeSecret: "node-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+    let installer = CodexHookLocalInstaller {
+        throw LocalInstallerTestError.forcedCodexConfigWriteFailure
+    }
+
+    XCTAssertThrowsError(try installer.apply(plan)) { error in
+        XCTAssertEqual(error as? LocalInstallerTestError, .forcedCodexConfigWriteFailure)
+    }
+
+    XCTAssertEqual(try String(contentsOf: codexConfigURL, encoding: .utf8), originalConfig)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: nodeConfigURL.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: senderURL.path))
+}
+
+func testCodexHookLocalInstallerGeneratedCommandRunsWithApplicationSupportPath() async throws {
+    let port = try availableLoopbackPort()
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let codexConfigURL = root.appendingPathComponent(".codex/config.toml")
+    let nodeConfigURL = root.appendingPathComponent(".sub2api-statusbar/codex-hook-node.json")
+    let senderURL = root.appendingPathComponent("Application Support/Sub2APIStatusBar/sub2api-statusbar-hook-sender")
+    try FileManager.default.createDirectory(at: codexConfigURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try #"model = "gpt-5""#.write(to: codexConfigURL, atomically: true, encoding: .utf8)
+
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: Int(port),
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let plan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: codexConfigURL.deletingLastPathComponent().path, configPath: codexConfigURL.path),
+        existingConfig: #"model = "gpt-5""#,
+        senderExecutablePayload: CodexHookSenderScript.payload,
+        senderExecutableInstallPath: senderURL.path,
+        nodeConfigPath: nodeConfigURL.path,
+        nodeSecret: "node-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+    try CodexHookLocalInstaller().apply(plan)
+
+    let recorder = await MainActor.run {
+        LocalReceiverTestRecorder()
+    }
+    let server = await MainActor.run {
+        LocalCodexHookReceiverServer(
+            port: port,
+            nodeSecrets: [node.id: "node-secret"],
+            onStateChange: { state in
+                recorder.append(state: state)
+            },
+            onEvent: { event in
+                recorder.append(event: event)
+            }
+        )
+    }
+    try await MainActor.run {
+        try server.start()
+    }
+    defer {
+        Task { @MainActor in
+            server.stop()
+        }
+    }
+    try await waitForListenerReady(await MainActor.run { recorder.states })
+
+    let updatedConfig = try String(contentsOf: codexConfigURL, encoding: .utf8)
+    let command = try managedHookCommand(eventName: "UserPromptSubmit", in: updatedConfig)
+    let codexPayload = Data("""
+    {
+      "session_id": "installed-session",
+      "turn_id": "installed-turn",
+      "cwd": "/workspace/sub2api-statusbar",
+      "model": "gpt-5",
+      "user_agent": "Codex Desktop/0.125.0"
+    }
+    """.utf8)
+    let result = try runShellHookCommand(command: command, stdinPayload: codexPayload)
+
+    XCTAssertEqual(result.exitCode, 0, result.standardError)
+    XCTAssertEqual(result.standardOutput, "")
+    let events = await MainActor.run { recorder.events }
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?.nodeID, "local-node")
+    XCTAssertEqual(events.first?.hookEvent, .userPromptSubmit)
+    XCTAssertEqual(events.first?.sessionID, "installed-session")
+    XCTAssertEqual(events.first?.turnID, "installed-turn")
+    XCTAssertEqual(events.first?.userAgent, "Codex Desktop/0.125.0")
+}
+
+func testCodexHookRemoteInstallerCommandPlanUsesSSHAndDoesNotInlineSecretsInCommand() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let installPlan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: "/home/deploy/.codex", configPath: "/home/deploy/.codex/config.toml"),
+        existingConfig: "",
+        senderExecutablePayload: Data([0x7f, 0x45, 0x4c, 0x46, 0x00, 0xff]),
+        senderExecutableInstallPath: "/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender",
+        nodeConfigPath: "/home/deploy/.sub2api-statusbar/codex-hook-node.json",
+        nodeSecret: "remote-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+
+    let commandPlan = try CodexHookRemoteInstallerCommandBuilder.buildCommandPlan(for: node, installPlan: installPlan)
+
+    XCTAssertEqual(commandPlan.sshExecutable, "/usr/bin/ssh")
+    XCTAssertEqual(commandPlan.sshArguments, ["-p", "2222", "-i", "~/.ssh/id_ed25519", "deploy@example-host", "sh", "-s"])
+    XCTAssert(commandPlan.stdinScript.contains("mkdir -p '/home/deploy/.sub2api-statusbar' '/home/deploy/.codex' '/home/deploy/.sub2api-statusbar'"))
+    XCTAssert(commandPlan.stdinScript.contains("sender_tmp='/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender.sub2api-statusbar.tmp'"))
+    XCTAssert(commandPlan.stdinScript.contains("sender_restore='/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender.sub2api-statusbar.restore'"))
+    XCTAssert(commandPlan.stdinScript.contains(": > \"$sender_tmp\""))
+    XCTAssert(commandPlan.stdinScript.contains("printf -- '%b' '\\177\\105\\114\\106\\000\\377' >> \"$sender_tmp\""))
+    XCTAssert(commandPlan.stdinScript.contains("chmod 700 \"$sender_tmp\""))
+    XCTAssert(commandPlan.stdinScript.contains("node_config_tmp='/home/deploy/.sub2api-statusbar/codex-hook-node.json.sub2api-statusbar.tmp'"))
+    XCTAssert(commandPlan.stdinScript.contains("node_config_restore='/home/deploy/.sub2api-statusbar/codex-hook-node.json.sub2api-statusbar.restore'"))
+    XCTAssert(commandPlan.stdinScript.contains("Codex config path exists but is not a regular file"))
+    XCTAssert(commandPlan.stdinScript.contains("Sender install path exists but is not a regular file"))
+    XCTAssert(commandPlan.stdinScript.contains("Node config path exists but is not a regular file"))
+    XCTAssert(commandPlan.stdinScript.contains(": > \"$node_config_tmp\""))
+    XCTAssert(commandPlan.stdinScript.contains("cp '/home/deploy/.codex/config.toml' '/home/deploy/.codex/config.toml.sub2api-statusbar.20260601T090000Z.bak'"))
+    XCTAssert(commandPlan.stdinScript.contains("cp -p '/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender' \"$sender_restore\""))
+    XCTAssert(commandPlan.stdinScript.contains("cp -p '/home/deploy/.sub2api-statusbar/codex-hook-node.json' \"$node_config_restore\""))
+    XCTAssert(commandPlan.stdinScript.contains("chmod 600 \"$node_config_tmp\""))
+    XCTAssert(commandPlan.stdinScript.contains("codex_config_tmp='/home/deploy/.codex/config.toml.sub2api-statusbar.tmp'"))
+    XCTAssert(commandPlan.stdinScript.contains(": > \"$codex_config_tmp\""))
+    XCTAssert(commandPlan.stdinScript.contains("mv -f \"$sender_tmp\" '/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender'"))
+    XCTAssert(commandPlan.stdinScript.contains("mv -f \"$node_config_tmp\" '/home/deploy/.sub2api-statusbar/codex-hook-node.json'"))
+    XCTAssert(commandPlan.stdinScript.contains("mv -f \"$codex_config_tmp\" '/home/deploy/.codex/config.toml'"))
+    XCTAssertFalse(commandPlan.stdinScript.contains("SUB2API_STATUSBAR_NODE_CONFIG"))
+    XCTAssertFalse(commandPlan.stdinScript.contains("SUB2API_STATUSBAR_CODEX_CONFIG"))
+    XCTAssertFalse(commandPlan.sshArguments.joined(separator: " ").contains("remote-secret"))
+    XCTAssert(commandPlan.stdinScript.contains(">> \"$node_config_tmp\""))
+}
+
+func testCodexHookRemoteInstallerScriptUsesOptionSafePrintf() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: nil),
+        codexHomeOverride: nil
+    )
+    let installPlan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: "/home/deploy/.codex", configPath: "/home/deploy/.codex/config.toml"),
+        existingConfig: "",
+        senderExecutablePayload: Data([0x2d, 0x66, 0x6f, 0x6f, 0x0a]),
+        senderExecutableInstallPath: "/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender",
+        nodeConfigPath: "/home/deploy/.sub2api-statusbar/codex-hook-node.json",
+        nodeSecret: "remote-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+
+    let commandPlan = try CodexHookRemoteInstallerCommandBuilder.buildCommandPlan(for: node, installPlan: installPlan)
+
+    XCTAssert(commandPlan.stdinScript.contains("printf -- '%b' '\\055\\146\\157\\157\\012' >> \"$sender_tmp\""))
+    XCTAssertFalse(commandPlan.stdinScript.contains("printf '%b'"))
+}
+
+func testCodexHookRemoteInstallerScriptPreservesExistingConfigWhenFinalReplaceFails() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let codexConfigURL = root.appendingPathComponent(".codex/config.toml")
+    let nodeConfigURL = root.appendingPathComponent(".sub2api-statusbar/codex-hook-node.json")
+    let senderURL = root.appendingPathComponent(".sub2api-statusbar/sub2api-statusbar-hook-sender")
+    let originalConfig = #"model = "gpt-5""#
+    let originalNodeConfig = #"{"nodeId":"old-node"}"#
+    let originalSender = "#!/bin/sh\nexit 0\n"
+    try FileManager.default.createDirectory(at: codexConfigURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: nodeConfigURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try originalConfig.write(to: codexConfigURL, atomically: true, encoding: .utf8)
+    try originalNodeConfig.write(to: nodeConfigURL, atomically: true, encoding: .utf8)
+    try originalSender.write(to: senderURL, atomically: true, encoding: .utf8)
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let installPlan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: codexConfigURL.deletingLastPathComponent().path, configPath: codexConfigURL.path),
+        existingConfig: originalConfig,
+        senderExecutablePayload: Data([0x23, 0x21, 0x0a]),
+        senderExecutableInstallPath: senderURL.path,
+        nodeConfigPath: nodeConfigURL.path,
+        nodeSecret: "remote-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+    let commandPlan = try CodexHookRemoteInstallerCommandBuilder.buildCommandPlan(for: node, installPlan: installPlan)
+    let scriptWithFailedReplace = """
+    mv() {
+      if [ "$3" = \(shellQuoteForTest(codexConfigURL.path)) ]; then
+        return 13
+      fi
+      command mv "$@"
+    }
+    \(commandPlan.stdinScript)
+    """
+
+    let result = try runShellScript(scriptWithFailedReplace)
+
+    XCTAssertNotEqual(result.exitCode, 0)
+    XCTAssertEqual(try String(contentsOf: codexConfigURL, encoding: .utf8), originalConfig)
+    XCTAssertEqual(try String(contentsOf: nodeConfigURL, encoding: .utf8), originalNodeConfig)
+    XCTAssertEqual(try String(contentsOf: senderURL, encoding: .utf8), originalSender)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: senderURL.path + ".sub2api-statusbar.tmp"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: nodeConfigURL.path + ".sub2api-statusbar.tmp"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: codexConfigURL.path + ".sub2api-statusbar.tmp"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: senderURL.path + ".sub2api-statusbar.restore"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: nodeConfigURL.path + ".sub2api-statusbar.restore"))
+}
+
+func testCodexHookRemoteInstallerScriptRejectsDirectoryTargetsBeforeWritingSupportFiles() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let codexConfigURL = root.appendingPathComponent(".codex/config.toml", isDirectory: true)
+    let nodeConfigURL = root.appendingPathComponent(".sub2api-statusbar/codex-hook-node.json")
+    let senderURL = root.appendingPathComponent(".sub2api-statusbar/sub2api-statusbar-hook-sender")
+    try FileManager.default.createDirectory(at: codexConfigURL, withIntermediateDirectories: true)
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let installPlan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: codexConfigURL.deletingLastPathComponent().path, configPath: codexConfigURL.path),
+        existingConfig: "",
+        senderExecutablePayload: Data([0x23, 0x21, 0x0a]),
+        senderExecutableInstallPath: senderURL.path,
+        nodeConfigPath: nodeConfigURL.path,
+        nodeSecret: "remote-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+    let commandPlan = try CodexHookRemoteInstallerCommandBuilder.buildCommandPlan(for: node, installPlan: installPlan)
+
+    let result = try runShellScript(commandPlan.stdinScript)
+
+    XCTAssertNotEqual(result.exitCode, 0)
+    XCTAssert(result.standardError.contains("Codex config path exists but is not a regular file"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: nodeConfigURL.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: senderURL.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: senderURL.path + ".sub2api-statusbar.tmp"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: nodeConfigURL.path + ".sub2api-statusbar.tmp"))
+}
+
+func testCodexHookRemoteInstallerRunsSSHCommandPlanThroughRunner() async throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let installPlan = try CodexHookInstallerPlanBuilder.buildDryRun(
+        node: node,
+        codexHome: CodexHomeResolution(codexHomePath: "/home/deploy/.codex", configPath: "/home/deploy/.codex/config.toml"),
+        existingConfig: "",
+        senderExecutablePayload: CodexHookSenderScript.payload,
+        senderExecutableInstallPath: "/home/deploy/.sub2api-statusbar/sub2api-statusbar-hook-sender",
+        nodeConfigPath: "/home/deploy/.sub2api-statusbar/codex-hook-node.json",
+        nodeSecret: "remote-secret",
+        timestamp: ISO8601DateFormatter().date(from: "2026-06-01T09:00:00Z")!
+    )
+    let runner = RecordingCodexHookRemoteInstallRunner()
+    let configReader = RecordingCodexHookRemoteConfigReader()
+    let installer = CodexHookRemoteInstaller(runner: runner, configReader: configReader)
+
+    let remoteConfig = try await installer.readExistingConfig(node: node, codexConfigPath: "/home/deploy/.codex/config.toml")
+
+    let result = try await installer.apply(node: node, plan: installPlan)
+
+    XCTAssertEqual(remoteConfig.standardOutput, #"model = "gpt-5""#)
+    XCTAssertEqual(configReader.receivedPlans.count, 1)
+    let readConfigCommand = "if [ -f \(shellQuoteForTest("/home/deploy/.codex/config.toml")) ]; then cat \(shellQuoteForTest("/home/deploy/.codex/config.toml")); elif [ -e \(shellQuoteForTest("/home/deploy/.codex/config.toml")) ]; then echo \(shellQuoteForTest("Codex config path exists but is not a regular file")) >&2; exit 66; fi"
+    XCTAssertEqual(configReader.receivedPlans.first?.sshArguments, [
+        "-p", "2222",
+        "-i", "~/.ssh/id_ed25519",
+        "deploy@example-host",
+        "sh -lc \(shellQuoteForTest(readConfigCommand))",
+    ])
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(runner.receivedPlans.count, 1)
+    XCTAssertEqual(runner.receivedPlans.first?.sshArguments, ["-p", "2222", "-i", "~/.ssh/id_ed25519", "deploy@example-host", "sh", "-s"])
+    XCTAssertFalse(runner.receivedPlans.first?.sshArguments.joined(separator: " ").contains("remote-secret") ?? true)
+}
+
+func testCodexHookRemoteInstallerBuildsCodexHomeEnvironmentReadCommand() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+
+    let commandPlan = try CodexHookRemoteInstallerCommandBuilder.buildReadCodexHomeCommandPlan(for: node)
+
+    XCTAssertEqual(commandPlan.sshExecutable, "/usr/bin/ssh")
+    let readEnvironmentCommand = "printf -- '%s%s\\n%s%s\\n' \(shellQuoteForTest(CodexRemoteEnvironment.codexHomeOutputPrefix)) \"${CODEX_HOME:-}\" \(shellQuoteForTest(CodexRemoteEnvironment.homeDirectoryOutputPrefix)) \"${HOME:-}\""
+    XCTAssertEqual(commandPlan.sshArguments, [
+        "-p", "2222",
+        "-i", "~/.ssh/id_ed25519",
+        "deploy@example-host",
+        "shell_path=${SHELL:-/bin/sh}; exec \"$shell_path\" -ic \(shellQuoteForTest(readEnvironmentCommand))",
+    ])
+}
+
+func testCodexHookRemoteInstallerReadCodexHomeCommandUsesRemoteInteractiveShell() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: nil),
+        codexHomeOverride: nil
+    )
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fakeShellURL = root.appendingPathComponent("remote-user-shell")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try """
+    #!/bin/sh
+    if [ "$1" != "-ic" ]; then
+      exit 64
+    fi
+    CODEX_HOME=/interactive/codex HOME=/interactive/home /bin/sh -c "$2"
+    """.write(to: fakeShellURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeShellURL.path)
+    let commandPlan = try CodexHookRemoteInstallerCommandBuilder.buildReadCodexHomeCommandPlan(for: node)
+    let remoteCommand = Array(commandPlan.sshArguments.drop { $0 != "deploy@example-host" }.dropFirst())
+        .joined(separator: " ")
+
+    let result = try runShellCommand(
+        remoteCommand,
+        environment: [
+            "CODEX_HOME": "/non-interactive/codex",
+            "HOME": "/non-interactive/home",
+            "SHELL": fakeShellURL.path,
+        ]
+    )
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(result.standardOutput, """
+    \(CodexRemoteEnvironment.codexHomeOutputPrefix)/interactive/codex
+    \(CodexRemoteEnvironment.homeDirectoryOutputPrefix)/interactive/home
+
+    """)
+    XCTAssertEqual(result.standardError, "")
+}
+
+func testCodexHookRemoteInstallerBuildsStrictConfigReadCommand() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+
+    let commandPlan = try CodexHookRemoteInstallerCommandBuilder.buildReadConfigCommandPlan(
+        for: node,
+        codexConfigPath: "/home/deploy/.codex/config.toml"
+    )
+
+    XCTAssertEqual(commandPlan.sshExecutable, "/usr/bin/ssh")
+    let readConfigCommand = "if [ -f \(shellQuoteForTest("/home/deploy/.codex/config.toml")) ]; then cat \(shellQuoteForTest("/home/deploy/.codex/config.toml")); elif [ -e \(shellQuoteForTest("/home/deploy/.codex/config.toml")) ]; then echo \(shellQuoteForTest("Codex config path exists but is not a regular file")) >&2; exit 66; fi"
+    XCTAssertEqual(commandPlan.sshArguments, [
+        "-p", "2222",
+        "-i", "~/.ssh/id_ed25519",
+        "deploy@example-host",
+        "sh -lc \(shellQuoteForTest(readConfigCommand))",
+    ])
+}
+
+func testCodexHookRemoteTestEventBuildsSSHCommandWithoutSecretInArguments() throws {
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: 43210,
+        remoteReceiverPort: 53210,
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let registeredNode = CodexRegisteredNode(node: node, secret: "remote-secret")
+
+    let commandPlan = try CodexHookRemoteTestEventCommandBuilder.buildCommandPlan(registeredNode: registeredNode)
+
+    XCTAssertEqual(commandPlan.sshExecutable, "/usr/bin/ssh")
+    XCTAssertEqual(commandPlan.sshArguments, [
+        "-p", "2222",
+        "-i", "~/.ssh/id_ed25519",
+        "deploy@example-host",
+        "python3",
+        "-",
+    ])
+    XCTAssertFalse(commandPlan.sshArguments.joined(separator: " ").contains("remote-secret"))
+    XCTAssert(commandPlan.stdinScript.contains(#"receiver_url = "http://127.0.0.1:53210/codex-hooks/events""#))
+    XCTAssert(commandPlan.stdinScript.contains(#"node_id = "remote-node""#))
+    XCTAssert(commandPlan.stdinScript.contains("sub2api-statusbar-remote-test-session"))
+}
+
+func testCodexHookRemoteTestEventServiceRunsRemoteScriptThroughSSHRunner() async throws {
+    let port = try availableLoopbackPort()
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fakeSSHURL = root.appendingPathComponent("fake-ssh")
+    try writeFakeSSHExecutable(at: fakeSSHURL)
+
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: Int(port),
+        remoteReceiverPort: Int(port),
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let registeredNode = CodexRegisteredNode(node: node, secret: "remote-secret")
+    let recorder = await MainActor.run {
+        LocalReceiverTestRecorder()
+    }
+    let server = await MainActor.run {
+        LocalCodexHookReceiverServer(
+            port: port,
+            nodeSecrets: [node.id: registeredNode.secret],
+            onStateChange: { state in
+                recorder.append(state: state)
+            },
+            onEvent: { event in
+                recorder.append(event: event)
+            }
+        )
+    }
+    try await MainActor.run {
+        try server.start()
+    }
+    defer {
+        Task { @MainActor in
+            server.stop()
+        }
+    }
+    try await waitForListenerReady(await MainActor.run { recorder.states })
+
+    let service = CodexHookRemoteTestEventService()
+    let result = try await service.send(registeredNode: registeredNode, sshExecutable: fakeSSHURL.path)
+
+    XCTAssertEqual(result.exitCode, 0, result.standardError)
+    XCTAssert(result.standardOutput.contains("remote test event accepted"))
+    let events = await MainActor.run { recorder.events }
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?.nodeID, "remote-node")
+    XCTAssertEqual(events.first?.hookEvent, .userPromptSubmit)
+    XCTAssertEqual(events.first?.sessionID, "sub2api-statusbar-remote-test-session")
+    XCTAssertEqual(events.first?.turnID.hasPrefix("sub2api-statusbar-remote-test-turn-"), true)
+    XCTAssertEqual(events.first?.model, "test")
+}
+
+func testCodexHookRemoteTestEventServiceReportsReceiverHTTPRejection() async throws {
+    let port = try availableLoopbackPort()
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let fakeSSHURL = root.appendingPathComponent("fake-ssh")
+    try writeFakeSSHExecutable(at: fakeSSHURL)
+
+    let node = try CodexNode(
+        id: "remote-node",
+        name: "远端",
+        kind: .remote,
+        localReceiverPort: Int(port),
+        remoteReceiverPort: Int(port),
+        ssh: SSHNodeConnection(host: "example-host", user: "deploy", port: 2222, identityFile: "~/.ssh/id_ed25519"),
+        codexHomeOverride: nil
+    )
+    let registeredNode = CodexRegisteredNode(node: node, secret: "client-secret")
+    let recorder = await MainActor.run {
+        LocalReceiverTestRecorder()
+    }
+    let server = await MainActor.run {
+        LocalCodexHookReceiverServer(
+            port: port,
+            nodeSecrets: [node.id: "server-secret"],
+            onStateChange: { state in
+                recorder.append(state: state)
+            },
+            onEvent: { event in
+                recorder.append(event: event)
+            }
+        )
+    }
+    try await MainActor.run {
+        try server.start()
+    }
+    defer {
+        Task { @MainActor in
+            server.stop()
+        }
+    }
+    try await waitForListenerReady(await MainActor.run { recorder.states })
+
+    let service = CodexHookRemoteTestEventService()
+    let result = try await service.send(registeredNode: registeredNode, sshExecutable: fakeSSHURL.path)
+
+    XCTAssertEqual(result.exitCode, 66)
+    XCTAssert(result.standardError.contains("S2SB_REMOTE_TEST_EVENT_HTTP_401"), result.standardError)
+    let failure = CodexHookTestEventFailureClassifier.classifyRemoteResult(result)
+    XCTAssertEqual(failure.kind, .invalidSignature)
+    XCTAssertEqual(failure.detail, "HTTP 401")
+    let events = await MainActor.run { recorder.events }
+    XCTAssertEqual(events, [])
+}
+
+func testCodexHookTestEventFailureClassifierMapsHTTPAndTransportFailures() {
+    XCTAssertEqual(CodexHookTestEventFailureClassifier.classifyLocalHTTPStatus(400).kind, .receiverRejected)
+    XCTAssertEqual(CodexHookTestEventFailureClassifier.classifyLocalHTTPStatus(401).kind, .invalidSignature)
+    XCTAssertEqual(CodexHookTestEventFailureClassifier.classifyLocalHTTPStatus(409).kind, .replayRejected)
+    XCTAssertEqual(CodexHookTestEventFailureClassifier.classifyLocalHTTPStatus(503).kind, .receiverUnavailable)
+
+    let remoteHTTP = CodexHookRemoteInstallResult(
+        exitCode: 66,
+        standardOutput: "",
+        standardError: "S2SB_REMOTE_TEST_EVENT_HTTP_409\n"
+    )
+    let remoteTransport = CodexHookRemoteInstallResult(
+        exitCode: 67,
+        standardOutput: "",
+        standardError: "S2SB_REMOTE_TEST_EVENT_TRANSPORT <urlopen error>"
+    )
+
+    XCTAssertEqual(CodexHookTestEventFailureClassifier.classifyRemoteResult(remoteHTTP), CodexHookTestEventFailure(kind: .replayRejected, detail: "HTTP 409"))
+    XCTAssertEqual(CodexHookTestEventFailureClassifier.classifyRemoteResult(remoteTransport).kind, .transportFailed)
+}
+
+func testCodexHookConfigWriterAddsFeatureAndManagedHooksWithoutDroppingUserHooks() throws {
+    let existing = """
+    model = "gpt-5"
+
+    [[hooks.UserPromptSubmit]]
+    [[hooks.UserPromptSubmit.hooks]]
+    type = "command"
+    command = "/usr/bin/python3 /Users/tester/custom.py"
+    timeout = 30
+    statusMessage = "Custom hook"
+    """
+
+    let updated = try CodexHookConfigWriter.renderConfig(
+        existingConfig: existing,
+        senderCommand: "/Users/tester/Library/Application Support/Sub2APIStatusBar/sub2api-statusbar-hook-sender",
+        nodeConfigPath: "/Users/tester/.sub2api-statusbar/codex-hook-node.json",
+        timeoutSeconds: 5
+    )
+
+    XCTAssert(updated.contains("model = \"gpt-5\""))
+    XCTAssert(updated.contains("command = \"/usr/bin/python3 /Users/tester/custom.py\""))
+    XCTAssert(updated.contains("[features]"))
+    XCTAssert(updated.contains("hooks = true"))
+    XCTAssert(updated.contains("'/Users/tester/Library/Application Support/Sub2APIStatusBar/sub2api-statusbar-hook-sender' '--managed-by' 'Sub2APIStatusBar' '--event' 'UserPromptSubmit' '--config' '/Users/tester/.sub2api-statusbar/codex-hook-node.json'"))
+    XCTAssertFalse(updated.contains("[[hooks.SessionStart]]"))
+    XCTAssertFalse(updated.contains("'--event' 'SessionStart'"))
+    XCTAssert(updated.contains("[[hooks.PermissionRequest]]"))
+    XCTAssert(updated.contains("[[hooks.PreCompact]]"))
+    XCTAssert(updated.contains("[[hooks.PostCompact]]"))
+    XCTAssert(updated.contains("[[hooks.SubagentStart]]"))
+    XCTAssert(updated.contains("'--event' 'PermissionRequest'"))
+    XCTAssert(updated.contains("'--event' 'PreCompact'"))
+    XCTAssert(updated.contains("'--event' 'PostCompact'"))
+    XCTAssert(updated.contains("'--event' 'SubagentStart'"))
+    XCTAssert(updated.contains("statusMessage = \"Sub2APIStatusBar task monitor\""))
+    XCTAssertNoThrow(try CodexHookConfigValidator.validateManagedHooks(updated))
+}
+
+func testCodexHookConfigValidatorRequiresExpectedNodeConfigPathWhenProvided() throws {
+    let updated = try CodexHookConfigWriter.renderConfig(
+        existingConfig: "",
+        senderCommand: "/new/sender",
+        nodeConfigPath: "/Users/tester/.sub2api-statusbar/codex-hook-node-local.json",
+        timeoutSeconds: 5
+    )
+
+    XCTAssertNoThrow(try CodexHookConfigValidator.validateManagedHooks(
+        updated,
+        expectedNodeConfigPath: "/Users/tester/.sub2api-statusbar/codex-hook-node-local.json"
+    ))
+    XCTAssertThrowsError(try CodexHookConfigValidator.validateManagedHooks(
+        updated,
+        expectedNodeConfigPath: "/Users/tester/.sub2api-statusbar/codex-hook-node-remote.json"
+    )) { error in
+        XCTAssertEqual(
+            error as? CodexHookConfigValidationError,
+            .invalidHandlerField(event: "UserPromptSubmit", field: "command")
+        )
+    }
+}
+
+func testCodexHookConfigValidatorRejectsMissingManagedHandler() throws {
+    let invalid = """
+    [features]
+    hooks = true
+
+    [[hooks.UserPromptSubmit]]
+    """
+
+    XCTAssertThrowsError(try CodexHookConfigValidator.validateManagedHooks(invalid)) { error in
+        XCTAssertEqual(
+            error as? CodexHookConfigValidationError,
+            .missingManagedHandler("UserPromptSubmit")
+        )
+    }
+}
+
+func testCodexHookConfigWriterReplacesExistingManagedHooksWithoutDuplicatingFeatureTable() throws {
+    let first = try CodexHookConfigWriter.renderConfig(
+        existingConfig: "[features]\nhooks = false\n",
+        senderCommand: "/old/sender",
+        nodeConfigPath: "/old/node.json",
+        timeoutSeconds: 5
+    )
+
+    let second = try CodexHookConfigWriter.renderConfig(
+        existingConfig: first,
+        senderCommand: "/new/sender",
+        nodeConfigPath: "/new/node.json",
+        timeoutSeconds: 5
+    )
+
+    XCTAssertEqual(second.components(separatedBy: "[features]").count - 1, 1)
+    XCTAssertFalse(second.contains("/old/sender"))
+    XCTAssertFalse(second.contains("/old/node.json"))
+    XCTAssert(second.contains("/new/sender"))
+    XCTAssert(second.contains("/new/node.json"))
+    XCTAssertEqual(second.components(separatedBy: "'--managed-by' 'Sub2APIStatusBar' '--event' 'UserPromptSubmit' '--config' '/new/node.json'").count - 1, 1)
+}
+
+func testCodexHookConfigWriterDoesNotTreatSimilarFeatureKeysAsHooksFlag() throws {
+    let existing = """
+    [features]
+    hooks_timeout = 30
+    hooks_enabled_note = "keep"
+    """
+
+    let updated = try CodexHookConfigWriter.renderConfig(
+        existingConfig: existing,
+        senderCommand: "/new/sender",
+        nodeConfigPath: "/new/node.json",
+        timeoutSeconds: 5
+    )
+
+    XCTAssert(updated.contains("hooks_timeout = 30"))
+    XCTAssert(updated.contains("hooks_enabled_note = \"keep\""))
+    XCTAssert(updated.contains("[features]\nhooks = true\nhooks_timeout = 30"))
+    XCTAssertEqual(updated.components(separatedBy: "hooks = true").count - 1, 1)
+}
+
+func testCodexHookConfigWriterHandlesTomlHeadersWithTrailingComments() throws {
+    let existing = """
+    [features] # user feature flags
+    hooks = false
+
+    [[hooks.Stop]] # existing managed group
+
+    [[hooks.Stop.hooks]] # existing managed handler
+    type = "command"
+    command = "'/old/sender' '--managed-by' 'Sub2APIStatusBar' '--event' 'Stop' '--config' '/old/node.json'"
+    timeout = 5
+    statusMessage = "Sub2APIStatusBar task monitor"
+    """
+
+    let updated = try CodexHookConfigWriter.renderConfig(
+        existingConfig: existing,
+        senderCommand: "/new/sender",
+        nodeConfigPath: "/new/node.json",
+        timeoutSeconds: 5
+    )
+
+    XCTAssert(updated.contains("[features] # user feature flags\nhooks = true"))
+    XCTAssertFalse(updated.contains("/old/sender"))
+    XCTAssertFalse(updated.contains("/old/node.json"))
+    XCTAssertEqual(updated.components(separatedBy: "[features]").count - 1, 1)
+    XCTAssertEqual(updated.components(separatedBy: "'--managed-by' 'Sub2APIStatusBar' '--event' 'Stop' '--config' '/new/node.json'").count - 1, 1)
+}
+
+func testCodexHookConfigWriterReplacesManagedHandlerWithoutDroppingUserHandlerInSameGroup() throws {
+    let existing = """
+    [features]
+    hooks = true
+
+    [[hooks.PreToolUse]]
+    matcher = ".*"
+
+    [[hooks.PreToolUse.hooks]]
+    type = "command"
+    command = "/usr/bin/env custom-pre-tool"
+    timeout = 30
+    statusMessage = "User custom pre-tool"
+
+    [[hooks.PreToolUse.hooks]]
+    type = "command"
+    command = "'/old/sender' '--managed-by' 'Sub2APIStatusBar' '--event' 'PreToolUse' '--config' '/old/node.json'"
+    timeout = 5
+    statusMessage = "Sub2APIStatusBar task monitor"
+
+    [[hooks.Stop]]
+
+    [[hooks.Stop.hooks]]
+    type = "command"
+    command = "'/old/sender' '--managed-by' 'Sub2APIStatusBar' '--event' 'Stop' '--config' '/old/node.json'"
+    timeout = 5
+    statusMessage = "Sub2APIStatusBar task monitor"
+    """
+
+    let updated = try CodexHookConfigWriter.renderConfig(
+        existingConfig: existing,
+        senderCommand: "/new/sender",
+        nodeConfigPath: "/new/node.json",
+        timeoutSeconds: 5
+    )
+
+    XCTAssert(updated.contains("command = \"/usr/bin/env custom-pre-tool\""))
+    XCTAssert(updated.contains("statusMessage = \"User custom pre-tool\""))
+    XCTAssertFalse(updated.contains("/old/sender"))
+    XCTAssertFalse(updated.contains("/old/node.json"))
+    XCTAssertEqual(updated.components(separatedBy: "'--managed-by' 'Sub2APIStatusBar' '--event' 'PreToolUse' '--config' '/new/node.json'").count - 1, 1)
+    XCTAssertEqual(updated.components(separatedBy: "'--managed-by' 'Sub2APIStatusBar' '--event' 'Stop' '--config' '/new/node.json'").count - 1, 1)
+}
+
+func testCodexHookConfigWriterPreservesTrustedHookStatePosition() throws {
+    let existing = """
+    [features]
+    hooks = true
+
+    [[hooks.Stop]]
+
+    [[hooks.Stop.hooks]]
+    type = "command"
+    command = "'/old/sender' '--managed-by' 'Sub2APIStatusBar' '--event' 'Stop' '--config' '/old/node.json'"
+    timeout = 5
+    statusMessage = "Sub2APIStatusBar task monitor"
+
+    [hooks.state]
+
+    [hooks.state."/Users/tester/.codex/config.toml:stop:0:0"]
+    trusted_hash = "sha256:trusted-stop"
+
+    [tui.model_availability_nux]
+    "gpt-5.5" = 2
+    """
+
+    let updated = try CodexHookConfigWriter.renderConfig(
+        existingConfig: existing,
+        senderCommand: "/new/sender",
+        nodeConfigPath: "/new/node.json",
+        timeoutSeconds: 5
+    )
+    let diff = UnifiedTextDiff.render(
+        old: existing,
+        new: updated,
+        fromPath: "current",
+        toPath: "updated"
+    )
+
+    XCTAssert(updated.contains("[hooks.state]"))
+    XCTAssert(updated.contains("[hooks.state.\"/Users/tester/.codex/config.toml:stop:0:0\"]"))
+    XCTAssert(updated.contains("trusted_hash = \"sha256:trusted-stop\""))
+    XCTAssertFalse(updated.contains("/old/sender"))
+    XCTAssertLessThan(
+        try XCTUnwrap(updated.range(of: "'--event' 'UserPromptSubmit'")?.lowerBound),
+        try XCTUnwrap(updated.range(of: "[hooks.state]")?.lowerBound)
+    )
+    XCTAssertLessThan(
+        try XCTUnwrap(updated.range(of: "[hooks.state]")?.lowerBound),
+        try XCTUnwrap(updated.range(of: "[tui.model_availability_nux]")?.lowerBound)
+    )
+    XCTAssertFalse(diff.contains("-[hooks.state"), diff)
+    XCTAssertFalse(diff.contains("-trusted_hash"), diff)
+}
+
+func testUnifiedTextDiffShowsAddedRemovedAndContextLines() {
+    let diff = UnifiedTextDiff.render(
+        old: "model = \"gpt-5\"\n[features]\nhooks = false\n",
+        new: "model = \"gpt-5\"\n[features]\nhooks = true\n",
+        fromPath: "/Users/tester/.codex/config.toml (current)",
+        toPath: "/Users/tester/.codex/config.toml (updated)"
+    )
+
+    XCTAssert(diff.contains("--- /Users/tester/.codex/config.toml (current)"))
+    XCTAssert(diff.contains("+++ /Users/tester/.codex/config.toml (updated)"))
+    XCTAssert(diff.contains(" model = \"gpt-5\""))
+    XCTAssert(diff.contains("-hooks = false"))
+    XCTAssert(diff.contains("+hooks = true"))
+}
+
+func testUnifiedTextDiffRedactsSensitiveConfigPreviewWithoutChangingNormalLines() {
+    let diff = UnifiedTextDiff.renderRedactedConfigPreview(
+        old: """
+        model = "gpt-5"
+        auth_token = "sk-old"
+        api_key = "key-old"
+        [features]
+        hooks = false
+        """,
+        new: """
+        model = "gpt-5"
+        auth_token = "sk-new"
+        api_key = "key-new"
+        [features]
+        hooks = true
+        """,
+        fromPath: "/Users/tester/.codex/config.toml (current)",
+        toPath: "/Users/tester/.codex/config.toml (updated)"
+    )
+
+    XCTAssert(diff.contains(" model = \"gpt-5\""))
+    XCTAssert(diff.contains(" auth_token = \"<redacted>\""))
+    XCTAssert(diff.contains(" api_key = \"<redacted>\""))
+    XCTAssert(diff.contains("-hooks = false"))
+    XCTAssert(diff.contains("+hooks = true"))
+    XCTAssertFalse(diff.contains("sk-old"))
+    XCTAssertFalse(diff.contains("sk-new"))
+    XCTAssertFalse(diff.contains("key-old"))
+    XCTAssertFalse(diff.contains("key-new"))
+}
+
+func testCodexTaskActivityStoreCreatesRunningTurnFromUserPromptSubmit() {
+    var store = CodexTaskActivityStore()
+    let event = CodexHookEvent(
+        eventID: "event-1",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: "/workspace/app",
+        model: "codex-auto",
+        toolName: nil
+    )
+
+    store.apply(event)
+
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.nodeID, "node-a")
+    XCTAssertEqual(activity?.sessionID, "session-1")
+    XCTAssertEqual(activity?.turnID, "turn-1")
+    XCTAssertEqual(activity?.status, .running)
+    XCTAssertEqual(activity?.phase, .prompt)
+    XCTAssertEqual(activity?.badge, "A1")
+}
+
+func testCodexTaskActivityStoreKeepsSameSessionAsOneTaskAcrossTurns() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 120), hookEvent: .preToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash"))
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 300), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
+
+    XCTAssertEqual(store.activities.count, 1)
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.id, "node-a|session-1")
+    XCTAssertEqual(activity?.badge, "A1")
+    XCTAssertEqual(activity?.sessionID, "session-1")
+    XCTAssertEqual(activity?.turnID, "turn-2")
+    XCTAssertEqual(activity?.status, .running)
+    XCTAssertEqual(activity?.phase, .prompt)
+    XCTAssertEqual(activity?.completedAt, nil)
+    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2", "event-3"])
+    XCTAssertEqual(activity?.timeline.map(\.turnID), ["turn-1", "turn-1", "turn-2"])
+}
+
+func testCodexTaskActivityStoreIgnoresLateStopForPreviousTurnAfterSessionContinues() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 200), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 210), hookEvent: .stop, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+
+    XCTAssertEqual(store.activities.count, 1)
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.turnID, "turn-2")
+    XCTAssertEqual(activity?.status, .running)
+    XCTAssertEqual(activity?.phase, .prompt)
+    XCTAssertEqual(activity?.completedAt, nil)
+    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2", "event-3"])
+}
+
+func testCodexTaskActivityStoreReopensCompletedSessionWhenNewTurnStarts() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 150), hookEvent: .stop, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 300), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
+
+    XCTAssertEqual(store.activities.count, 1)
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.turnID, "turn-2")
+    XCTAssertEqual(activity?.status, .running)
+    XCTAssertEqual(activity?.phase, .prompt)
+    XCTAssertEqual(activity?.completedAt, nil)
+    XCTAssertEqual(activity?.timeline.map(\.hookEvent), [.userPromptSubmit, .stop, .userPromptSubmit])
+}
+
+func testCodexTaskActivityStoreDoesNotLetLatePreviousTurnStopOverwriteCurrentTurnMetadata() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 200), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 210), hookEvent: .stop, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil, statusHint: "failed", errorMessage: "old turn failed"))
+
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.turnID, "turn-2")
+    XCTAssertEqual(activity?.status, .running)
+    XCTAssertEqual(activity?.statusHint, nil)
+    XCTAssertEqual(activity?.errorMessage, nil)
+    XCTAssertEqual(activity?.updatedAt, Date(timeIntervalSince1970: 200))
+    XCTAssertEqual(activity?.timeline.last?.turnID, "turn-1")
+    XCTAssertEqual(activity?.timeline.last?.errorMessage, "old turn failed")
+}
+
+func testCodexTaskActivityStoreDoesNotRewindToLatePreviousTurnNonTerminalEvent() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 200), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 210), hookEvent: .postToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash", statusHint: "success"))
+
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.turnID, "turn-2")
+    XCTAssertEqual(activity?.status, .running)
+    XCTAssertEqual(activity?.phase, .prompt)
+    XCTAssertEqual(activity?.toolName, nil)
+    XCTAssertEqual(activity?.statusHint, nil)
+    XCTAssertEqual(activity?.updatedAt, Date(timeIntervalSince1970: 200))
+    XCTAssertEqual(activity?.timeline.map(\.turnID), ["turn-1", "turn-2", "turn-1"])
+}
+
+func testCodexTaskActivityStoreDoesNotReopenCompletedTurnFromLateNonTerminalEvent() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 150), hookEvent: .stop, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 160), hookEvent: .postToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash", statusHint: "success"))
+
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.turnID, "turn-1")
+    XCTAssertEqual(activity?.status, .done)
+    XCTAssertEqual(activity?.phase, .completed)
+    XCTAssertEqual(activity?.toolName, nil)
+    XCTAssertEqual(activity?.completedAt, Date(timeIntervalSince1970: 150))
+    XCTAssertEqual(activity?.updatedAt, Date(timeIntervalSince1970: 150))
+    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2", "event-3"])
+}
+
+func testCodexTaskActivityStorePersistenceReloadsActivitiesAcrossAppRestarts() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storageURL = root.appendingPathComponent("codex-task-activities.json")
+    let persistence = CodexTaskActivityStorePersistence(storageURL: storageURL)
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(
+        eventID: "event-1",
+        nodeID: "remote-node",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: "/workspace/app",
+        model: "gpt-5.5",
+        toolName: nil,
+        transcriptPath: "/tmp/transcript.jsonl",
+        userAgent: "codex_cli_rs/0.136.0",
+        rawPayloadHash: "sha256:abc123",
+        rawPayloadJSON: #"{"event_id":"event-1"}"#
+    ))
+    store.apply(CodexHookEvent(
+        eventID: "event-2",
+        nodeID: "remote-node",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .stop,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    ))
+
+    try persistence.save(store)
+    let reloaded = try persistence.load()
+
+    XCTAssertEqual(reloaded.activities.count, 1)
+    let activity = reloaded.activities.first
+    XCTAssertEqual(activity?.id, "remote-node|session-1")
+    XCTAssertEqual(activity?.status, .done)
+    XCTAssertEqual(activity?.completedAt, Date(timeIntervalSince1970: 120))
+    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2"])
+    XCTAssertEqual(activity?.timeline.first?.rawPayloadJSON, #"{"event_id":"event-1"}"#)
+    XCTAssertEqual(activity?.userAgent, "codex_cli_rs/0.136.0")
+}
+
+func testCodexTaskActivityStoreKeepsOnlyRegisteredNodesWhenRegistryChanges() {
+    var store = CodexTaskActivityStore()
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "local-node", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "removed-node", observedAt: Date(timeIntervalSince1970: 101), hookEvent: .userPromptSubmit, sessionID: "session-2", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
+
+    store.keepOnlyActivities(forNodeIDs: ["local-node"])
+
+    XCTAssertEqual(store.activities.map(\.nodeID), ["local-node"])
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "new-node", observedAt: Date(timeIntervalSince1970: 102), hookEvent: .userPromptSubmit, sessionID: "session-3", turnID: "turn-3", cwd: nil, model: nil, toolName: nil))
+    XCTAssertEqual(store.activities.map(\.badge), ["A1", "A2"])
+}
+
+func testCodexTaskActivityStoreDoesNotReuseExistingBadgeAfterReloadingSparseBadges() {
+    let keptActivity = CodexTaskActivity(
+        nodeID: "kept-node",
+        sessionID: "session-kept",
+        turnID: "turn-kept",
+        badge: "A2",
+        cwd: nil,
+        model: nil,
+        status: .done,
+        phase: .completed,
+        toolName: nil,
+        startedAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 120),
+        completedAt: Date(timeIntervalSince1970: 120),
+        timeline: []
+    )
+    var store = CodexTaskActivityStore(activities: [keptActivity])
+
+    store.apply(CodexHookEvent(eventID: "event-new", nodeID: "new-node", observedAt: Date(timeIntervalSince1970: 130), hookEvent: .userPromptSubmit, sessionID: "session-new", turnID: "turn-new", cwd: nil, model: nil, toolName: nil))
+
+    XCTAssertEqual(store.activities.map(\.badge), ["A2", "A3"])
+}
+
+func testCodexTaskActivityStoreIgnoresSyntheticTestEvents() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(
+        eventID: "local-test-event",
+        nodeID: "local-node",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "sub2api-statusbar-test-session",
+        turnID: "sub2api-statusbar-test-turn-100",
+        cwd: nil,
+        model: "test",
+        toolName: nil
+    ))
+    store.apply(CodexHookEvent(
+        eventID: "remote-test-event",
+        nodeID: "remote-node",
+        observedAt: Date(timeIntervalSince1970: 101),
+        hookEvent: .userPromptSubmit,
+        sessionID: "sub2api-statusbar-remote-test-session",
+        turnID: "sub2api-statusbar-remote-test-turn-101",
+        cwd: nil,
+        model: "test",
+        toolName: nil
+    ))
+
+    XCTAssertEqual(store.activities, [])
+}
+
+func testCodexHookEventDecodesSnakeCasePayload() throws {
+    let json = """
+    {
+      "schema_version": 1,
+      "event_id": "event-1",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1",
+      "cwd": "/workspace/app",
+      "model": "codex-auto",
+      "tool_name": "Bash",
+      "status_hint": "running",
+      "tool_use_id": "tool-1",
+      "error_message": "explicit error",
+      "transcript_path": "/tmp/transcript.jsonl",
+      "user_agent": "Codex Desktop/0.125.0",
+      "raw_payload_hash": "sha256:abc123"
+    }
+    """.data(using: .utf8)!
+
+    let event = try JSONDecoder.codexHook.decode(CodexHookEvent.self, from: json)
+
+    XCTAssertEqual(event.schemaVersion, 1)
+    XCTAssertEqual(event.eventID, "event-1")
+    XCTAssertEqual(event.nodeID, "node-a")
+    XCTAssertEqual(event.hookEvent, .userPromptSubmit)
+    XCTAssertEqual(event.sessionID, "session-1")
+    XCTAssertEqual(event.turnID, "turn-1")
+    XCTAssertEqual(event.cwd, "/workspace/app")
+    XCTAssertEqual(event.model, "codex-auto")
+    XCTAssertEqual(event.toolName, "Bash")
+    XCTAssertEqual(event.statusHint, "running")
+    XCTAssertEqual(event.toolUseID, "tool-1")
+    XCTAssertEqual(event.errorMessage, "explicit error")
+    XCTAssertEqual(event.transcriptPath, "/tmp/transcript.jsonl")
+    XCTAssertEqual(event.userAgent, "Codex Desktop/0.125.0")
+    XCTAssertEqual(event.rawPayloadHash, "sha256:abc123")
+}
+
+func testCodexHookEventRejectsNonCanonicalPayloads() throws {
+    let missingSchema = """
+    {
+      "event_id": "event-1",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let camelCase = """
+    {
+      "schemaVersion": 1,
+      "eventId": "event-1",
+      "nodeId": "node-a",
+      "observedAt": "2026-06-01T09:00:00Z",
+      "hookEvent": "UserPromptSubmit",
+      "sessionId": "session-1",
+      "turnId": "turn-1"
+    }
+    """.data(using: .utf8)!
+
+    XCTAssertThrowsError(try JSONDecoder.codexHook.decode(CodexHookEvent.self, from: missingSchema))
+    XCTAssertThrowsError(try JSONDecoder.codexHook.decode(CodexHookEvent.self, from: camelCase))
+}
+
+func testCodexTaskActivityStoreMarksOnlyRunningTurnsStale() {
+    var store = CodexTaskActivityStore()
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 110), hookEvent: .userPromptSubmit, sessionID: "session-2", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 115), hookEvent: .stop, sessionID: "session-2", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
+
+    store.markStale(now: Date(timeIntervalSince1970: 500), staleAfter: 300)
+
+    let staleActivity = store.activities.first { $0.turnID == "turn-1" }
+    let doneActivity = store.activities.first { $0.turnID == "turn-2" }
+    XCTAssertEqual(staleActivity?.status, .stale)
+    XCTAssertEqual(doneActivity?.status, .done)
+}
+
+func testCodexTaskActivityStoreKeepsBadgeStableAcrossUpdates() {
+    var store = CodexTaskActivityStore()
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
+    let firstBadge = store.activities.first?.badge
+
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 120), hookEvent: .preToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash"))
+    store.markStale(now: Date(timeIntervalSince1970: 500), staleAfter: 300)
+
+    XCTAssertEqual(store.activities.first?.badge, firstBadge)
+    XCTAssertEqual(store.activities.first?.status, .stale)
+}
+
+func testCodexRuntimeStateRefresherMarksTaskAndNodeStaleTogether() throws {
+    var activityStore = CodexTaskActivityStore()
+    var nodeHealthStore = CodexNodeHealthStore()
+    let node = try CodexNode(
+        id: "node-a",
+        name: "Node A",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let event = CodexHookEvent(
+        eventID: "event-1",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    )
+    nodeHealthStore.configure(nodes: [node], now: Date(timeIntervalSince1970: 90))
+    activityStore.apply(event)
+    nodeHealthStore.markEventReceived(event, now: Date(timeIntervalSince1970: 100))
+
+    let activities = CodexRuntimeStateRefresher(
+        taskStaleAfterSeconds: 300,
+        nodeStaleAfterSeconds: 300
+    ).refresh(
+        activityStore: &activityStore,
+        nodeHealthStore: &nodeHealthStore,
+        now: Date(timeIntervalSince1970: 500)
+    )
+
+    XCTAssertEqual(activities.first?.status, .stale)
+    XCTAssertEqual(nodeHealthStore.status(nodeID: "node-a")?.state, .stale)
+}
+
+func testCodexTaskActivityStoreKeepsTimelineForTurnEventsAndDeduplicatesEventIDs() {
+    var store = CodexTaskActivityStore()
+    store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 120), hookEvent: .preToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash"))
+    store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 125), hookEvent: .postToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash"))
+
+    let activity = store.activities.first
+
+    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2"])
+    XCTAssertEqual(activity?.timeline.map(\.hookEvent), [.userPromptSubmit, .preToolUse])
+    XCTAssertEqual(activity?.timeline.last?.toolName, "Bash")
+    XCTAssertEqual(activity?.cwd, "/workspace/app")
+    XCTAssertEqual(activity?.model, "gpt-5")
+}
+
+func testCodexTaskActivityStoreMarksExplicitWaitingHintAsWaiting() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(
+        eventID: "event-waiting",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: "/workspace/app",
+        model: "gpt-5",
+        toolName: nil,
+        statusHint: "paused"
+    ))
+
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.status, .waiting)
+    XCTAssertEqual(activity?.phase, .prompt)
+    XCTAssertEqual(activity?.statusHint, "paused")
+    XCTAssertEqual(activity?.timeline.first?.statusHint, "paused")
+}
+
+func testCodexTaskActivityStoreMarksPermissionRequestAsWaiting() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(
+        eventID: "event-permission",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .permissionRequest,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: "/workspace/app",
+        model: "gpt-5",
+        toolName: "Bash",
+        toolUseID: "tool-1",
+        transcriptPath: "/tmp/transcript.jsonl",
+        rawPayloadHash: "sha256:abc123"
+    ))
+
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.status, .waiting)
+    XCTAssertEqual(activity?.phase, .prompt)
+    XCTAssertEqual(activity?.toolName, "Bash")
+    XCTAssertEqual(activity?.toolUseID, "tool-1")
+    XCTAssertEqual(activity?.transcriptPath, "/tmp/transcript.jsonl")
+    XCTAssertEqual(activity?.rawPayloadHash, "sha256:abc123")
+}
+
+func testCodexTaskActivityStoreMarksStopAsErrorOnlyWithExplicitFailureSignal() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(
+        eventID: "event-1",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-success",
+        turnID: "turn-success",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    ))
+    store.apply(CodexHookEvent(
+        eventID: "event-2",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 110),
+        hookEvent: .stop,
+        sessionID: "session-success",
+        turnID: "turn-success",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    ))
+    store.apply(CodexHookEvent(
+        eventID: "event-3",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-error",
+        turnID: "turn-error",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    ))
+    store.apply(CodexHookEvent(
+        eventID: "event-4",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 130),
+        hookEvent: .stop,
+        sessionID: "session-error",
+        turnID: "turn-error",
+        cwd: nil,
+        model: nil,
+        toolName: nil,
+        statusHint: "failed",
+        errorMessage: "tool execution failed"
+    ))
+
+    let success = store.activities.first { $0.turnID == "turn-success" }
+    let failure = store.activities.first { $0.turnID == "turn-error" }
+    XCTAssertEqual(success?.status, .done)
+    XCTAssertEqual(success?.phase, .completed)
+    XCTAssertEqual(failure?.status, .error)
+    XCTAssertEqual(failure?.phase, .completed)
+    XCTAssertEqual(failure?.errorMessage, "tool execution failed")
+}
+
+func testCodexTaskActivityStoreDoesNotCompleteTurnFromNonTerminalSuccessHint() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(
+        eventID: "event-1",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .postToolUse,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: "Bash",
+        statusHint: "success"
+    ))
+
+    let activity = store.activities.first
+    XCTAssertEqual(activity?.status, .running)
+    XCTAssertEqual(activity?.phase, .tooling)
+    XCTAssertNil(activity?.completedAt)
+}
+
+func testCodexTaskActivityStoreDoesNotCompleteTurnFromSubagentStop() {
+    var store = CodexTaskActivityStore()
+
+    store.apply(CodexHookEvent(
+        eventID: "event-1",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    ))
+    store.apply(CodexHookEvent(
+        eventID: "event-2",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 110),
+        hookEvent: .subagentStart,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: "ReviewAgent",
+        statusHint: "started"
+    ))
+    store.apply(CodexHookEvent(
+        eventID: "event-3",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .subagentStop,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: "ReviewAgent",
+        statusHint: "success"
+    ))
+
+    let activityAfterSubagentStop = store.activities.first
+    XCTAssertEqual(activityAfterSubagentStop?.status, .running)
+    XCTAssertEqual(activityAfterSubagentStop?.phase, .tooling)
+    XCTAssertEqual(activityAfterSubagentStop?.toolName, "ReviewAgent")
+    XCTAssertNil(activityAfterSubagentStop?.completedAt)
+    XCTAssertEqual(activityAfterSubagentStop?.timeline.map(\.hookEvent), [.userPromptSubmit, .subagentStart, .subagentStop])
+
+    store.apply(CodexHookEvent(
+        eventID: "event-4",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 130),
+        hookEvent: .stop,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    ))
+
+    let completedActivity = store.activities.first
+    XCTAssertEqual(completedActivity?.status, .done)
+    XCTAssertEqual(completedActivity?.phase, .completed)
+    XCTAssertEqual(completedActivity?.completedAt, Date(timeIntervalSince1970: 130))
+}
+
+func testCodexMenuBarTaskSummaryUsesPersistentTwoRows() {
+    let activities = [
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-a",
+            turnID: "turn-a",
+            badge: "A1",
+            cwd: "/workspace/app",
+            model: "gpt-5",
+            status: .running,
+            phase: .tooling,
+            toolName: "Bash",
+            startedAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 120),
+            completedAt: nil,
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "remote-node",
+            sessionID: "session-b",
+            turnID: "turn-b",
+            badge: "A2",
+            cwd: "/workspace/api",
+            model: "gpt-5",
+            status: .done,
+            phase: .completed,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 90),
+            updatedAt: Date(timeIntervalSince1970: 130),
+            completedAt: Date(timeIntervalSince1970: 130),
+            timeline: []
+        ),
+    ]
+
+    let summary = CodexMenuBarTaskSummary.make(
+        activities: activities,
+        maxTasks: 2,
+        now: Date(timeIntervalSince1970: 140)
+    )
+
+    XCTAssertEqual(summary.topRow, "A2D A1R")
+    XCTAssertEqual(summary.bottomRow, "T2R1Q0D1E0")
+    XCTAssert(summary.tooltip.contains("A1 local-node session-a turn-a running tooling Bash"))
+    XCTAssert(summary.tooltip.contains("A2 remote-node session-b turn-b done completed"))
+}
+
+func testCodexMenuBarTaskSummaryUsesZeroCountsWithoutPlaceholders() {
+    let summary = CodexMenuBarTaskSummary.make(activities: [], maxTasks: 2)
+
+    XCTAssertEqual(summary.topRow, "0")
+    XCTAssertEqual(summary.bottomRow, "T0R0Q0D0E0")
+    XCTAssertFalse(summary.topRow.contains("--"))
+    XCTAssertFalse(summary.bottomRow.contains("--"))
+}
+
+func testCodexMenuBarTaskSummaryShowsOverflowCountAndKeepsStaleOutOfTopRow() {
+    let activities = [
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-a",
+            turnID: "turn-a",
+            badge: "A1",
+            cwd: nil,
+            model: nil,
+            status: .running,
+            phase: .tooling,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 130),
+            completedAt: nil,
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-b",
+            turnID: "turn-b",
+            badge: "A2",
+            cwd: nil,
+            model: nil,
+            status: .waiting,
+            phase: .prompt,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 105),
+            updatedAt: Date(timeIntervalSince1970: 140),
+            completedAt: nil,
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "remote-node",
+            sessionID: "session-c",
+            turnID: "turn-c",
+            badge: "A3",
+            cwd: nil,
+            model: nil,
+            status: .done,
+            phase: .completed,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 110),
+            updatedAt: Date(timeIntervalSince1970: 150),
+            completedAt: Date(timeIntervalSince1970: 150),
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "remote-node",
+            sessionID: "session-d",
+            turnID: "turn-d",
+            badge: "A4",
+            cwd: nil,
+            model: nil,
+            status: .stale,
+            phase: .tooling,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 115),
+            updatedAt: Date(timeIntervalSince1970: 160),
+            completedAt: nil,
+            timeline: []
+        ),
+    ]
+
+    let summary = CodexMenuBarTaskSummary.make(
+        activities: activities,
+        maxTasks: 2,
+        now: Date(timeIntervalSince1970: 180)
+    )
+
+    XCTAssertEqual(summary.topRow, "A3D A2Q +1")
+    XCTAssertEqual(summary.bottomRow, "T4R1Q1D1E0")
+    XCTAssertFalse(summary.topRow.contains("A4"))
+    XCTAssert(summary.tooltip.contains("A4 remote-node session-d turn-d stale tooling"))
+}
+
+func testCodexMenuBarTaskSummaryCountsOnlyRecentTerminalEventsAndKeepsStaleOutOfErrors() {
+    let activities = [
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-running",
+            turnID: "turn-running",
+            badge: "A1",
+            cwd: nil,
+            model: nil,
+            status: .running,
+            phase: .tooling,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 7_000),
+            updatedAt: Date(timeIntervalSince1970: 7_100),
+            completedAt: nil,
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-waiting",
+            turnID: "turn-waiting",
+            badge: "A2",
+            cwd: nil,
+            model: nil,
+            status: .waiting,
+            phase: .prompt,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 7_010),
+            updatedAt: Date(timeIntervalSince1970: 7_120),
+            completedAt: nil,
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-recent-done",
+            turnID: "turn-recent-done",
+            badge: "A3",
+            cwd: nil,
+            model: nil,
+            status: .done,
+            phase: .completed,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 7_020),
+            updatedAt: Date(timeIntervalSince1970: 7_200),
+            completedAt: Date(timeIntervalSince1970: 7_200),
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-old-done",
+            turnID: "turn-old-done",
+            badge: "A4",
+            cwd: nil,
+            model: nil,
+            status: .done,
+            phase: .completed,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            updatedAt: Date(timeIntervalSince1970: 2_000),
+            completedAt: Date(timeIntervalSince1970: 2_000),
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-recent-error",
+            turnID: "turn-recent-error",
+            badge: "A5",
+            cwd: nil,
+            model: nil,
+            status: .error,
+            phase: .completed,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 7_030),
+            updatedAt: Date(timeIntervalSince1970: 7_300),
+            completedAt: Date(timeIntervalSince1970: 7_300),
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-stale",
+            turnID: "turn-stale",
+            badge: "A6",
+            cwd: nil,
+            model: nil,
+            status: .stale,
+            phase: .tooling,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 6_000),
+            updatedAt: Date(timeIntervalSince1970: 6_100),
+            completedAt: nil,
+            timeline: []
+        ),
+    ]
+
+    let summary = CodexMenuBarTaskSummary.make(
+        activities: activities,
+        maxTasks: 3,
+        now: Date(timeIntervalSince1970: 7_400),
+        recentWindow: 3600
+    )
+
+    XCTAssertEqual(summary.bottomRow, "T6R1Q1D1E1")
+    XCTAssert(summary.topRow.contains("A5E"))
+    XCTAssert(summary.topRow.contains("A3D"))
+    XCTAssertFalse(summary.bottomRow.contains("--"))
+}
+
+func testMenuBarStatusLayoutAlwaysUsesFixedTwoRows() {
+    let fallbackLayout = MenuBarStatusLayout.make(
+        presentation: MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false),
+        fallbackTitle: " Refresh Failed "
+    )
+    let explicitLayout = MenuBarStatusLayout.make(
+        presentation: MenuBarStatusPresentation(
+            title: " T",
+            topRow: "T",
+            bottomRow: "OK",
+            hidesHealthyStatusImage: true
+        ),
+        fallbackTitle: "Healthy"
+    )
+
+    XCTAssertEqual(fallbackLayout.topRow, "Refresh Failed")
+    XCTAssertEqual(fallbackLayout.bottomRow, "Refresh Failed")
+    XCTAssertEqual(fallbackLayout.width, 128)
+    XCTAssertEqual(fallbackLayout.height, 22)
+    XCTAssertEqual(fallbackLayout.topRowHeight, 13)
+    XCTAssertEqual(fallbackLayout.bottomRowHeight, 9)
+    XCTAssertEqual(explicitLayout.topRow, "T")
+    XCTAssertEqual(explicitLayout.bottomRow, "OK")
+    XCTAssertNotEqual(explicitLayout.width, Double(explicitLayout.topRow.count))
+}
+
+func testMenuBarStatusLayoutUsesFixedCellWidthsForEnabledItems() {
+    let presentation = MenuBarStatusPresentation(
+        title: "$1.00 A1R",
+        cells: [
+            MenuBarStatusCell(value: "$1.00", label: "Cost", width: 58),
+            MenuBarStatusCell(value: "A1R", label: "T1R1Q0D0E0", width: 88),
+        ],
+        topRow: "$1.00 | A1R",
+        bottomRow: "Cost | T1R1Q0D0E0",
+        hidesHealthyStatusImage: true
+    )
+
+    let layout = MenuBarStatusLayout.make(presentation: presentation, fallbackTitle: "OK")
+
+    XCTAssertEqual(layout.cells.count, 2)
+    XCTAssertEqual(layout.width, 58 + 88 + 1 + 2 + 2)
+}
+
+func testCodexTaskConsoleRowsExposeIdentityAndSortByRecentUpdate() {
+    let older = CodexTaskActivity(
+        nodeID: "local-node",
+        sessionID: "session-a",
+        turnID: "turn-a",
+        badge: "A1",
+        cwd: "/workspace/app",
+        model: "gpt-5",
+        status: .running,
+        phase: .tooling,
+        toolName: "Bash",
+        startedAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 120),
+        completedAt: nil,
+        timeline: [
+            CodexTaskActivity.TimelineEvent(
+                eventID: "event-1",
+                hookEvent: .preToolUse,
+                observedAt: Date(timeIntervalSince1970: 115),
+                sessionID: "session-a",
+                turnID: "turn-a",
+                cwd: nil,
+                model: nil,
+                toolName: "Bash"
+            ),
+            CodexTaskActivity.TimelineEvent(
+                eventID: "event-0",
+                hookEvent: .userPromptSubmit,
+                observedAt: Date(timeIntervalSince1970: 100),
+                sessionID: "session-a",
+                turnID: "turn-a",
+                cwd: "/workspace/app",
+                model: "gpt-5",
+                toolName: nil,
+                statusHint: "running",
+                toolUseID: "tool-0",
+                errorMessage: nil,
+                transcriptPath: "/tmp/transcript.jsonl",
+                userAgent: "Codex Desktop/0.125.0",
+                rawPayloadHash: "sha256:abc123",
+                rawPayloadJSON: #"{"event_id":"event-0"}"#
+            ),
+        ]
+    )
+    let newer = CodexTaskActivity(
+        nodeID: "remote-node",
+        sessionID: "session-b",
+        turnID: "turn-b",
+        badge: "A2",
+        cwd: "/workspace/api",
+        model: "gpt-5",
+        status: .done,
+        phase: .completed,
+        toolName: nil,
+        startedAt: Date(timeIntervalSince1970: 90),
+        updatedAt: Date(timeIntervalSince1970: 130),
+        completedAt: Date(timeIntervalSince1970: 130),
+        timeline: []
+    )
+
+    let rows = CodexTaskConsoleModel.rows(activities: [older, newer])
+
+    XCTAssertEqual(rows.map(\.badge), ["A2", "A1"])
+    XCTAssertEqual(rows.first?.status, "D")
+    XCTAssertEqual(rows.first?.nodeID, "remote-node")
+    XCTAssertEqual(rows.first?.sessionID, "session-b")
+    XCTAssertEqual(rows.first?.turnID, "turn-b")
+    XCTAssertEqual(rows.last?.toolName, "Bash")
+    XCTAssertEqual(rows.last?.events.map(\.eventID), ["event-0", "event-1"])
+    XCTAssertEqual(rows.last?.events.first?.eventName, "UserPromptSubmit")
+    XCTAssertEqual(rows.last?.events.first?.sessionID, "session-a")
+    XCTAssertEqual(rows.last?.events.first?.turnID, "turn-a")
+    XCTAssertEqual(rows.last?.events.first?.statusHint, "running")
+    XCTAssertEqual(rows.last?.events.first?.toolUseID, "tool-0")
+    XCTAssertEqual(rows.last?.events.first?.transcriptPath, "/tmp/transcript.jsonl")
+    XCTAssertEqual(rows.last?.events.first?.userAgent, "Codex Desktop/0.125.0")
+    XCTAssertEqual(rows.last?.userAgent, "Codex Desktop/0.125.0")
+    XCTAssertEqual(rows.last?.events.first?.rawPayloadHash, "sha256:abc123")
+    XCTAssertEqual(rows.last?.events.first?.rawPayloadJSON, #"{"event_id":"event-0"}"#)
+    XCTAssertEqual(rows.last?.events.last?.toolName, "Bash")
+    XCTAssertEqual(rows.last?.latestEvents(limit: 1).map(\.eventID), ["event-1"])
+    XCTAssertEqual(rows.last?.latestEvents(limit: 20).map(\.eventID), ["event-1", "event-0"])
+}
+
+func testCodexTaskConsoleGatewayUsageDetailKeepsSupplementaryFields() {
+    let usage = UsageLog(
+        id: 133605,
+        requestID: "req-133605",
+        model: "gpt-5.5",
+        serviceTier: "priority",
+        reasoningEffort: "xhigh",
+        inboundEndpoint: "/openai/v1/responses",
+        upstreamEndpoint: "/v1/responses",
+        inputTokens: 430,
+        outputTokens: 1172,
+        cacheCreationTokens: 30,
+        cacheReadTokens: 164224,
+        totalCost: 0.067,
+        actualCost: 0.238844,
+        requestType: "stream",
+        stream: true,
+        durationMs: 1200,
+        firstTokenMs: 250,
+        userAgent: "codex_cli_rs/0.125.0",
+        billingMode: "token",
+        createdAt: Date(timeIntervalSince1970: 100)
+    )
+
+    let detail = CodexTaskConsoleModel.gatewayUsageDetail(latestUsage: usage)
+
+    XCTAssertEqual(detail?.requestID, "req-133605")
+    XCTAssertEqual(detail?.model, "gpt-5.5")
+    XCTAssertEqual(detail?.serviceTier, "priority")
+    XCTAssertEqual(detail?.reasoningEffort, "xhigh")
+    XCTAssertEqual(detail?.inboundEndpoint, "/openai/v1/responses")
+    XCTAssertEqual(detail?.upstreamEndpoint, "/v1/responses")
+    XCTAssertEqual(detail?.requestType, "stream")
+    XCTAssertEqual(detail?.stream, true)
+    XCTAssertEqual(detail?.totalTokens, 165_856)
+    XCTAssertEqual(detail?.actualCost ?? 0, 0.238844, accuracy: 0.000001)
+    XCTAssertEqual(detail?.totalCost ?? 0, 0.067, accuracy: 0.000001)
+    XCTAssertEqual(detail?.durationMs ?? 0, 1200, accuracy: 0.000001)
+    XCTAssertEqual(detail?.firstTokenMs ?? 0, 250, accuracy: 0.000001)
+    XCTAssertEqual(detail?.userAgent, "codex_cli_rs/0.125.0")
+    XCTAssertEqual(detail?.billingMode, "token")
+}
+
+func testCodexTaskConsoleGatewayConcurrencyDetailKeepsAdminLoadFields() {
+    let concurrency = UserRealtimeConcurrency(
+        userID: 42,
+        userEmail: "target@example.com",
+        username: "target",
+        currentInUse: 3,
+        maxCapacity: 100,
+        loadPercentage: 3,
+        waitingInQueue: 1
+    )
+
+    let detail = CodexTaskConsoleModel.gatewayConcurrencyDetail(realtimeConcurrency: concurrency)
+
+    XCTAssertEqual(detail?.userID, 42)
+    XCTAssertEqual(detail?.userEmail, "target@example.com")
+    XCTAssertEqual(detail?.username, "target")
+    XCTAssertEqual(detail?.currentInUse, 3)
+    XCTAssertEqual(detail?.maxCapacity, 100)
+    XCTAssertEqual(detail?.capacityText, "3/100")
+    XCTAssertEqual(detail?.waitingInQueue, 1)
+    XCTAssertEqual(detail?.loadPercentage ?? 0, 3, accuracy: 0.000001)
+    XCTAssertNil(CodexTaskConsoleModel.gatewayConcurrencyDetail(realtimeConcurrency: nil))
+}
+
+func testCodexHookSignatureVerifierAcceptsValidSignature() throws {
+    let body = Data(#"{"event_id":"event-1"}"#.utf8)
+    let secret = "node-secret"
+    let signature = CodexHookSignatureVerifier.signatureHeader(for: body, secret: secret)
+
+    XCTAssertTrue(try CodexHookSignatureVerifier.verify(body: body, signatureHeader: signature, secret: secret))
+}
+
+func testCodexHookSignatureVerifierRejectsInvalidSignature() throws {
+    let body = Data(#"{"event_id":"event-1"}"#.utf8)
+
+    XCTAssertFalse(try CodexHookSignatureVerifier.verify(body: body, signatureHeader: "hmac-sha256=bad", secret: "node-secret"))
+}
+
+func testCodexHookReplayGuardRejectsDuplicateAndStaleEvents() {
+    var guardState = CodexHookReplayGuard(allowedClockSkewSeconds: 300)
+    let now = Date(timeIntervalSince1970: 1_000)
+
+    XCTAssertTrue(guardState.accepts(eventID: "event-1", timestamp: Date(timeIntervalSince1970: 950), now: now))
+    XCTAssertFalse(guardState.accepts(eventID: "event-1", timestamp: Date(timeIntervalSince1970: 950), now: now))
+    XCTAssertFalse(guardState.accepts(eventID: "event-2", timestamp: Date(timeIntervalSince1970: 100), now: now))
+}
+
+func testCodexHookEventIngestorVerifiesDecodesAndAppliesEvent() throws {
+    let body = """
+    {
+      "schema_version": 1,
+      "event_id": "event-1",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let secret = "node-secret"
+    let signature = CodexHookSignatureVerifier.signatureHeader(for: body, secret: secret)
+    var ingestor = CodexHookEventIngestor(nodeSecrets: ["node-a": secret], allowedClockSkewSeconds: 300)
+
+    let result = try ingestor.ingest(
+        body: body,
+        nodeIDHeader: "node-a",
+        timestampHeader: "2026-06-01T09:00:00Z",
+        signatureHeader: signature,
+        now: ISO8601DateFormatter().date(from: "2026-06-01T09:00:10Z")!
+    )
+
+    XCTAssertEqual(result.event.eventID, "event-1")
+    XCTAssert(result.event.rawPayloadJSON?.contains("\"event_id\" : \"event-1\"") == true)
+    XCTAssertEqual(result.activities.first?.status, .running)
+    XCTAssertEqual(result.activities.first?.badge, "A1")
+    XCTAssert(result.activities.first?.timeline.first?.rawPayloadJSON?.contains("\"session_id\" : \"session-1\"") == true)
+}
+
+func testCodexHookEventIngestorRejectsMismatchedNodeHeader() throws {
+    let body = """
+    {
+      "schema_version": 1,
+      "event_id": "event-1",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let secret = "node-secret"
+    let signature = CodexHookSignatureVerifier.signatureHeader(for: body, secret: secret)
+    var ingestor = CodexHookEventIngestor(nodeSecrets: ["node-b": secret], allowedClockSkewSeconds: 300)
+
+    XCTAssertThrowsError(try ingestor.ingest(
+        body: body,
+        nodeIDHeader: "node-b",
+        timestampHeader: "2026-06-01T09:00:00Z",
+        signatureHeader: signature,
+        now: ISO8601DateFormatter().date(from: "2026-06-01T09:00:10Z")!
+    )) { error in
+        XCTAssertEqual(error as? CodexHookIngestError, .nodeMismatch)
+    }
+}
+
+func testCodexHookReceiverAcceptsValidHookPost() throws {
+    let body = """
+    {
+      "schema_version": 1,
+      "event_id": "event-1",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let secret = "node-secret"
+    let signature = CodexHookSignatureVerifier.signatureHeader(for: body, secret: secret)
+    var receiver = CodexHookHTTPReceiver(ingestor: CodexHookEventIngestor(nodeSecrets: ["node-a": secret], allowedClockSkewSeconds: 300))
+
+    let response = receiver.handle(
+        CodexHookHTTPRequest(
+            method: "POST",
+            path: "/codex-hooks/events",
+            headers: [
+                "x-s2sb-node-id": "node-a",
+                "x-s2sb-timestamp": "2026-06-01T09:00:00Z",
+                "x-s2sb-signature": signature,
+            ],
+            body: body
+        ),
+        now: ISO8601DateFormatter().date(from: "2026-06-01T09:00:10Z")!
+    )
+
+    XCTAssertEqual(response.statusCode, 202)
+    XCTAssertEqual(response.result?.event.schemaVersion, 1)
+    XCTAssertEqual(response.result?.event.eventID, "event-1")
+    XCTAssertEqual(response.result?.activities.first?.badge, "A1")
+}
+
+func testLocalCodexHookReceiverServerAcceptsSignedEventThroughURLSession() async throws {
+    let port = try availableLoopbackPort()
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: Int(port),
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let registeredNode = CodexRegisteredNode(node: node, secret: "node-secret")
+    let recorder = await MainActor.run {
+        LocalReceiverTestRecorder()
+    }
+    let server = await MainActor.run {
+        LocalCodexHookReceiverServer(
+            port: port,
+            nodeSecrets: [registeredNode.node.id: registeredNode.secret],
+            onStateChange: { state in
+                recorder.append(state: state)
+            },
+            onEvent: { event in
+                recorder.append(event: event)
+            }
+        )
+    }
+    try await MainActor.run {
+        try server.start()
+    }
+    defer {
+        Task { @MainActor in
+            server.stop()
+        }
+    }
+    try await waitForListenerReady(await MainActor.run { recorder.states })
+
+    let now = Date()
+    let request = try CodexHookTestEventRequestBuilder.build(
+        registeredNode: registeredNode,
+        now: now,
+        receiverURL: node.localHookReceiverURL
+    )
+    let (_, response) = try await URLSession.shared.data(for: request)
+    let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+
+    XCTAssertEqual(httpResponse.statusCode, 202)
+    let events = await MainActor.run { recorder.events }
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?.nodeID, "local-node")
+    XCTAssertEqual(events.first?.sessionID, "sub2api-statusbar-test-session")
+    XCTAssertEqual(events.first?.turnID, "sub2api-statusbar-test-turn-\(Int(now.timeIntervalSince1970))")
+}
+
+func testCodexHookReceiverRejectsWrongRouteMissingHeadersAndReplay() throws {
+    let body = """
+    {
+      "schema_version": 1,
+      "event_id": "event-1",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let secret = "node-secret"
+    let signature = CodexHookSignatureVerifier.signatureHeader(for: body, secret: secret)
+    var receiver = CodexHookHTTPReceiver(ingestor: CodexHookEventIngestor(nodeSecrets: ["node-a": secret], allowedClockSkewSeconds: 300))
+    let now = ISO8601DateFormatter().date(from: "2026-06-01T09:00:10Z")!
+    let validRequest = CodexHookHTTPRequest(
+        method: "POST",
+        path: "/codex-hooks/events",
+        headers: [
+            "X-S2SB-Node-ID": "node-a",
+            "X-S2SB-Timestamp": "2026-06-01T09:00:00Z",
+            "X-S2SB-Signature": signature,
+        ],
+        body: body
+    )
+
+    XCTAssertEqual(receiver.handle(CodexHookHTTPRequest(method: "GET", path: "/codex-hooks/events", headers: [:], body: Data()), now: now).statusCode, 404)
+    XCTAssertEqual(receiver.handle(CodexHookHTTPRequest(method: "POST", path: "/codex/hooks", headers: validRequest.headers, body: body), now: now).statusCode, 404)
+    XCTAssertEqual(receiver.handle(CodexHookHTTPRequest(method: "POST", path: "/codex-hooks/events", headers: [:], body: body), now: now).statusCode, 401)
+    XCTAssertEqual(receiver.handle(
+        CodexHookHTTPRequest(
+            method: "POST",
+            path: "/codex-hooks/events",
+            headers: [
+                "X-Sub2API-Node-ID": "node-a",
+                "X-Sub2API-Hook-Timestamp": "2026-06-01T09:00:00Z",
+                "X-Sub2API-Hook-Signature": signature,
+            ],
+            body: body
+        ),
+        now: now
+    ).statusCode, 401)
+    XCTAssertEqual(receiver.handle(validRequest, now: now).statusCode, 202)
+    XCTAssertEqual(receiver.handle(validRequest, now: now).statusCode, 409)
+}
+
+func testCodexHookReceiverRejectsHeaderTimestampThatDoesNotMatchSignedEventTimestamp() throws {
+    let body = """
+    {
+      "schema_version": 1,
+      "event_id": "event-1",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let secret = "node-secret"
+    let signature = CodexHookSignatureVerifier.signatureHeader(for: body, secret: secret)
+    var receiver = CodexHookHTTPReceiver(ingestor: CodexHookEventIngestor(nodeSecrets: ["node-a": secret], allowedClockSkewSeconds: 300))
+
+    let response = receiver.handle(
+        CodexHookHTTPRequest(
+            method: "POST",
+            path: "/codex-hooks/events",
+            headers: [
+                "X-S2SB-Node-ID": "node-a",
+                "X-S2SB-Timestamp": "2026-06-01T09:00:10Z",
+                "X-S2SB-Signature": signature,
+            ],
+            body: body
+        ),
+        now: ISO8601DateFormatter().date(from: "2026-06-01T09:00:10Z")!
+    )
+
+    XCTAssertEqual(response.statusCode, 400)
+    XCTAssertEqual(response.error, .timestampMismatch)
+}
+
+func testCodexHookReceiverRejectsMissingAndUnsupportedSchemaVersion() throws {
+    let missingSchemaBody = """
+    {
+      "event_id": "event-missing-schema",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let unsupportedSchemaBody = """
+    {
+      "schema_version": 2,
+      "event_id": "event-unsupported-schema",
+      "node_id": "node-a",
+      "observed_at": "2026-06-01T09:00:00Z",
+      "hook_event": "UserPromptSubmit",
+      "session_id": "session-1",
+      "turn_id": "turn-1"
+    }
+    """.data(using: .utf8)!
+    let secret = "node-secret"
+    let now = ISO8601DateFormatter().date(from: "2026-06-01T09:00:10Z")!
+    var receiver = CodexHookHTTPReceiver(ingestor: CodexHookEventIngestor(nodeSecrets: ["node-a": secret], allowedClockSkewSeconds: 300))
+
+    let missingSchemaResponse = receiver.handle(
+        CodexHookHTTPRequest(
+            method: "POST",
+            path: "/codex-hooks/events",
+            headers: [
+                "X-S2SB-Node-ID": "node-a",
+                "X-S2SB-Timestamp": "2026-06-01T09:00:00Z",
+                "X-S2SB-Signature": CodexHookSignatureVerifier.signatureHeader(for: missingSchemaBody, secret: secret),
+            ],
+            body: missingSchemaBody
+        ),
+        now: now
+    )
+    let unsupportedSchemaResponse = receiver.handle(
+        CodexHookHTTPRequest(
+            method: "POST",
+            path: "/codex-hooks/events",
+            headers: [
+                "X-S2SB-Node-ID": "node-a",
+                "X-S2SB-Timestamp": "2026-06-01T09:00:00Z",
+                "X-S2SB-Signature": CodexHookSignatureVerifier.signatureHeader(for: unsupportedSchemaBody, secret: secret),
+            ],
+            body: unsupportedSchemaBody
+        ),
+        now: now
+    )
+
+    XCTAssertEqual(missingSchemaResponse.statusCode, 400)
+    XCTAssertNil(missingSchemaResponse.error)
+    XCTAssertEqual(unsupportedSchemaResponse.statusCode, 400)
+    XCTAssertEqual(unsupportedSchemaResponse.error, .unsupportedSchemaVersion(2))
+}
+
+func testCodexHookHTTPMessageCodecParsesRequestAndSerializesResponse() throws {
+    let raw = Data("""
+    POST /codex-hooks/events HTTP/1.1\r
+    Host: 127.0.0.1:43210\r
+    X-S2SB-Node-ID: node-a\r
+    Content-Length: 17\r
+    \r
+    {"event_id":"e1"}
+    """.utf8)
+
+    let request = try CodexHookHTTPMessageCodec.parseRequest(raw)
+    let response = CodexHookHTTPMessageCodec.serializeResponse(statusCode: 202)
+
+    XCTAssertEqual(request.method, "POST")
+    XCTAssertEqual(request.path, "/codex-hooks/events")
+    XCTAssertEqual(request.headers["X-S2SB-Node-ID"], "node-a")
+    XCTAssertEqual(String(data: request.body, encoding: .utf8), #"{"event_id":"e1"}"#)
+    XCTAssertEqual(
+        String(data: response, encoding: .utf8),
+        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}
+
+func testCodexHookHTTPMessageCodecDetectsCompleteRequestLengthForSplitBodies() throws {
+    let headers = Data("POST /codex-hooks/events HTTP/1.1\r\nHost: 127.0.0.1:43210\r\nContent-Length: 17\r\n\r\n".utf8)
+    let partial = headers + Data(#"{"event_id":"e"#.utf8)
+    let complete = headers + Data(#"{"event_id":"e1"}"#.utf8)
+
+    XCTAssertNil(try CodexHookHTTPMessageCodec.completeRequestLength(in: partial))
+    XCTAssertEqual(try CodexHookHTTPMessageCodec.completeRequestLength(in: complete), complete.count)
+}
+
+func testCodexHookHTTPMessageCodecTreatsHeaderOnlyRequestWithoutContentLengthAsComplete() throws {
+    let request = Data("GET /codex-hooks/events HTTP/1.1\r\nHost: 127.0.0.1:43210\r\n\r\n".utf8)
+
+    XCTAssertEqual(try CodexHookHTTPMessageCodec.completeRequestLength(in: request), request.count)
+}
+
+func testCodexHookTestEventRequestBuilderBuildsSignedLocalReceiverRequest() throws {
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: 43210,
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let registeredNode = CodexRegisteredNode(node: node, secret: "node-secret")
+    let now = ISO8601DateFormatter().date(from: "2026-06-01T09:00:10Z")!
+
+    let request = try CodexHookTestEventRequestBuilder.build(
+        registeredNode: registeredNode,
+        now: now,
+        receiverURL: node.localHookReceiverURL
+    )
+    let body = try XCTUnwrap(request.httpBody)
+    let bodyText = String(data: body, encoding: .utf8) ?? ""
+    let event = try JSONDecoder.codexHook.decode(CodexHookEvent.self, from: body)
+
+    XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:43210/codex-hooks/events")
+    XCTAssertEqual(request.httpMethod, "POST")
+    XCTAssertEqual(request.value(forHTTPHeaderField: CodexHookHTTPReceiver.nodeIDHeader), "local-node")
+    XCTAssertEqual(request.value(forHTTPHeaderField: CodexHookHTTPReceiver.timestampHeader), "2026-06-01T09:00:10Z")
+    XCTAssertEqual(event.schemaVersion, 1)
+    XCTAssertTrue(bodyText.contains("\"schema_version\""))
+    XCTAssertTrue(bodyText.contains("\"event_id\""))
+    XCTAssertFalse(bodyText.contains("\"schemaVersion\""))
+    XCTAssertFalse(bodyText.contains("\"eventId\""))
+    XCTAssertEqual(event.nodeID, "local-node")
+    XCTAssertEqual(event.hookEvent, .userPromptSubmit)
+    XCTAssertEqual(event.sessionID, "sub2api-statusbar-test-session")
+    XCTAssertEqual(event.turnID, "sub2api-statusbar-test-turn-1780304410")
+    XCTAssertTrue(try CodexHookSignatureVerifier.verify(
+        body: body,
+        signatureHeader: try XCTUnwrap(request.value(forHTTPHeaderField: CodexHookHTTPReceiver.signatureHeader)),
+        secret: "node-secret"
+    ))
+}
+
+func testLocalCodexHookReceiverServerAcceptsSignedEventOverLoopback() async throws {
+    let port = try availableLoopbackPort()
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: Int(port),
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let registeredNode = CodexRegisteredNode(node: node, secret: "node-secret")
+    let recorder = await MainActor.run {
+        LocalReceiverTestRecorder()
+    }
+    let server = await MainActor.run {
+        LocalCodexHookReceiverServer(
+            port: port,
+            nodeSecrets: [registeredNode.node.id: registeredNode.secret],
+            onStateChange: { state in
+                recorder.append(state: state)
+            },
+            onEvent: { event in
+                recorder.append(event: event)
+            }
+        )
+    }
+    try await MainActor.run {
+        try server.start()
+    }
+    defer {
+        Task { @MainActor in
+            server.stop()
+        }
+    }
+    try await waitForListenerReady(await MainActor.run { recorder.states })
+
+    let now = Date()
+    let request = try CodexHookTestEventRequestBuilder.build(
+        registeredNode: registeredNode,
+        now: now,
+        receiverURL: node.localHookReceiverURL
+    )
+    let body = try XCTUnwrap(request.httpBody)
+    let rawHeader = [
+        "POST /codex-hooks/events HTTP/1.1",
+        "Host: 127.0.0.1:\(port)",
+        "Content-Type: application/json",
+        "Content-Length: \(body.count)",
+        "\(CodexHookHTTPReceiver.nodeIDHeader): \(try XCTUnwrap(request.value(forHTTPHeaderField: CodexHookHTTPReceiver.nodeIDHeader)))",
+        "\(CodexHookHTTPReceiver.timestampHeader): \(try XCTUnwrap(request.value(forHTTPHeaderField: CodexHookHTTPReceiver.timestampHeader)))",
+        "\(CodexHookHTTPReceiver.signatureHeader): \(try XCTUnwrap(request.value(forHTTPHeaderField: CodexHookHTTPReceiver.signatureHeader)))",
+        "",
+        "",
+    ].joined(separator: "\r\n")
+    let rawRequest = Data(rawHeader.utf8) + body
+    XCTAssertNotNil(try CodexHookHTTPMessageCodec.completeRequestLength(in: rawRequest))
+    XCTAssertEqual(try CodexHookHTTPMessageCodec.parseRequest(rawRequest).body, body)
+    let responseData = try sendRawLoopbackHTTPRequest(rawRequest, port: port)
+    let responseText = String(data: responseData, encoding: .utf8) ?? ""
+
+    XCTAssert(responseText.hasPrefix("HTTP/1.1 202 Accepted\r\n"), responseText)
+    let events = await MainActor.run { recorder.events }
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?.nodeID, "local-node")
+    XCTAssertEqual(events.first?.sessionID, "sub2api-statusbar-test-session")
+    XCTAssertEqual(events.first?.turnID, "sub2api-statusbar-test-turn-\(Int(now.timeIntervalSince1970))")
+}
+
+func testCodexHookSenderReadsNodeConfigAndPostsToLocalReceiver() async throws {
+    let port = try availableLoopbackPort()
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let senderURL = root.appendingPathComponent("sub2api-statusbar-hook-sender")
+    let nodeConfigURL = root.appendingPathComponent("codex-hook-node.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try CodexHookSenderScript.source.write(to: senderURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: senderURL.path)
+
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: Int(port),
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let nodeConfig = """
+    {
+      "nodeId": "\(node.id)",
+      "receiverUrl": "\(node.localHookReceiverURL.absoluteString)",
+      "secret": "node-secret"
+    }
+    """
+    try nodeConfig.write(to: nodeConfigURL, atomically: true, encoding: .utf8)
+
+    let recorder = await MainActor.run {
+        LocalReceiverTestRecorder()
+    }
+    let server = await MainActor.run {
+        LocalCodexHookReceiverServer(
+            port: port,
+            nodeSecrets: [node.id: "node-secret"],
+            onStateChange: { state in
+                recorder.append(state: state)
+            },
+            onEvent: { event in
+                recorder.append(event: event)
+            }
+        )
+    }
+    try await MainActor.run {
+        try server.start()
+    }
+    defer {
+        Task { @MainActor in
+            server.stop()
+        }
+    }
+    try await waitForListenerReady(await MainActor.run { recorder.states })
+
+    let codexPayload = Data("""
+    {
+      "session_id": "session-from-sender",
+      "turn_id": "turn-from-sender",
+      "cwd": "/workspace/sub2api-statusbar",
+      "model": "gpt-5",
+      "tool_name": "shell"
+    }
+    """.utf8)
+
+    let result = try runCodexHookSender(
+        senderURL: senderURL,
+        eventName: "UserPromptSubmit",
+        nodeConfigURL: nodeConfigURL,
+        stdinPayload: codexPayload
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.standardError)
+    XCTAssertEqual(result.standardOutput, "")
+    XCTAssertEqual(result.standardError, "")
+    let events = await MainActor.run { recorder.events }
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?.nodeID, "local-node")
+    XCTAssertEqual(events.first?.hookEvent, .userPromptSubmit)
+    XCTAssertEqual(events.first?.sessionID, "session-from-sender")
+    XCTAssertEqual(events.first?.turnID, "turn-from-sender")
+    XCTAssertEqual(events.first?.cwd, "/workspace/sub2api-statusbar")
+    XCTAssertEqual(events.first?.model, "gpt-5")
+    XCTAssertEqual(events.first?.toolName, "shell")
+}
+
+func testCodexHookSenderNormalizesStatusToolUseAndStopErrorFields() async throws {
+    let port = try availableLoopbackPort()
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let senderURL = root.appendingPathComponent("sub2api-statusbar-hook-sender")
+    let nodeConfigURL = root.appendingPathComponent("codex-hook-node.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try CodexHookSenderScript.source.write(to: senderURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: senderURL.path)
+
+    let node = try CodexNode(
+        id: "local-node",
+        name: "本机",
+        kind: .local,
+        localReceiverPort: Int(port),
+        remoteReceiverPort: nil,
+        ssh: nil,
+        codexHomeOverride: nil
+    )
+    let nodeConfig = """
+    {
+      "nodeId": "\(node.id)",
+      "receiverUrl": "\(node.localHookReceiverURL.absoluteString)",
+      "secret": "node-secret"
+    }
+    """
+    try nodeConfig.write(to: nodeConfigURL, atomically: true, encoding: .utf8)
+
+    let recorder = await MainActor.run {
+        LocalReceiverTestRecorder()
+    }
+    let server = await MainActor.run {
+        LocalCodexHookReceiverServer(
+            port: port,
+            nodeSecrets: [node.id: "node-secret"],
+            onStateChange: { state in
+                recorder.append(state: state)
+            },
+            onEvent: { event in
+                recorder.append(event: event)
+            }
+        )
+    }
+    try await MainActor.run {
+        try server.start()
+    }
+    defer {
+        Task { @MainActor in
+            server.stop()
+        }
+    }
+    try await waitForListenerReady(await MainActor.run { recorder.states })
+
+    let codexPayload = Data("""
+    {
+      "session_id": "session-from-sender",
+      "turn_id": "turn-from-sender",
+      "cwd": "/workspace/sub2api-statusbar",
+      "model": "gpt-5",
+      "tool": {
+        "name": "Bash"
+      },
+      "tool_use_id": "tool-call-1",
+      "transcript_path": "/tmp/transcript.jsonl",
+      "status_hint": "failed",
+      "error_message": "command failed"
+    }
+    """.utf8)
+
+    let result = try runCodexHookSender(
+        senderURL: senderURL,
+        eventName: "Stop",
+        nodeConfigURL: nodeConfigURL,
+        stdinPayload: codexPayload
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.standardError)
+    let events = await MainActor.run { recorder.events }
+    XCTAssertEqual(events.count, 1)
+    XCTAssertEqual(events.first?.hookEvent, .stop)
+    XCTAssertEqual(events.first?.sessionID, "session-from-sender")
+    XCTAssertEqual(events.first?.turnID, "turn-from-sender")
+    XCTAssertEqual(events.first?.toolName, "Bash")
+    XCTAssertEqual(events.first?.toolUseID, "tool-call-1")
+    XCTAssertEqual(events.first?.statusHint, "failed")
+    XCTAssertEqual(events.first?.errorMessage, "command failed")
+    XCTAssertEqual(events.first?.transcriptPath, "/tmp/transcript.jsonl")
+    XCTAssertEqual(events.first?.rawPayloadHash?.hasPrefix("sha256:"), true)
+}
+
+func testCodexHookSenderRejectsCamelCasePayloadFields() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let senderURL = root.appendingPathComponent("sub2api-statusbar-hook-sender")
+    let nodeConfigURL = root.appendingPathComponent("codex-hook-node.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try CodexHookSenderScript.source.write(to: senderURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: senderURL.path)
+    try """
+    {
+      "nodeId": "local-node",
+      "receiverUrl": "http://127.0.0.1:1/codex-hooks/events",
+      "secret": "node-secret"
+    }
+    """.write(to: nodeConfigURL, atomically: true, encoding: .utf8)
+
+    let result = try runCodexHookSender(
+        senderURL: senderURL,
+        eventName: "UserPromptSubmit",
+        nodeConfigURL: nodeConfigURL,
+        stdinPayload: Data(#"{"sessionId":"camel-session","turnId":"camel-turn"}"#.utf8)
+    )
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(result.standardOutput, "")
+    XCTAssertEqual(result.standardError, "")
+}
+
+func testCodexHookSenderDoesNotBlockOrPrintToCodexWhenReceiverIsUnavailable() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let senderURL = root.appendingPathComponent("sub2api-statusbar-hook-sender")
+    let nodeConfigURL = root.appendingPathComponent("codex-hook-node.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try CodexHookSenderScript.source.write(to: senderURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: senderURL.path)
+    try """
+    {
+      "nodeId": "local-node",
+      "receiverUrl": "http://127.0.0.1:1/codex-hooks/events",
+      "secret": "node-secret-value"
+    }
+    """.write(to: nodeConfigURL, atomically: true, encoding: .utf8)
+
+    let result = try runCodexHookSender(
+        senderURL: senderURL,
+        eventName: "UserPromptSubmit",
+        nodeConfigURL: nodeConfigURL,
+        stdinPayload: Data(#"{"session_id":"session-1","turn_id":"turn-1"}"#.utf8)
+    )
+
+    XCTAssertEqual(result.exitCode, 0)
+    XCTAssertEqual(result.standardOutput, "")
+    XCTAssertEqual(result.standardError, "")
 }
 
 func testLegacyAutoLanguageNormalizesToChinese() throws {
@@ -193,6 +4294,22 @@ func testAppConfigPersistsMenuBarDetailPreferences() throws {
 
     XCTAssert(loaded.menuBarUsageWindow == .today)
     XCTAssert(loaded.menuBarDisplayItems == [.totalRequests, .inputPrice, .outputPrice])
+}
+
+func testAppConfigPersistsCodexTaskTimelineEventLimit() throws {
+    let configURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("config.json")
+    let store = ConfigStore(configURL: configURL, tokenStore: MemoryTokenStore())
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        codexTaskTimelineEventLimit: 5
+    )
+
+    try store.save(config)
+    let loaded = store.load()
+
+    XCTAssertEqual(loaded.codexTaskTimelineEventLimit, 5)
 }
 
 func testAppConfigPersistsAppearancePreference() throws {
@@ -395,13 +4512,52 @@ func testUserModeNormalizationRemovesAdminOnlyMenuItems() {
     XCTAssert(config.menuBarDisplayItems == [.totalCost])
 }
 
+func testAppConfigCapabilityPolicyRemovesUnavailableMenuBarItems() {
+    var userConfig = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        menuBarDisplayItems: [.totalCost, .realtimeConcurrency, .normalAccounts, .rpm],
+        adminMonitoredUserID: 42
+    )
+    userConfig.applyCapabilityPolicy(CapabilityPolicy(isAdminAccount: false))
+
+    XCTAssertEqual(userConfig.monitorMode, .user)
+    XCTAssertNil(userConfig.adminMonitoredUserID)
+    XCTAssertEqual(userConfig.menuBarDisplayItems, [.totalCost, .rpm])
+
+    var adminConfig = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        menuBarDisplayItems: [.totalCost, .rpm, .realtimeConcurrency, .normalAccounts],
+        adminMonitoredUserID: 42
+    )
+    adminConfig.applyCapabilityPolicy(CapabilityPolicy(isAdminAccount: true))
+
+    XCTAssertEqual(adminConfig.monitorMode, .admin)
+    XCTAssertEqual(adminConfig.adminMonitoredUserID, 42)
+    XCTAssertEqual(adminConfig.menuBarDisplayItems, [.totalCost, .realtimeConcurrency, .normalAccounts])
+}
+
+func testAppConfigCapabilityPolicyDeduplicatesWhileCleaningUnavailableItems() {
+    var config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        menuBarDisplayItems: [.rpm, .totalCost, .realtimeConcurrency, .rpm, .normalAccounts, .realtimeConcurrency, .totalCost],
+        adminMonitoredUserID: 42
+    )
+
+    config.applyCapabilityPolicy(CapabilityPolicy(isAdminAccount: true))
+
+    XCTAssertEqual(config.menuBarDisplayItems, [.totalCost, .realtimeConcurrency, .normalAccounts])
+}
+
 func testAppConfigSupportsAdminModeAndSelectedUser() throws {
     let data = """
     {
       "baseURL": "http://127.0.0.1:8080",
       "monitorMode": "admin",
       "adminMonitoredUserID": 42,
-      "menuBarDisplayItems": ["totalCost", "realtimeConcurrency"]
+      "menuBarDisplayItems": ["totalCost", "realtimeConcurrency", "normalAccounts"]
     }
     """.data(using: .utf8)!
 
@@ -409,24 +4565,51 @@ func testAppConfigSupportsAdminModeAndSelectedUser() throws {
 
     XCTAssert(config.monitorMode == .admin)
     XCTAssert(config.adminMonitoredUserID == 42)
-    XCTAssert(config.menuBarDisplayItems == [.totalCost, .realtimeConcurrency])
+    XCTAssert(config.menuBarDisplayItems == [.totalCost, .realtimeConcurrency, .normalAccounts])
 }
 
-func testMenuBarDisplayItemsExposeAdminOnlyConcurrencySeparately() {
-    XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.realtimeConcurrency) == false)
-    XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.realtimeConcurrency) == false)
-    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.realtimeConcurrency) == true)
+func testMenuBarDisplayItemsExposeAdminRealtimeConcurrencyItem() {
+    XCTAssertEqual(MenuBarDisplayItem(rawValue: "realtimeConcurrency"), .realtimeConcurrency)
     XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.normalAccounts) == false)
+    XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.realtimeConcurrency) == false)
     XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.normalAccounts) == false)
+    XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.realtimeConcurrency) == false)
     XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.normalAccounts) == true)
+    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.realtimeConcurrency) == true)
     XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.rpm) == false)
+    XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.codexTasks) == true)
+    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.codexTasks) == true)
+    XCTAssertEqual(MenuBarDisplayItem.codexTasks.displayName, "Tasks")
+    XCTAssertEqual(MenuBarDisplayItem.realtimeConcurrency.displayName, "Realtime Concurrency")
 }
 
-func testMenuBarSummaryIncludesRealtimeConcurrencyWhenAdminSelectsIt() {
+func testCapabilityPolicyFiltersUserAndAdminOnlyFeatures() {
+    let userPolicy = CapabilityPolicy(isAdminAccount: false)
+    let adminPolicy = CapabilityPolicy(isAdminAccount: true)
+
+    XCTAssertTrue(userPolicy.allows(.codexTaskMonitoring))
+    XCTAssertTrue(userPolicy.allows(.codexNodeConfiguration))
+    XCTAssertFalse(userPolicy.allows(.adminNormalAccounts))
+    XCTAssertFalse(userPolicy.allows(.adminRealtimeConcurrency))
+    XCTAssertFalse(userPolicy.allows(.adminSelectedUserMonitoring))
+    XCTAssertFalse(userPolicy.visibleMenuBarDisplayItems.contains(.normalAccounts))
+    XCTAssertFalse(userPolicy.visibleMenuBarDisplayItems.contains(.realtimeConcurrency))
+    XCTAssertTrue(userPolicy.visibleMenuBarDisplayItems.contains(.rpm))
+
+    XCTAssertTrue(adminPolicy.allows(.adminNormalAccounts))
+    XCTAssertTrue(adminPolicy.allows(.adminRealtimeConcurrency))
+    XCTAssertTrue(adminPolicy.allows(.adminSelectedUserMonitoring))
+    XCTAssertTrue(adminPolicy.visibleMenuBarDisplayItems.contains(.normalAccounts))
+    XCTAssertTrue(adminPolicy.visibleMenuBarDisplayItems.contains(.realtimeConcurrency))
+    XCTAssertFalse(adminPolicy.visibleMenuBarDisplayItems.contains(.rpm))
+}
+
+func testMenuBarPresentationIncludesAdminConcurrencyAndNormalAccountsWhenSelected() {
     let config = AppConfig(
         baseURL: "http://127.0.0.1:8080",
         monitorMode: .admin,
-        menuBarDisplayItems: [.realtimeConcurrency]
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.realtimeConcurrency, .normalAccounts]
     )
     let snapshot = MonitorSnapshot(
         mode: .admin,
@@ -434,42 +4617,29 @@ func testMenuBarSummaryIncludesRealtimeConcurrencyWhenAdminSelectsIt() {
         stats: nil,
         realtime: nil,
         realtimeConcurrency: UserRealtimeConcurrency(
-            userID: 42,
+            userID: 2,
             userEmail: "target@example.com",
             username: "target",
-            currentInUse: 3,
+            currentInUse: 12,
             maxCapacity: 100,
-            loadPercentage: 3,
+            loadPercentage: 0.01,
             waitingInQueue: 0
         ),
+        adminNormalAccountCount: 12,
         accountHealth: nil,
         subscriptionSummary: nil,
         lastUpdatedAt: nil,
         message: nil
     )
 
-    XCTAssert(snapshot.menuBarSummary(config: config) == "3 CC")
-}
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-func testMenuBarSummaryIncludesNormalAccountsWhenAdminSelectsIt() {
-    let config = AppConfig(
-        baseURL: "http://127.0.0.1:8080",
-        monitorMode: .admin,
-        menuBarDisplayItems: [.normalAccounts]
-    )
-    let snapshot = MonitorSnapshot(
-        mode: .admin,
-        connected: true,
-        stats: nil,
-        realtime: nil,
-        adminNormalAccountCount: 4,
-        accountHealth: nil,
-        subscriptionSummary: nil,
-        lastUpdatedAt: nil,
-        message: nil
-    )
-
-    XCTAssert(snapshot.menuBarSummary(config: config) == "4 normal")
+    XCTAssertEqual(presentation.topRow, "12C | 12N")
+    XCTAssertEqual(presentation.bottomRow, "Conc | Acct")
+    XCTAssertEqual(presentation.cells, [
+        MenuBarStatusCell(value: "12C", label: "Conc", width: 36),
+        MenuBarStatusCell(value: "12N", label: "Acct", width: 36),
+    ])
 }
 
 func testAppConfigClearsAuthTokens() {
@@ -939,6 +5109,190 @@ func testSub2APIClientFetchesNormalAccountCountFromAccountFilterTotal() async th
     ])
 }
 
+func testNormalAccountCompositionSummarizesTypesPlatformsAndPlans() throws {
+    let accounts = [
+        AccountSummary(
+            id: 1,
+            name: "openai-pro",
+            platform: "openai",
+            type: "oauth",
+            status: "active",
+            schedulable: true,
+            credentials: ["plan_type": "pro"],
+            quotaLimit: nil,
+            quotaUsed: nil,
+            quotaDailyLimit: nil,
+            quotaDailyUsed: nil,
+            quotaWeeklyLimit: nil,
+            quotaWeeklyUsed: nil,
+            errorMessage: "",
+            rateLimitResetAt: nil
+        ),
+        AccountSummary(
+            id: 2,
+            name: "openai-plus",
+            platform: "openai",
+            type: "oauth",
+            status: "active",
+            schedulable: true,
+            credentials: ["plan_type": "plus"],
+            quotaLimit: nil,
+            quotaUsed: nil,
+            quotaDailyLimit: nil,
+            quotaDailyUsed: nil,
+            quotaWeeklyLimit: nil,
+            quotaWeeklyUsed: nil,
+            errorMessage: "",
+            rateLimitResetAt: nil
+        ),
+        AccountSummary(
+            id: 3,
+            name: "gemini-pro",
+            platform: "gemini",
+            type: "oauth",
+            status: "active",
+            schedulable: true,
+            credentials: ["oauth_type": "google_one", "tier_id": "google_ai_pro"],
+            quotaLimit: nil,
+            quotaUsed: nil,
+            quotaDailyLimit: nil,
+            quotaDailyUsed: nil,
+            quotaWeeklyLimit: nil,
+            quotaWeeklyUsed: nil,
+            errorMessage: "",
+            rateLimitResetAt: nil
+        ),
+        AccountSummary(
+            id: 4,
+            name: "api",
+            platform: "openai",
+            type: "apikey",
+            status: "active",
+            schedulable: true,
+            credentials: [:],
+            quotaLimit: nil,
+            quotaUsed: nil,
+            quotaDailyLimit: nil,
+            quotaDailyUsed: nil,
+            quotaWeeklyLimit: nil,
+            quotaWeeklyUsed: nil,
+            errorMessage: "",
+            rateLimitResetAt: nil
+        ),
+        AccountSummary(
+            id: 5,
+            name: "team",
+            platform: "antigravity",
+            type: "oauth",
+            status: "active",
+            schedulable: true,
+            credentials: ["plan_type": "team"],
+            quotaLimit: nil,
+            quotaUsed: nil,
+            quotaDailyLimit: nil,
+            quotaDailyUsed: nil,
+            quotaWeeklyLimit: nil,
+            quotaWeeklyUsed: nil,
+            errorMessage: "",
+            rateLimitResetAt: nil
+        ),
+    ]
+
+    let composition = NormalAccountComposition(total: 5, accounts: accounts)
+
+    XCTAssertEqual(composition.typeLine(language: .zhHans), "API 1 · OAuth 4")
+    XCTAssertEqual(composition.detailLine(language: .zhHans), "Pro 2 · Plus 1 · Team 1")
+    XCTAssertEqual(composition.detailLine(language: .en), "Pro 2 · Plus 1 · Team 1")
+    XCTAssertEqual(composition.compactLine(language: .zhHans), "API 1 · OAuth 4 · Pro 2 · Plus 1 · Team 1")
+    XCTAssertEqual(composition.compactLine(language: .en), "API 1 · OAuth 4 · Pro 2 · Plus 1 · Team 1")
+}
+
+func testNormalAccountCompositionCompactLineUsesPlatformsWhenPlansAreUnavailable() throws {
+    let composition = NormalAccountComposition(
+        total: 2,
+        typeCounts: ["API": 1, "OAuth": 1],
+        platformCounts: ["OpenAI": 1, "Gemini": 1],
+        planCounts: [:]
+    )
+
+    XCTAssertEqual(composition.compactLine(language: .zhHans), "API 1 · OAuth 1 · OpenAI 1 · Gemini 1")
+}
+
+func testSub2APIClientFetchesNormalAccountCompositionFromFlatAccountList() async throws {
+    StubURLProtocol.responses = [
+        "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true": Data("""
+        {
+          "items": [
+            {
+              "id": 41,
+              "name": "openai-pro",
+              "platform": "openai",
+              "type": "oauth",
+              "credentials": {
+                "email": "pro@example.com",
+                "plan_type": "pro",
+                "model_mapping": {
+                  "gpt-5.5": "gpt-5.5"
+                }
+              },
+              "credentials_status": {
+                "has_access_token": true
+              },
+              "status": "active",
+              "schedulable": true,
+              "error_message": "",
+              "current_concurrency": 0
+            },
+            {
+              "id": 42,
+              "name": "openai-api",
+              "platform": "openai",
+              "type": "apikey",
+              "credentials": {},
+              "status": "active",
+              "schedulable": true,
+              "error_message": "",
+              "current_concurrency": 0
+            },
+            {
+              "id": 43,
+              "name": "gemini-pro",
+              "platform": "gemini",
+              "type": "oauth",
+              "credentials": {
+                "oauth_type": "google_one",
+                "tier_id": "google_ai_pro"
+              },
+              "status": "active",
+              "schedulable": true,
+              "error_message": "",
+              "current_concurrency": 0
+            }
+          ],
+          "total": 3,
+          "page": 1,
+          "page_size": 1000,
+          "pages": 1
+        }
+        """.utf8),
+    ]
+    StubURLProtocol.requestedPaths = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+
+    let composition = try await client.adminNormalAccountComposition()
+
+    XCTAssertEqual(composition.total, 3)
+    XCTAssertEqual(composition.typeLine(language: .zhHans), "API 1 · OAuth 2")
+    XCTAssertEqual(composition.detailLine(language: .zhHans), "Pro 2")
+    XCTAssertEqual(composition.compactLine(language: .zhHans), "API 1 · OAuth 2 · Pro 2")
+    XCTAssertEqual(StubURLProtocol.requestedPaths, [
+        "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true",
+    ])
+}
+
 func testSub2APIClientRequiresNormalAccountCountTotal() async throws {
     StubURLProtocol.responses = [
         "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true": Data("""
@@ -962,6 +5316,46 @@ func testSub2APIClientRequiresNormalAccountCountTotal() async throws {
     } catch {
         XCTAssert(StubURLProtocol.requestedPaths == [
             "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true",
+        ])
+    }
+}
+
+func testSub2APIClientRequiresNormalAccountCompositionTotal() async throws {
+    StubURLProtocol.responses = [
+        "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true": Data("""
+        {
+          "items": [
+            {
+              "id": 41,
+              "name": "openai-pro",
+              "platform": "openai",
+              "type": "oauth",
+              "credentials": {
+                "plan_type": "pro"
+              },
+              "status": "active",
+              "schedulable": true,
+              "error_message": ""
+            }
+          ],
+          "page": 1,
+          "page_size": 1000,
+          "pages": 1
+        }
+        """.utf8),
+    ]
+    StubURLProtocol.requestedPaths = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+
+    do {
+        _ = try await client.adminNormalAccountComposition()
+        XCTFail("Missing total must not fall back to item count.")
+    } catch {
+        XCTAssertEqual(StubURLProtocol.requestedPaths, [
+            "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true",
         ])
     }
 }
@@ -998,14 +5392,25 @@ func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async t
             {
               "id": 133605,
               "user_id": 2,
+              "api_key_id": 5,
+              "account_id": 9,
+              "request_id": "req-admin-133605",
               "model": "gpt-5.5",
               "service_tier": "priority",
               "reasoning_effort": "xhigh",
+              "inbound_endpoint": "/openai/v1/responses",
+              "upstream_endpoint": "/v1/responses",
               "input_tokens": 430,
               "output_tokens": 1172,
               "cache_creation_tokens": 0,
               "cache_read_tokens": 164224,
               "actual_cost": 0.238844,
+              "request_type": "stream",
+              "stream": true,
+              "duration_ms": 1200,
+              "first_token_ms": 250,
+              "user_agent": "codex_cli_rs/0.125.0",
+              "billing_mode": "token",
               "created_at": "2026-05-21T15:37:40.960689+08:00"
             }
           ],
@@ -1065,6 +5470,11 @@ func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async t
     XCTAssert(stats.totalCacheReadTokens == 469_289_472)
     XCTAssert(latest.items.first?.model == "gpt-5.5")
     XCTAssert(latest.items.first?.reasoningEffort == "xhigh")
+    XCTAssert(latest.items.first?.requestID == "req-admin-133605")
+    XCTAssert(latest.items.first?.userAgent == "codex_cli_rs/0.125.0")
+    XCTAssert(latest.items.first?.inboundEndpoint == "/openai/v1/responses")
+    XCTAssert(latest.items.first?.upstreamEndpoint == "/v1/responses")
+    XCTAssert(latest.items.first?.stream == true)
     XCTAssert(trend.trend.first?.requests == 3955)
     XCTAssert(models.models.first?.model == "gpt-5.5")
     XCTAssert(StubURLProtocol.requestedPaths == [
@@ -1205,9 +5615,15 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
     let json = """
     {
       "id": 133605,
+      "user_id": 2,
+      "api_key_id": 5,
+      "account_id": 9,
+      "request_id": "req-user-133605",
       "model": "gpt-5.5",
       "service_tier": "priority",
       "reasoning_effort": "xhigh",
+      "inbound_endpoint": "/openai/v1/responses",
+      "upstream_endpoint": "/v1/responses",
       "input_tokens": 946,
       "output_tokens": 429,
       "cache_creation_tokens": 12000,
@@ -1216,7 +5632,12 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
       "output_cost": 0.02574,
       "total_cost": 0.0352,
       "actual_cost": 0.124712,
+      "request_type": "stream",
+      "stream": true,
       "duration_ms": 1456,
+      "first_token_ms": 231,
+      "user_agent": "codex_cli_rs/0.125.0",
+      "billing_mode": "token",
       "created_at": "2026-04-29T19:15:11.118937+08:00"
     }
     """.data(using: .utf8)!
@@ -1224,13 +5645,24 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
     let usage = try JSONDecoder.sub2api.decode(UsageLog.self, from: json)
 
     XCTAssert(usage.model == "gpt-5.5")
+    XCTAssert(usage.userID == 2)
+    XCTAssert(usage.apiKeyID == 5)
+    XCTAssert(usage.accountID == 9)
+    XCTAssert(usage.requestID == "req-user-133605")
     XCTAssert(usage.reasoningEffort == "xhigh")
     XCTAssert(usage.isFastEnabled == true)
+    XCTAssert(usage.inboundEndpoint == "/openai/v1/responses")
+    XCTAssert(usage.upstreamEndpoint == "/v1/responses")
     XCTAssert(usage.contextLengthTokens == 88_378)
     XCTAssertEqual(usage.inputPricePerMillion ?? 0, 10, accuracy: 0.000001)
     XCTAssertEqual(usage.outputPricePerMillion ?? 0, 60, accuracy: 0.000001)
     XCTAssertEqual(usage.totalCost, 0.0352, accuracy: 0.000001)
+    XCTAssert(usage.requestType == "stream")
+    XCTAssert(usage.stream == true)
     XCTAssertEqual(usage.durationMs, 1456, accuracy: 0.000001)
+    XCTAssertEqual(usage.firstTokenMs ?? 0, 231, accuracy: 0.000001)
+    XCTAssert(usage.userAgent == "codex_cli_rs/0.125.0")
+    XCTAssert(usage.billingMode == "token")
 }
 
 func testUsageLogRecognizesUpdatedFastModeServiceTierAlias() throws {
@@ -1439,7 +5871,7 @@ func testMonitorSnapshotLabelsNearLimitSeparatelyFromConnectionFailure() {
     XCTAssert(disconnected.statusLabel == "Disconnected")
 }
 
-func testMonitorSnapshotBuildsMenuBarSummaryFromDashboardStats() {
+func testMonitorSnapshotBuildsMenuBarPresentationFromDashboardStats() {
     let latestUsage = UsageLog(
         id: 133605,
         model: "gpt-5.5",
@@ -1472,11 +5904,32 @@ func testMonitorSnapshotBuildsMenuBarSummaryFromDashboardStats() {
         menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice]
     )
 
-    XCTAssert(snapshot.menuBarSummary(config: defaultConfig) == "$12.35 · gpt-5.5 · xhigh · 88.4K ctx · Fast · 3 RPM")
-    XCTAssert(snapshot.menuBarSummary(config: customConfig) == "2048 req · in $10.0000/1M · out $60.0000/1M")
+    let defaultPresentation = snapshot.menuBarStatusPresentation(config: defaultConfig)
+    let customPresentation = snapshot.menuBarStatusPresentation(config: customConfig)
+
+    XCTAssertEqual(defaultPresentation.topRow, "")
+    XCTAssertEqual(defaultPresentation.bottomRow, "")
+    XCTAssertEqual(defaultPresentation.hidesHealthyStatusImage, false)
+    XCTAssertEqual(customPresentation.topRow, "")
+    XCTAssertEqual(customPresentation.bottomRow, "")
+    XCTAssertEqual(customPresentation.hidesHealthyStatusImage, false)
+
+    let visibleDefaultConfig = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true
+    )
+    let visibleCustomConfig = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice]
+    )
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).topRow, "$12.35 | GPT-5.5 | xh | 88.4Kc | T | 3rpm")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).bottomRow, "Cost | Model | Eff | Ctx | Fast | RPM")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).topRow, "2048r | i$10/M | o$60/M")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).bottomRow, "Req | In | Out")
 }
 
-func testMonitorSnapshotOmitsFastTextWhenFastIsNotEnabled() {
+func testMonitorSnapshotShowsFalseFastTextWhenFastIsEnabledButLatestUsageIsNotFast() {
     let latestUsage = UsageLog(
         id: 133605,
         model: "gpt-5.5",
@@ -1505,7 +5958,11 @@ func testMonitorSnapshotOmitsFastTextWhenFastIsNotEnabled() {
     )
     let config = AppConfig(baseURL: "http://127.0.0.1:8080")
 
-    XCTAssert(snapshot.menuBarSummary(config: config) == "$12.35 · gpt-5.5 · xhigh · 88.4K ctx · 3 RPM")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "")
+
+    let visibleConfig = AppConfig(baseURL: "http://127.0.0.1:8080", showsMenuBarText: true)
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).topRow, "$12.35 | GPT-5.5 | xh | 88.4Kc | F | 3rpm")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).bottomRow, "Cost | Model | Eff | Ctx | Fast | RPM")
 }
 
 func testMonitorSnapshotMenuBarPresentationHidesHealthyImageWhenTextIsShown() {
@@ -1529,11 +5986,36 @@ func testMonitorSnapshotMenuBarPresentationHidesHealthyImageWhenTextIsShown() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssert(presentation.title == " gpt-5.5")
+    XCTAssert(presentation.title == " GPT-5.5")
+    XCTAssertEqual(presentation.topRow, "GPT-5.5")
+    XCTAssertEqual(presentation.bottomRow, "Model")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
 }
 
-func testMonitorSnapshotMenuBarPresentationTruncatesLongStatusTextOnly() {
+func testMonitorSnapshotMenuBarModelPresentationCapitalizesGPTWithoutChangingSnapshotModel() {
+    let latestUsage = UsageLog(id: 133605, model: "gpt-5.5")
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model]
+    )
+
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "GPT-5.5")
+    XCTAssertEqual(snapshot.latestUsage?.model, "gpt-5.5")
+}
+
+func testMonitorSnapshotMenuBarPresentationUsesValueAndLabelRowsForSelectedItems() {
     let latestUsage = UsageLog(
         id: 133605,
         model: "gpt-5.5",
@@ -1562,18 +6044,18 @@ func testMonitorSnapshotMenuBarPresentationTruncatesLongStatusTextOnly() {
         baseURL: "http://127.0.0.1:8080",
         monitorMode: .admin,
         showsMenuBarText: true,
-        menuBarDisplayItems: [.totalCost, .totalRequests, .model, .reasoningEffort, .fast, .rpm, .realtimeConcurrency, .normalAccounts]
+        menuBarDisplayItems: [.totalCost, .totalRequests, .model, .reasoningEffort, .fast, .rpm, .normalAccounts]
     )
 
-    let fullSummary = snapshot.menuBarSummary(config: config)
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(fullSummary, "$0.22 · 239 req · gpt-5.5 · xhigh · Fast · 1 CC · 4 normal")
-    XCTAssertEqual(presentation.title, " $0.22·239r·gpt-5.5·xh·F·1CC·4N")
+    XCTAssertEqual(presentation.title, " $0.22 | 239r | GPT-5.5 | xh | T | 4N")
+    XCTAssertEqual(presentation.topRow, "$0.22 | 239r | GPT-5.5 | xh | T | 4N")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Req | Model | Eff | Fast | Acct")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
 }
 
-func testMonitorSnapshotCompactMenuBarSummaryKeepsAllSelectedItemsWhenPossible() {
+func testMonitorSnapshotMenuBarPresentationKeepsAllSelectedItemsInRows() {
     let latestUsage = UsageLog(
         id: 133605,
         model: "gpt-5.5",
@@ -1602,18 +6084,119 @@ func testMonitorSnapshotCompactMenuBarSummaryKeepsAllSelectedItemsWhenPossible()
         baseURL: "http://127.0.0.1:8080",
         monitorMode: .admin,
         showsMenuBarText: true,
-        menuBarDisplayItems: [.totalCost, .model, .reasoningEffort, .fast, .realtimeConcurrency, .normalAccounts]
+        menuBarDisplayItems: [.totalCost, .model, .reasoningEffort, .fast, .normalAccounts]
     )
 
-    let fullSummary = snapshot.menuBarSummary(config: config)
-    let compactSummary = snapshot.compactMenuBarSummary(config: config, maxCharacters: 36)
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(fullSummary, "$2864.10 · gpt-5.5 · xhigh · Fast · 1 CC · 4 normal")
-    XCTAssertEqual(compactSummary, "$2.86K·gpt-5.5·xh·F·1CC·4N")
-    XCTAssert(compactSummary.count <= 36)
+    XCTAssertEqual(presentation.topRow, "$2.86K | GPT-5.5 | xh | T | 4N")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Fast | Acct")
 }
 
-func testMonitorSnapshotCompactMenuBarSummaryCompressesPricesAndRates() {
+func testMonitorSnapshotMenuBarPresentationUsesReadableCellWidthsForCommonStatusValues() {
+    let latestUsage = UsageLog(
+        id: 133605,
+        model: "gpt-5.5",
+        serviceTier: "standard",
+        reasoningEffort: nil
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: DashboardStats(),
+        menuBarUsageStats: UsagePeriodStats(totalActualCost: 597.0),
+        latestUsage: latestUsage,
+        realtime: nil,
+        adminNormalAccountCount: 1,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalCost, .model, .reasoningEffort, .fast, .normalAccounts, .codexTasks]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.cells, [
+        MenuBarStatusCell(value: "$597.00", label: "Cost", width: 58),
+        MenuBarStatusCell(value: "GPT-5.5", label: "Model", width: 56),
+        MenuBarStatusCell(value: "no", label: "Eff", width: 26),
+        MenuBarStatusCell(value: "F", label: "Fast", width: 24),
+        MenuBarStatusCell(value: "1N", label: "Acct", width: 36),
+        MenuBarStatusCell(value: "0", label: "T0R0Q0D0E0", width: 88, valueTone: .secondary),
+    ])
+}
+
+func testMonitorSnapshotMenuBarPresentationTreatsNoneReasoningEffortAsNo() {
+    let latestUsage = UsageLog(
+        id: 133606,
+        model: "gpt-5.5",
+        reasoningEffort: "none"
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.reasoningEffort]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "no")
+    XCTAssertEqual(presentation.bottomRow, "Eff")
+    XCTAssertEqual(presentation.cells, [
+        MenuBarStatusCell(value: "no", label: "Eff", width: 26)
+    ])
+}
+
+func testMonitorSnapshotMenuBarPresentationShowsDashReasoningEffortAsNo() {
+    let latestUsage = UsageLog(
+        id: 133607,
+        model: "gpt-5.5",
+        reasoningEffort: "-"
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.reasoningEffort]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "no")
+    XCTAssertEqual(presentation.bottomRow, "Eff")
+    XCTAssertEqual(presentation.cells, [
+        MenuBarStatusCell(value: "no", label: "Eff", width: 26)
+    ])
+}
+
+func testMonitorSnapshotMenuBarPresentationCompressesPricesAndRates() {
     let latestUsage = UsageLog(
         id: 133605,
         model: "gpt-5.5",
@@ -1642,21 +6225,13 @@ func testMonitorSnapshotCompactMenuBarSummaryCompressesPricesAndRates() {
         menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice, .rpm]
     )
 
-    XCTAssertEqual(snapshot.compactMenuBarSummary(config: config, maxCharacters: 36), "2048r·i$10/M·o$60/M·3rpm")
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "2048r | i$10/M | o$60/M | 3rpm")
+    XCTAssertEqual(presentation.bottomRow, "Req | In | Out | RPM")
 }
 
-func testCompactMenuBarSummaryAlwaysRespectsMaximumLength() {
-    let summary = "$0.22 · 239 req · gpt-5.5 · xhigh · Fast · 1 CC · 8 normal"
-
-    XCTAssertEqual(MonitorSnapshot.compactMenuBarSummary(summary, maxCharacters: summary.count), summary)
-
-    for limit in 1...40 {
-        let compacted = MonitorSnapshot.compactMenuBarSummary(summary, maxCharacters: limit)
-        XCTAssert(compacted.count <= limit)
-    }
-}
-
-func testMonitorSnapshotMenuBarPresentationUsesEmptyTitleWhenOnlyDisabledFastIsSelected() {
+func testMonitorSnapshotMenuBarPresentationShowsFalseWhenOnlyFastIsSelected() {
     let latestUsage = UsageLog(id: 133605, model: "gpt-5.5", serviceTier: "standard")
     let snapshot = MonitorSnapshot(
         mode: .user,
@@ -1677,8 +6252,103 @@ func testMonitorSnapshotMenuBarPresentationUsesEmptyTitleWhenOnlyDisabledFastIsS
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssert(presentation.title == "")
-    XCTAssert(presentation.hidesHealthyStatusImage == false)
+    XCTAssert(presentation.title == " F")
+    XCTAssertEqual(presentation.topRow, "F")
+    XCTAssertEqual(presentation.bottomRow, "Fast")
+    XCTAssert(presentation.hidesHealthyStatusImage == true)
+}
+
+func testMonitorSnapshotMenuBarPresentationUsesPersistentValueAndLabelRowsForEnabledItems() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: nil,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalCost, .model, .reasoningEffort, .contextLength, .fast, .rpm]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "$0.00 | No model | no | 0c | F | 0rpm")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Ctx | Fast | RPM")
+    XCTAssertEqual(presentation.cells.first { $0.label == "Model" }?.valueTone, .secondary)
+    XCTAssertFalse(presentation.topRow.contains("--"))
+    XCTAssertFalse(presentation.bottomRow.contains("--"))
+}
+
+func testMonitorSnapshotMenuBarPresentationKeepsEnabledItemsWhenDisconnected() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: false,
+        stats: nil,
+        latestUsage: nil,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: "offline"
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalCost, .model, .fast, .rpm]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+    let tooltip = snapshot.menuBarTooltip(statusText: "Disconnected", config: config)
+
+    XCTAssertEqual(presentation.topRow, "$0.00 | No model | F | 0rpm")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Fast | RPM")
+    XCTAssertEqual(
+        tooltip,
+        """
+        Sub2API Disconnected
+        $0.00 | No model | F | 0rpm
+        Cost | Model | Fast | RPM
+        """
+    )
+    XCTAssertFalse(presentation.topRow.contains("--"))
+    XCTAssertFalse(presentation.bottomRow.contains("--"))
+}
+
+func testMonitorSnapshotMenuBarTooltipUsesSamePersistentValueAndLabelRows() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: nil,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.totalCost, .model, .reasoningEffort, .contextLength, .fast, .rpm]
+    )
+
+    let tooltip = snapshot.menuBarTooltip(statusText: "OK", config: config)
+
+    XCTAssertEqual(
+        tooltip,
+        """
+        Sub2API OK
+        $0.00 | No model | no | 0c | F | 0rpm
+        Cost | Model | Eff | Ctx | Fast | RPM
+        """
+    )
+    XCTAssertFalse(tooltip.contains("--"))
 }
 
 func testMonitorSnapshotDoesNotUseTodayFallbackForLast24HourMenuBarStats() {
@@ -1693,14 +6363,16 @@ func testMonitorSnapshotDoesNotUseTodayFallbackForLast24HourMenuBarStats() {
         lastUpdatedAt: Date(timeIntervalSince1970: 0),
         message: nil
     )
-    let config = AppConfig(
+    let presentation = snapshot.menuBarStatusPresentation(config: AppConfig(
         baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
         menuBarUsageWindow: .last24Hours,
         menuBarDisplayItems: [.totalCost, .totalRequests]
-    )
+    ))
 
-    XCTAssert(!snapshot.menuBarSummary(config: config).contains("503"))
-    XCTAssert(!snapshot.menuBarSummary(config: config).contains("$12.34"))
+    XCTAssertFalse(presentation.topRow.contains("503"))
+    XCTAssertFalse(presentation.topRow.contains("$12.34"))
+    XCTAssertEqual(presentation.topRow, "$0.00 | 0")
 }
 
 func testMonitorSnapshotAllowsEmptyMenuBarItemSelection() {
@@ -1717,7 +6389,160 @@ func testMonitorSnapshotAllowsEmptyMenuBarItemSelection() {
     )
     let config = AppConfig(baseURL: "http://127.0.0.1:8080", menuBarDisplayItems: [])
 
-    XCTAssert(snapshot.menuBarSummary(config: config) == "")
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "")
+    XCTAssertEqual(presentation.bottomRow, "")
+}
+
+func testMonitorSnapshotIncludesCodexTaskPresentationWhenSelected() {
+    let activity = CodexTaskActivity(
+        nodeID: "local-node",
+        sessionID: "session-a",
+        turnID: "turn-a",
+        badge: "A1",
+        cwd: "/workspace/app",
+        model: "gpt-5",
+        status: .running,
+        phase: .prompt,
+        toolName: nil,
+        startedAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 120),
+        completedAt: nil,
+        timeline: []
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: nil,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        codexTaskActivities: [activity],
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.codexTasks]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "A1R")
+    XCTAssertEqual(presentation.bottomRow, "T1R1Q0D0E0")
+    XCTAssertEqual(presentation.cells, [
+        MenuBarStatusCell(value: "A1R", label: "T1R1Q0D0E0", width: 88),
+    ])
+}
+
+func testMonitorSnapshotCodexTaskPresentationUsesTaskBadgesAndPersistentCounts() {
+    let activities = [
+        CodexTaskActivity(
+            nodeID: "local-node",
+            sessionID: "session-a",
+            turnID: "turn-a",
+            badge: "A1",
+            cwd: "/workspace/app",
+            model: "gpt-5",
+            status: .running,
+            phase: .tooling,
+            toolName: "Bash",
+            startedAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 130),
+            completedAt: nil,
+            timeline: []
+        ),
+        CodexTaskActivity(
+            nodeID: "remote-node",
+            sessionID: "session-b",
+            turnID: "turn-b",
+            badge: "A2",
+            cwd: "/workspace/api",
+            model: "gpt-5",
+            status: .waiting,
+            phase: .prompt,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: 110),
+            updatedAt: Date(timeIntervalSince1970: 140),
+            completedAt: nil,
+            timeline: []
+        ),
+    ]
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: nil,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        codexTaskActivities: activities,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.codexTasks]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "A2Q A1R")
+    XCTAssertEqual(presentation.bottomRow, "T2R1Q1D0E0")
+    XCTAssertEqual(presentation.cells, [
+        MenuBarStatusCell(value: "A2Q A1R", label: "T2R1Q1D0E0", width: 88),
+    ])
+    XCTAssertFalse(presentation.topRow.contains("--"))
+    XCTAssertFalse(presentation.bottomRow.contains("--"))
+}
+
+func testMonitorSnapshotCodexTaskPresentationUsesWiderFixedTaskCellForManyTasks() {
+    let activities = (1...5).map { index in
+        CodexTaskActivity(
+            nodeID: "node-\(index)",
+            sessionID: "session-\(index)",
+            turnID: "turn-\(index)",
+            badge: "A\(index)",
+            cwd: nil,
+            model: "gpt-5",
+            status: index == 5 ? .running : .done,
+            phase: index == 5 ? .tooling : .completed,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: Double(100 + index)),
+            updatedAt: Date(timeIntervalSince1970: Double(200 + index)),
+            completedAt: index == 5 ? nil : Date(timeIntervalSince1970: Double(200 + index)),
+            timeline: []
+        )
+    }
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: nil,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        codexTaskActivities: activities,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.codexTasks]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "A5R A4D +3")
+    XCTAssertEqual(presentation.bottomRow, "T5R1Q0D0E0")
+    XCTAssertEqual(presentation.cells, [
+        MenuBarStatusCell(value: "A5R A4D +3", label: "T5R1Q0D0E0", width: 88),
+    ])
 }
 
 func testSub2APIClientRetriesTransientFailuresBeforeDecodingSuccess() async throws {
@@ -1823,8 +6648,10 @@ func testMonitorSnapshotRetainsLastSuccessDataWhenRefreshFails() {
     XCTAssert(stale.severity == .warning)
     XCTAssert(stale.statusLabel == "Refresh Failed")
     XCTAssert(stale.lastUpdatedAt == Date(timeIntervalSince1970: 100))
-    XCTAssert(stale.menuBarSummary(config: config) == "$12.35 · gpt-5.5 · 3 RPM")
-    XCTAssert(stale.menuBarStatusPresentation(config: config).title == " $12.35·gpt-5.5·3rpm")
+    let presentation = stale.menuBarStatusPresentation(config: config)
+    XCTAssert(presentation.title == " $12.35 | GPT-5.5 | 3rpm")
+    XCTAssert(presentation.topRow == "$12.35 | GPT-5.5 | 3rpm")
+    XCTAssert(presentation.bottomRow == "Cost | Model | RPM")
 }
 
 func testLoginFormStateRequiresURLAccountAndPassword() {

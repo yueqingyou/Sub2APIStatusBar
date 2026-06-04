@@ -18,11 +18,26 @@
 ## 界面约束
 
 - 菜单栏文字必须设置长度上限，过长时在状态栏中截断，并把完整内容保留在 tooltip 或详情面板中，避免遮挡系统菜单栏。
-- 菜单栏状态项宽度必须保持系统自适应；不得为了稳定弹窗锚点长期固定宽度，避免短内容左右留下空白。
+- 菜单栏状态项采用固定宽度的上下双栏布局；所有已启用栏目必须常驻显示，统一使用同一种分割符，避免内容变化造成宽度抖动。
+- 菜单栏不得使用 `--` 作为常规占位；普通用户不可用功能必须在设置入口屏蔽，不得让用户开启后再显示不可用占位。
 - 发布前需要在本机临时安装目录运行新构建的 App 做真实验证，不得覆盖或替换正式已安装版本；用户正式升级路径仍应通过软件内“检查更新”完成。
+
+## Codex 任务监控约束
+
+- 本项目只监控 Codex 任务状态，不作为 Codex 客户端，不控制 Codex，不使用 Codex App Server。
+- 本地和远端 Codex 节点的任务身份必须通过 Codex hooks 精确到 `session_id` / `turn_id`；不得用网关并发、请求时间或 User-Agent 模糊推断具体 Codex 会话或 turn。
+- Codex hooks 配置必须使用用户级 Codex 配置目录，并优先读取节点环境中的 `CODEX_HOME`；未设置时才使用该节点用户 home 下的 `.codex`。
+- 本机与远端节点统一通过 App 内置 `127.0.0.1:<local_port>` HTTP receiver 接收 hook events；远端节点必须通过 SSH remote forwarding 访问远端回环端口后转回本机 receiver，不暴露公网 hook 入口。
+- App 允许在用户确认后通过 SSH 对远端节点安装 hook sender、写入节点配置、备份并修改用户级 Codex `config.toml`、启动和验证 SSH remote forwarding。
+- 修改用户级 Codex `config.toml` 时必须原位保留 Codex 自身生成的 `[hooks.state]` 和 `trusted_hash` 状态；不得删除、重排或伪造 trust 状态，只有本项目管理的 hook handler 可以被替换。
+- Codex 节点 ID 必须使用文件名安全的 ASCII 字符，并且节点配置文件必须按 `codex-hook-node-<node_id>.json` 独立落盘；不得让多个节点共享自动生成的固定 `codex-hook-node.json` 配置路径。
+- Codex hook sender 只能发送监控事件，不得输出会改变 Codex 行为的控制 JSON，不得执行 Codex 控制动作。
+- 网关数据只能补充请求、费用、Token、User-Agent、错误和网关负载等信息，不得冒充 Codex `session_id` / `turn_id` 精确状态来源。
+- 若旧状态栏并发监控与 hooks 精确任务状态重复，应删除或迁移旧状态栏项，不保留并行实现。
 
 ## 本机验证约束
 
+- 本仓库 SwiftPM 命令必须串行执行；不要并行运行多个 `swift test`、`swift build` 或 SwiftPM 相关命令，避免 `.build/.../build.db` 锁冲突。
 - 本环境中 SwiftPM、Clang 模块缓存或发布脚本若因沙箱用户缓存不可写失败，且已有同类失败证据时，不要在沙箱中反复重跑同类 `swift test`、`swift build`、打包或发布校验命令；应直接请求真实本机上下文执行，并在交付中说明这是权限环境问题。
 
 ## 发布与凭据约束

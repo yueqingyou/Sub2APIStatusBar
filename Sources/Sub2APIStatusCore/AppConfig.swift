@@ -182,6 +182,7 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
     case rpm
     case realtimeConcurrency
     case normalAccounts
+    case codexTasks
 
     public var id: String { rawValue }
 
@@ -209,6 +210,8 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
             return "Realtime Concurrency"
         case .normalAccounts:
             return "Normal Accounts"
+        case .codexTasks:
+            return "Tasks"
         }
     }
 
@@ -231,11 +234,11 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
     ]
 
     public static var userVisibleCases: [MenuBarDisplayItem] {
-        allCases.filter { !$0.isAdminOnly }
+        CapabilityPolicy(isAdminAccount: false).visibleMenuBarDisplayItems
     }
 
     public static var adminVisibleCases: [MenuBarDisplayItem] {
-        allCases.filter { $0 != .rpm }
+        CapabilityPolicy(isAdminAccount: true).visibleMenuBarDisplayItems
     }
 
     public static func fromEnvironment(_ value: String?) -> [MenuBarDisplayItem] {
@@ -252,6 +255,9 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
 }
 
 public struct AppConfig: Codable, Equatable, Sendable {
+    public static let defaultCodexTaskTimelineEventLimit = 3
+    public static let codexTaskTimelineEventLimitRange = 1...20
+
     public var baseURL: String
     public var authToken: String
     public var refreshToken: String
@@ -263,6 +269,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var launchAtLogin: Bool
     public var menuBarUsageWindow: MenuBarUsageWindow
     public var menuBarDisplayItems: [MenuBarDisplayItem]
+    public var codexTaskTimelineEventLimit: Int
     public var adminMonitoredUserID: Int64?
 
     public init(
@@ -277,6 +284,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         launchAtLogin: Bool = false,
         menuBarUsageWindow: MenuBarUsageWindow = .last24Hours,
         menuBarDisplayItems: [MenuBarDisplayItem] = MenuBarDisplayItem.defaultSelection,
+        codexTaskTimelineEventLimit: Int = AppConfig.defaultCodexTaskTimelineEventLimit,
         adminMonitoredUserID: Int64? = nil
     ) {
         self.baseURL = baseURL
@@ -290,6 +298,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.launchAtLogin = launchAtLogin
         self.menuBarUsageWindow = menuBarUsageWindow
         self.menuBarDisplayItems = menuBarDisplayItems
+        self.codexTaskTimelineEventLimit = codexTaskTimelineEventLimit
         self.adminMonitoredUserID = adminMonitoredUserID
         normalize()
     }
@@ -306,6 +315,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case launchAtLogin
         case menuBarUsageWindow
         case menuBarDisplayItems
+        case codexTaskTimelineEventLimit
         case adminMonitoredUserID
     }
 
@@ -315,6 +325,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         authToken = try container.decodeIfPresent(String.self, forKey: .authToken) ?? ""
         refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? ""
         refreshIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .refreshIntervalSeconds) ?? 15
+        codexTaskTimelineEventLimit = try container.decodeIfPresent(Int.self, forKey: .codexTaskTimelineEventLimit)
+            ?? Self.defaultCodexTaskTimelineEventLimit
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .zhHans
         appearance = try container.decodeIfPresent(AppAppearance.self, forKey: .appearance) ?? .system
         monitorMode = try container.decodeIfPresent(MonitorMode.self, forKey: .monitorMode) ?? .user
@@ -341,6 +353,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         try container.encode(launchAtLogin, forKey: .launchAtLogin)
         try container.encode(menuBarUsageWindow, forKey: .menuBarUsageWindow)
         try container.encode(menuBarDisplayItems.map(\.rawValue), forKey: .menuBarDisplayItems)
+        try container.encode(codexTaskTimelineEventLimit, forKey: .codexTaskTimelineEventLimit)
         try container.encodeIfPresent(adminMonitoredUserID, forKey: .adminMonitoredUserID)
     }
 
@@ -373,6 +386,10 @@ public struct AppConfig: Codable, Equatable, Sendable {
         authToken = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshToken = refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshIntervalSeconds = min(max(refreshIntervalSeconds, 1), 300)
+        codexTaskTimelineEventLimit = min(
+            max(codexTaskTimelineEventLimit, Self.codexTaskTimelineEventLimitRange.lowerBound),
+            Self.codexTaskTimelineEventLimitRange.upperBound
+        )
         if language == .auto {
             language = .zhHans
         }
@@ -382,6 +399,16 @@ public struct AppConfig: Codable, Equatable, Sendable {
         }
         var seen = Set<MenuBarDisplayItem>()
         menuBarDisplayItems = menuBarDisplayItems.filter { seen.insert($0).inserted }
+    }
+
+    public mutating func applyCapabilityPolicy(_ policy: CapabilityPolicy) {
+        if !policy.allows(.adminSelectedUserMonitoring) {
+            monitorMode = .user
+            adminMonitoredUserID = nil
+        }
+        let visibleItems = Set(policy.visibleMenuBarDisplayItems)
+        menuBarDisplayItems.removeAll { !visibleItems.contains($0) }
+        normalize()
     }
 
     public mutating func clearAuthTokens() {

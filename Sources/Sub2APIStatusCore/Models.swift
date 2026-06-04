@@ -781,9 +781,15 @@ public extension DashboardStats {
 
 public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
     public let id: Int64
+    public let userID: Int64?
+    public let apiKeyID: Int64?
+    public let accountID: Int64?
+    public let requestID: String?
     public let model: String
     public let serviceTier: String?
     public let reasoningEffort: String?
+    public let inboundEndpoint: String?
+    public let upstreamEndpoint: String?
     public let inputTokens: Int64
     public let outputTokens: Int64
     public let cacheCreationTokens: Int64
@@ -792,14 +798,25 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
     public let outputCost: Double
     public let totalCost: Double
     public let actualCost: Double
+    public let requestType: String?
+    public let stream: Bool?
     public let durationMs: Double
+    public let firstTokenMs: Double?
+    public let userAgent: String?
+    public let billingMode: String?
     public let createdAt: Date?
 
     public init(
         id: Int64 = 0,
+        userID: Int64? = nil,
+        apiKeyID: Int64? = nil,
+        accountID: Int64? = nil,
+        requestID: String? = nil,
         model: String = "",
         serviceTier: String? = nil,
         reasoningEffort: String? = nil,
+        inboundEndpoint: String? = nil,
+        upstreamEndpoint: String? = nil,
         inputTokens: Int64 = 0,
         outputTokens: Int64 = 0,
         cacheCreationTokens: Int64 = 0,
@@ -808,13 +825,24 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         outputCost: Double = 0,
         totalCost: Double = 0,
         actualCost: Double = 0,
+        requestType: String? = nil,
+        stream: Bool? = nil,
         durationMs: Double = 0,
+        firstTokenMs: Double? = nil,
+        userAgent: String? = nil,
+        billingMode: String? = nil,
         createdAt: Date? = nil
     ) {
         self.id = id
+        self.userID = userID
+        self.apiKeyID = apiKeyID
+        self.accountID = accountID
+        self.requestID = requestID
         self.model = model
         self.serviceTier = serviceTier
         self.reasoningEffort = reasoningEffort
+        self.inboundEndpoint = inboundEndpoint
+        self.upstreamEndpoint = upstreamEndpoint
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.cacheCreationTokens = cacheCreationTokens
@@ -823,15 +851,26 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         self.outputCost = outputCost
         self.totalCost = totalCost
         self.actualCost = actualCost
+        self.requestType = requestType
+        self.stream = stream
         self.durationMs = durationMs
+        self.firstTokenMs = firstTokenMs
+        self.userAgent = userAgent
+        self.billingMode = billingMode
         self.createdAt = createdAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case userID = "userId"
+        case apiKeyID = "apiKeyId"
+        case accountID = "accountId"
+        case requestID = "requestId"
         case model
         case serviceTier
         case reasoningEffort
+        case inboundEndpoint
+        case upstreamEndpoint
         case inputTokens
         case outputTokens
         case cacheCreationTokens
@@ -840,16 +879,27 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         case outputCost
         case totalCost
         case actualCost
+        case requestType
+        case stream
         case durationMs
+        case firstTokenMs
+        case userAgent
+        case billingMode
         case createdAt
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(Int64.self, forKey: .id) ?? 0
+        userID = try container.decodeIfPresent(Int64.self, forKey: .userID)
+        apiKeyID = try container.decodeIfPresent(Int64.self, forKey: .apiKeyID)
+        accountID = try container.decodeIfPresent(Int64.self, forKey: .accountID)
+        requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
         model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
         serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
         reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+        inboundEndpoint = try container.decodeIfPresent(String.self, forKey: .inboundEndpoint)
+        upstreamEndpoint = try container.decodeIfPresent(String.self, forKey: .upstreamEndpoint)
         inputTokens = try container.decodeIfPresent(Int64.self, forKey: .inputTokens) ?? 0
         outputTokens = try container.decodeIfPresent(Int64.self, forKey: .outputTokens) ?? 0
         cacheCreationTokens = try container.decodeIfPresent(Int64.self, forKey: .cacheCreationTokens) ?? 0
@@ -858,7 +908,12 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         outputCost = try container.decodeIfPresent(Double.self, forKey: .outputCost) ?? 0
         totalCost = try container.decodeIfPresent(Double.self, forKey: .totalCost) ?? inputCost + outputCost
         actualCost = try container.decodeIfPresent(Double.self, forKey: .actualCost) ?? 0
+        requestType = try container.decodeIfPresent(String.self, forKey: .requestType)
+        stream = try container.decodeIfPresent(Bool.self, forKey: .stream)
         durationMs = try container.decodeIfPresent(Double.self, forKey: .durationMs) ?? 0
+        firstTokenMs = try container.decodeIfPresent(Double.self, forKey: .firstTokenMs)
+        userAgent = try container.decodeIfPresent(String.self, forKey: .userAgent)
+        billingMode = try container.decodeIfPresent(String.self, forKey: .billingMode)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
     }
 
@@ -919,6 +974,7 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
     public let type: String
     public let status: String
     public let schedulable: Bool
+    public let credentials: [String: String]
     public let quotaLimit: Double?
     public let quotaUsed: Double?
     public let quotaDailyLimit: Double?
@@ -935,6 +991,7 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         type: String,
         status: String,
         schedulable: Bool,
+        credentials: [String: String] = [:],
         quotaLimit: Double?,
         quotaUsed: Double?,
         quotaDailyLimit: Double?,
@@ -950,6 +1007,7 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         self.type = type
         self.status = status
         self.schedulable = schedulable
+        self.credentials = credentials
         self.quotaLimit = quotaLimit
         self.quotaUsed = quotaUsed
         self.quotaDailyLimit = quotaDailyLimit
@@ -967,6 +1025,7 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         case type
         case status
         case schedulable
+        case credentials
         case quotaLimit
         case quotaUsed
         case quotaDailyLimit
@@ -985,6 +1044,8 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         type = try container.decodeIfPresent(String.self, forKey: .type) ?? ""
         status = try container.decodeIfPresent(String.self, forKey: .status) ?? ""
         schedulable = try container.decodeIfPresent(Bool.self, forKey: .schedulable) ?? (status == "active")
+        credentials = (try container.decodeIfPresent(PublicCredentialStrings.self, forKey: .credentials)?.values ?? [:])
+            .filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         quotaLimit = try container.decodeIfPresent(Double.self, forKey: .quotaLimit)
         quotaUsed = try container.decodeIfPresent(Double.self, forKey: .quotaUsed)
         quotaDailyLimit = try container.decodeIfPresent(Double.self, forKey: .quotaDailyLimit)
@@ -1008,6 +1069,239 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
             return nil
         }
         return used / limit
+    }
+}
+
+private struct PublicCredentialStrings: Decodable {
+    let values: [String: String]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        values = try container.allKeys.reduce(into: [:]) { result, key in
+            let decoded = try container.decode(PublicCredentialStringValue.self, forKey: key)
+            if let value = decoded.value {
+                result[key.stringValue] = value
+            }
+        }
+    }
+}
+
+private struct PublicCredentialStringValue: Decodable {
+    let value: String?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        value = try? container.decode(String.self)
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+        intValue = nil
+    }
+
+    init?(intValue: Int) {
+        stringValue = String(intValue)
+        self.intValue = intValue
+    }
+}
+
+public struct NormalAccountComposition: Equatable, Sendable {
+    public let total: Int
+    public let typeCounts: [String: Int]
+    public let platformCounts: [String: Int]
+    public let planCounts: [String: Int]
+
+    public init(total: Int, accounts: [AccountSummary]) {
+        self.total = total
+        typeCounts = Self.count(accounts.map { Self.typeLabel($0.type) })
+        platformCounts = Self.count(accounts.map { Self.platformLabel($0.platform) })
+        planCounts = Self.count(accounts.compactMap(Self.planLabel))
+    }
+
+    public init(
+        total: Int,
+        typeCounts: [String: Int],
+        platformCounts: [String: Int],
+        planCounts: [String: Int]
+    ) {
+        self.total = total
+        self.typeCounts = typeCounts
+        self.platformCounts = platformCounts
+        self.planCounts = planCounts
+    }
+
+    public func typeLine(language: AppLanguage) -> String {
+        let ordered = orderedBreakdown(typeCounts, preferredOrder: ["API", "OAuth", "Setup", "Upstream", "Bedrock", "Service"])
+        return joined(ordered, emptyText: language == .en ? "No active accounts" : "无正常账号")
+    }
+
+    public func detailLine(language: AppLanguage) -> String {
+        let planLine = joined(
+            orderedBreakdown(planCounts, preferredOrder: ["Pro", "Plus", "Team", "Free", "Ultra"]),
+            emptyText: ""
+        )
+        if !planLine.isEmpty {
+            return planLine
+        }
+        let platformLine = joined(
+            orderedBreakdown(platformCounts, preferredOrder: ["OpenAI", "Anthropic", "Gemini", "Antigravity"]),
+            emptyText: ""
+        )
+        if !platformLine.isEmpty {
+            return platformLine
+        }
+        return language == .en ? "Composition unavailable" : "组成待同步"
+    }
+
+    public func compactLine(language: AppLanguage) -> String {
+        let typeLine = joined(
+            orderedBreakdown(typeCounts, preferredOrder: ["API", "OAuth", "Setup", "Upstream", "Bedrock", "Service"]),
+            emptyText: ""
+        )
+        let planLine = joined(
+            orderedBreakdown(planCounts, preferredOrder: ["Pro", "Plus", "Team", "Free", "Ultra"]),
+            emptyText: ""
+        )
+        let platformLine = joined(
+            orderedBreakdown(platformCounts, preferredOrder: ["OpenAI", "Anthropic", "Gemini", "Antigravity"]),
+            emptyText: ""
+        )
+        let secondaryLine = planLine.isEmpty ? platformLine : planLine
+        let parts = [typeLine, secondaryLine].filter { !$0.isEmpty }
+        guard !parts.isEmpty else {
+            return language == .en ? "No active accounts" : "无正常账号"
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func count(_ values: [String]) -> [String: Int] {
+        values.reduce(into: [:]) { result, value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return
+            }
+            result[trimmed, default: 0] += 1
+        }
+    }
+
+    private static func typeLabel(_ raw: String) -> String {
+        switch normalizedToken(raw) {
+        case "apikey", "api-key", "api_key":
+            return "API"
+        case "oauth":
+            return "OAuth"
+        case "setup-token", "setup_token":
+            return "Setup"
+        case "upstream":
+            return "Upstream"
+        case "bedrock":
+            return "Bedrock"
+        case "service-account", "service_account":
+            return "Service"
+        default:
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    private static func platformLabel(_ raw: String) -> String {
+        switch normalizedToken(raw) {
+        case "openai":
+            return "OpenAI"
+        case "anthropic", "claude":
+            return "Anthropic"
+        case "gemini":
+            return "Gemini"
+        case "antigravity":
+            return "Antigravity"
+        default:
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return ""
+            }
+            return trimmed.prefix(1).uppercased() + trimmed.dropFirst()
+        }
+    }
+
+    private static func planLabel(_ account: AccountSummary) -> String? {
+        guard normalizedToken(account.type) == "oauth" else {
+            return nil
+        }
+        if let plan = nonEmptyCredential(account, "plan_type", "planType") {
+            return visiblePlanLabel(plan)
+        }
+        if let tier = nonEmptyCredential(account, "tier_id", "tierId") {
+            return visiblePlanLabel(tier)
+        }
+        return nil
+    }
+
+    private static func nonEmptyCredential(_ account: AccountSummary, _ keys: String...) -> String? {
+        for key in keys {
+            if let value = account.credentials[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func visiblePlanLabel(_ raw: String) -> String {
+        let token = normalizedToken(raw)
+        switch token {
+        case "pro", "chatgpt-pro", "google-ai-pro", "google_ai_pro", "g1-pro-tier":
+            return "Pro"
+        case "plus", "chatgpt-plus":
+            return "Plus"
+        case "team", "chatgpt-team":
+            return "Team"
+        case "free", "chatgpt-free", "google-one-free", "google_one_free", "aistudio-free", "aistudio_free", "free-tier":
+            return "Free"
+        case "ultra", "google-ai-ultra", "google_ai_ultra", "g1-ultra-tier":
+            return "Ultra"
+        default:
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                return ""
+            }
+            return trimmed
+        }
+    }
+
+    private static func normalizedToken(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+    }
+
+    private func orderedBreakdown(_ counts: [String: Int], preferredOrder: [String]) -> [(String, Int)] {
+        let preferred = preferredOrder.compactMap { label -> (String, Int)? in
+            guard let count = counts[label], count > 0 else {
+                return nil
+            }
+            return (label, count)
+        }
+        let preferredSet = Set(preferredOrder)
+        let rest = counts
+            .filter { !preferredSet.contains($0.key) && $0.value > 0 }
+            .sorted { lhs, rhs in
+                if lhs.value != rhs.value {
+                    return lhs.value > rhs.value
+                }
+                return lhs.key.localizedStandardCompare(rhs.key) == .orderedAscending
+            }
+        return preferred + rest
+    }
+
+    private func joined(_ items: [(String, Int)], emptyText: String) -> String {
+        guard !items.isEmpty else {
+            return emptyText
+        }
+        return items.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
     }
 }
 
@@ -1270,12 +1564,43 @@ public enum MonitorSeverity: String, Equatable, Sendable {
 
 public struct MenuBarStatusPresentation: Equatable, Sendable {
     public let title: String
+    public let cells: [MenuBarStatusCell]
+    public let topRow: String
+    public let bottomRow: String
     public let hidesHealthyStatusImage: Bool
 
-    public init(title: String, hidesHealthyStatusImage: Bool) {
+    public init(
+        title: String,
+        cells: [MenuBarStatusCell] = [],
+        topRow: String = "",
+        bottomRow: String = "",
+        hidesHealthyStatusImage: Bool
+    ) {
         self.title = title
+        self.cells = cells
+        self.topRow = topRow
+        self.bottomRow = bottomRow
         self.hidesHealthyStatusImage = hidesHealthyStatusImage
     }
+}
+
+public struct MenuBarStatusCell: Equatable, Sendable {
+    public let value: String
+    public let label: String
+    public let width: Double
+    public let valueTone: MenuBarStatusCellTone
+
+    public init(value: String, label: String, width: Double = 48, valueTone: MenuBarStatusCellTone = .primary) {
+        self.value = value
+        self.label = label
+        self.width = width
+        self.valueTone = valueTone
+    }
+}
+
+public enum MenuBarStatusCellTone: String, Equatable, Sendable {
+    case primary
+    case secondary
 }
 
 public struct MonitorSnapshot: Equatable, Sendable {
@@ -1291,8 +1616,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
     public let monitoredUser: AdminUserSummary?
     public let realtimeConcurrency: UserRealtimeConcurrency?
     public let adminNormalAccountCount: Int?
+    public let adminNormalAccountComposition: NormalAccountComposition?
     public let accountHealth: AccountHealthSummary?
     public let subscriptionSummary: SubscriptionSummary?
+    public let codexTaskActivities: [CodexTaskActivity]
     public let lastUpdatedAt: Date?
     public let message: String?
     public let isStale: Bool
@@ -1310,8 +1637,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
         monitoredUser: AdminUserSummary? = nil,
         realtimeConcurrency: UserRealtimeConcurrency? = nil,
         adminNormalAccountCount: Int? = nil,
+        adminNormalAccountComposition: NormalAccountComposition? = nil,
         accountHealth: AccountHealthSummary?,
         subscriptionSummary: SubscriptionSummary?,
+        codexTaskActivities: [CodexTaskActivity] = [],
         lastUpdatedAt: Date?,
         message: String?,
         isStale: Bool = false
@@ -1328,8 +1657,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
         self.monitoredUser = monitoredUser
         self.realtimeConcurrency = realtimeConcurrency
         self.adminNormalAccountCount = adminNormalAccountCount
+        self.adminNormalAccountComposition = adminNormalAccountComposition
         self.accountHealth = accountHealth
         self.subscriptionSummary = subscriptionSummary
+        self.codexTaskActivities = codexTaskActivities
         self.lastUpdatedAt = lastUpdatedAt
         self.message = message
         self.isStale = isStale
@@ -1364,11 +1695,37 @@ public struct MonitorSnapshot: Equatable, Sendable {
             monitoredUser: monitoredUser,
             realtimeConcurrency: realtimeConcurrency,
             adminNormalAccountCount: adminNormalAccountCount,
+            adminNormalAccountComposition: adminNormalAccountComposition,
             accountHealth: accountHealth,
             subscriptionSummary: subscriptionSummary,
+            codexTaskActivities: codexTaskActivities,
             lastUpdatedAt: lastUpdatedAt,
             message: message,
             isStale: true
+        )
+    }
+
+    public func withCodexTaskActivities(_ activities: [CodexTaskActivity]) -> MonitorSnapshot {
+        MonitorSnapshot(
+            mode: mode,
+            connected: connected,
+            currentUser: currentUser,
+            stats: stats,
+            menuBarUsageStats: menuBarUsageStats,
+            latestUsage: latestUsage,
+            trend: trend,
+            modelDistribution: modelDistribution,
+            realtime: realtime,
+            monitoredUser: monitoredUser,
+            realtimeConcurrency: realtimeConcurrency,
+            adminNormalAccountCount: adminNormalAccountCount,
+            adminNormalAccountComposition: adminNormalAccountComposition,
+            accountHealth: accountHealth,
+            subscriptionSummary: subscriptionSummary,
+            codexTaskActivities: activities,
+            lastUpdatedAt: lastUpdatedAt,
+            message: message,
+            isStale: isStale
         )
     }
 
@@ -1438,194 +1795,49 @@ public struct MonitorSnapshot: Equatable, Sendable {
         }
     }
 
-    public var menuBarSummary: String {
-        menuBarSummary(config: AppConfig(baseURL: ""))
-    }
-
-    public func menuBarSummary(config: AppConfig) -> String {
-        guard connected else {
-            return "Sub2API \(statusLabel)"
-        }
-
-        guard !config.menuBarDisplayItems.isEmpty else {
-            return ""
-        }
-
-        let selectedItems = Set(config.menuBarDisplayItems)
-        let orderedItems = MenuBarDisplayItem.allCases.filter { selectedItems.contains($0) }
-        var parts: [String] = []
-
-        for item in orderedItems {
-            switch item {
-            case .totalCost:
-                if let cost = selectedTotalActualCost(config: config) {
-                    parts.append(StatusFormatters.currency(cost))
-                }
-            case .totalRequests:
-                if let requests = selectedTotalRequests(config: config) {
-                    parts.append("\(StatusFormatters.menuBarCount(requests)) req")
-                }
-            case .model:
-                if let model = latestUsage?.model.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
-                    parts.append(model)
-                }
-            case .reasoningEffort:
-                if let effort = latestUsage?.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines), !effort.isEmpty {
-                    parts.append(effort)
-                }
-            case .contextLength:
-                if let latestUsage {
-                    parts.append(StatusFormatters.contextLength(latestUsage.contextLengthTokens))
-                }
-            case .fast:
-                if let latestUsage, latestUsage.isFastEnabled {
-                    parts.append("Fast")
-                }
-            case .inputPrice:
-                if let price = latestUsage?.inputPricePerMillion {
-                    parts.append("in \(StatusFormatters.tokenPricePerMillion(price))/1M")
-                }
-            case .outputPrice:
-                if let price = latestUsage?.outputPricePerMillion {
-                    parts.append("out \(StatusFormatters.tokenPricePerMillion(price))/1M")
-                }
-            case .rpm:
-                if mode != .admin,
-                   let rpm = stats?.rpm ?? realtime?.requestsPerMinute {
-                    parts.append("\(StatusFormatters.menuBarRate(rpm)) RPM")
-                }
-            case .realtimeConcurrency:
-                if let concurrency = realtimeConcurrency {
-                    parts.append("\(StatusFormatters.menuBarCount(concurrency.currentInUse)) CC")
-                }
-            case .normalAccounts:
-                if let normalAccounts = adminNormalAccountCount {
-                    parts.append("\(StatusFormatters.menuBarCount(Int64(normalAccounts))) normal")
-                }
-            }
-        }
-
-        if !parts.isEmpty {
-            return parts.joined(separator: " · ")
-        }
-
-        return ""
-    }
-
-    public func compactMenuBarSummary(config: AppConfig, maxCharacters: Int = 36) -> String {
-        guard connected else {
-            return Self.compactMenuBarSummary(menuBarSummary(config: config), maxCharacters: maxCharacters)
-        }
-
-        guard !config.menuBarDisplayItems.isEmpty else {
-            return ""
-        }
-
-        let selectedItems = Set(config.menuBarDisplayItems)
-        let orderedItems = MenuBarDisplayItem.allCases.filter { selectedItems.contains($0) }
-        var parts: [String] = []
-
-        for item in orderedItems {
-            switch item {
-            case .totalCost:
-                if let cost = selectedTotalActualCost(config: config) {
-                    parts.append(StatusFormatters.menuBarCurrency(cost))
-                }
-            case .totalRequests:
-                if let requests = selectedTotalRequests(config: config) {
-                    parts.append("\(StatusFormatters.menuBarCount(requests))r")
-                }
-            case .model:
-                if let model = latestUsage?.model.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
-                    parts.append(model)
-                }
-            case .reasoningEffort:
-                if let effort = latestUsage?.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines), !effort.isEmpty {
-                    parts.append(Self.compactReasoningEffort(effort))
-                }
-            case .contextLength:
-                if let latestUsage {
-                    parts.append(StatusFormatters.contextLength(latestUsage.contextLengthTokens).replacingOccurrences(of: " ctx", with: "c"))
-                }
-            case .fast:
-                if let latestUsage, latestUsage.isFastEnabled {
-                    parts.append("F")
-                }
-            case .inputPrice:
-                if let price = latestUsage?.inputPricePerMillion {
-                    parts.append("i\(StatusFormatters.menuBarTokenPricePerMillion(price))/M")
-                }
-            case .outputPrice:
-                if let price = latestUsage?.outputPricePerMillion {
-                    parts.append("o\(StatusFormatters.menuBarTokenPricePerMillion(price))/M")
-                }
-            case .rpm:
-                if mode != .admin,
-                   let rpm = stats?.rpm ?? realtime?.requestsPerMinute {
-                    parts.append("\(StatusFormatters.menuBarRate(rpm))rpm")
-                }
-            case .realtimeConcurrency:
-                if let concurrency = realtimeConcurrency {
-                    parts.append("\(StatusFormatters.menuBarCount(concurrency.currentInUse))CC")
-                }
-            case .normalAccounts:
-                if let normalAccounts = adminNormalAccountCount {
-                    parts.append("\(StatusFormatters.menuBarCount(Int64(normalAccounts)))N")
-                }
-            }
-        }
-
-        let summary = parts.joined(separator: "·")
-        return Self.compactMenuBarSummary(summary, maxCharacters: maxCharacters)
+    public func menuBarValueLabelRows(config: AppConfig) -> (top: String, bottom: String) {
+        let cells = menuBarCells(config: config, compact: true)
+        return (
+            top: cells.map(\.value).joined(separator: " | "),
+            bottom: cells.map(\.label).joined(separator: " | ")
+        )
     }
 
     public func menuBarStatusPresentation(config: AppConfig) -> MenuBarStatusPresentation {
-        guard connected, config.showsMenuBarText else {
+        guard config.showsMenuBarText else {
             return MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false)
         }
 
-        let summary = menuBarSummary(config: config)
-        guard !summary.isEmpty else {
+        let cells = menuBarCells(config: config, compact: true)
+        guard !cells.isEmpty else {
             return MenuBarStatusPresentation(title: "", hidesHealthyStatusImage: false)
         }
+        let rows = valueLabelRows(cells: cells)
 
-        return MenuBarStatusPresentation(title: " \(compactMenuBarSummary(config: config))", hidesHealthyStatusImage: true)
+        return MenuBarStatusPresentation(
+            title: " \(rows.top)",
+            cells: cells,
+            topRow: rows.top,
+            bottomRow: rows.bottom,
+            hidesHealthyStatusImage: true
+        )
     }
 
-    public static func compactMenuBarSummary(_ summary: String, maxCharacters: Int = 36) -> String {
-        guard summary.count > maxCharacters else {
-            return summary
+    public func menuBarTooltip(statusText: String, config: AppConfig) -> String {
+        let title = "Sub2API \(statusText)"
+
+        let rows = menuBarValueLabelRows(config: config)
+        guard !rows.top.isEmpty else {
+            return title
         }
 
-        let marker = "…"
-        guard maxCharacters > marker.count else {
-            return String(summary.prefix(max(maxCharacters, 0)))
-        }
-
-        let separator = summary.contains(" · ") ? " · " : "·"
-        let separatorMarker = "\(separator)\(marker)"
-        let contentLimit = maxCharacters - separatorMarker.count
-        let parts = summary.components(separatedBy: separator)
-        var visibleParts: [String] = []
-        for part in parts {
-            let candidate = (visibleParts + [part]).joined(separator: separator)
-            if candidate.count <= contentLimit {
-                visibleParts.append(part)
-            } else {
-                break
-            }
-        }
-
-        if visibleParts.isEmpty {
-            return String(summary.prefix(maxCharacters - marker.count)) + marker
-        }
-        return visibleParts.joined(separator: separator) + separatorMarker
+        return "\(title)\n\(rows.top)\n\(rows.bottom)"
     }
 
     private static func compactReasoningEffort(_ effort: String) -> String {
-        switch effort.lowercased() {
-        case "minimal":
-            return "min"
+        switch normalizedReasoningEffort(effort) {
+        case "", "none", "minimal":
+            return "no"
         case "low":
             return "lo"
         case "medium":
@@ -1637,6 +1849,201 @@ public struct MonitorSnapshot: Equatable, Sendable {
         default:
             return effort
         }
+    }
+
+    private static func menuBarModelName(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("gpt-") {
+            return "GPT-" + trimmed.dropFirst(4)
+        }
+        return trimmed
+    }
+
+    private static func menuBarReasoningEffort(_ effort: String?) -> String {
+        guard let effort = nonEmpty(effort) else {
+            return "no"
+        }
+        return effort
+    }
+
+    private static func normalizedReasoningEffort(_ effort: String) -> String {
+        effort
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+    }
+
+    private func menuBarCells(config: AppConfig, compact: Bool) -> [MenuBarStatusCell] {
+        guard !config.menuBarDisplayItems.isEmpty else {
+            return []
+        }
+
+        let selectedItems = Set(CapabilityPolicy(isAdminAccount: mode == .admin).visibleMenuBarDisplayItems)
+            .intersection(config.menuBarDisplayItems)
+        let orderedItems = MenuBarDisplayItem.allCases.filter { selectedItems.contains($0) }
+        return orderedItems.map { item in
+            menuBarCell(for: item, config: config, compact: compact)
+        }
+    }
+
+    private func menuBarCell(for item: MenuBarDisplayItem, config: AppConfig, compact: Bool) -> MenuBarStatusCell {
+        if item == .codexTasks {
+            let taskSummary = CodexMenuBarTaskSummary.make(activities: codexTaskActivities, maxTasks: compact ? 2 : 3)
+            return MenuBarStatusCell(
+                value: taskSummary.topRow,
+                label: taskSummary.bottomRow,
+                width: menuBarCellWidth(for: item),
+                valueTone: taskSummary.topRow == "0" ? .secondary : .primary
+            )
+        }
+        let value = menuBarCellValue(for: item, config: config, compact: compact)
+        return MenuBarStatusCell(
+            value: value,
+            label: menuBarCellLabel(for: item),
+            width: menuBarCellWidth(for: item),
+            valueTone: menuBarCellValueTone(for: item, value: value)
+        )
+    }
+
+    private func menuBarCellValue(for item: MenuBarDisplayItem, config: AppConfig, compact: Bool) -> String {
+        switch item {
+        case .totalCost:
+            guard let cost = selectedTotalActualCost(config: config) else {
+                return "$0.00"
+            }
+            return compact ? StatusFormatters.menuBarCurrency(cost) : StatusFormatters.currency(cost)
+        case .totalRequests:
+            guard let requests = selectedTotalRequests(config: config) else {
+                return "0"
+            }
+            return compact ? "\(StatusFormatters.menuBarCount(requests))r" : "\(StatusFormatters.menuBarCount(requests)) req"
+        case .model:
+            guard let model = Self.nonEmpty(latestUsage?.model) else {
+                return "No model"
+            }
+            return compact ? Self.menuBarModelName(model) : model
+        case .reasoningEffort:
+            let effort = Self.menuBarReasoningEffort(latestUsage?.reasoningEffort)
+            return compact ? Self.compactReasoningEffort(effort) : effort
+        case .contextLength:
+            guard let latestUsage else {
+                return "0c"
+            }
+            let context = StatusFormatters.contextLength(latestUsage.contextLengthTokens)
+            return compact ? context.replacingOccurrences(of: " ctx", with: "c") : context
+        case .fast:
+            return latestUsage?.isFastEnabled == true ? "T" : "F"
+        case .inputPrice:
+            guard let price = latestUsage?.inputPricePerMillion else {
+                return "i$0/M"
+            }
+            return compact ? "i\(StatusFormatters.menuBarTokenPricePerMillion(price))/M" : "in \(StatusFormatters.tokenPricePerMillion(price))/1M"
+        case .outputPrice:
+            guard let price = latestUsage?.outputPricePerMillion else {
+                return "o$0/M"
+            }
+            return compact ? "o\(StatusFormatters.menuBarTokenPricePerMillion(price))/M" : "out \(StatusFormatters.tokenPricePerMillion(price))/1M"
+        case .rpm:
+            let rpm = mode == .admin ? nil : stats?.rpm ?? realtime?.requestsPerMinute
+            guard let rpm else {
+                return "0rpm"
+            }
+            return compact ? "\(StatusFormatters.menuBarRate(rpm))rpm" : "\(StatusFormatters.menuBarRate(rpm)) RPM"
+        case .realtimeConcurrency:
+            guard let concurrency = realtimeConcurrency else {
+                return compact ? "0C" : "0 concurrent"
+            }
+            let current = StatusFormatters.menuBarCount(concurrency.currentInUse)
+            return compact ? "\(current)C" : "\(current) concurrent"
+        case .normalAccounts:
+            guard let normalAccounts = adminNormalAccountCount else {
+                return "0N"
+            }
+            return compact ? "\(StatusFormatters.menuBarCount(Int64(normalAccounts)))N" : "\(StatusFormatters.menuBarCount(Int64(normalAccounts))) normal"
+        case .codexTasks:
+            return CodexMenuBarTaskSummary.make(activities: codexTaskActivities, maxTasks: compact ? 2 : 3).topRow
+        }
+    }
+
+    private func menuBarCellWidth(for item: MenuBarDisplayItem) -> Double {
+        switch item {
+        case .totalCost:
+            return 58
+        case .totalRequests:
+            return 36
+        case .model:
+            return 56
+        case .reasoningEffort:
+            return 26
+        case .contextLength:
+            return 40
+        case .fast:
+            return 24
+        case .inputPrice, .outputPrice:
+            return 40
+        case .rpm:
+            return 36
+        case .realtimeConcurrency:
+            return 36
+        case .normalAccounts:
+            return 36
+        case .codexTasks:
+            return 88
+        }
+    }
+
+    private func menuBarCellValueTone(for item: MenuBarDisplayItem, value: String) -> MenuBarStatusCellTone {
+        switch item {
+        case .model where value == "No model":
+            return .secondary
+        case .realtimeConcurrency where value == "0C" || value == "0 concurrent":
+            return .secondary
+        default:
+            return .primary
+        }
+    }
+
+    private func valueLabelRows(cells: [MenuBarStatusCell]) -> (top: String, bottom: String) {
+        (
+            top: cells.map(\.value).joined(separator: " | "),
+            bottom: cells.map(\.label).joined(separator: " | ")
+        )
+    }
+
+    private func menuBarCellLabel(for item: MenuBarDisplayItem) -> String {
+        switch item {
+        case .totalCost:
+            return "Cost"
+        case .totalRequests:
+            return "Req"
+        case .model:
+            return "Model"
+        case .reasoningEffort:
+            return "Eff"
+        case .contextLength:
+            return "Ctx"
+        case .fast:
+            return "Fast"
+        case .inputPrice:
+            return "In"
+        case .outputPrice:
+            return "Out"
+        case .rpm:
+            return "RPM"
+        case .realtimeConcurrency:
+            return "Conc"
+        case .normalAccounts:
+            return "Acct"
+        case .codexTasks:
+            return "Task"
+        }
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func selectedTotalActualCost(config: AppConfig) -> Double? {

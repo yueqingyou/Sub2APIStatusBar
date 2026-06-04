@@ -4,3 +4,4 @@
 dist/
 Resources/AppIcon.iconset/
 *.xcuserdata/
+tmp/

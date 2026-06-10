@@ -5925,7 +5925,7 @@ func testMonitorSnapshotBuildsMenuBarPresentationFromDashboardStats() {
     )
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).topRow, "$12.35 | GPT-5.5 | xh | 88.4Kc | T | 3rpm")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).bottomRow, "Cost | Model | Eff | Ctx | Fast | RPM")
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).topRow, "2048r | i$10/M | o$60/M")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).topRow, "2048r | $10/M | $60/M")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).bottomRow, "Req | In | Out")
 }
 
@@ -6013,6 +6013,29 @@ func testMonitorSnapshotMenuBarModelPresentationCapitalizesGPTWithoutChangingSna
 
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "GPT-5.5")
     XCTAssertEqual(snapshot.latestUsage?.model, "gpt-5.5")
+}
+
+func testMonitorSnapshotMenuBarModelPresentationUsesReadableCodexShortName() {
+    let latestUsage = UsageLog(id: 133605, model: "codex-mini-latest")
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model]
+    )
+
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "Codex")
+    XCTAssertEqual(snapshot.latestUsage?.model, "codex-mini-latest")
 }
 
 func testMonitorSnapshotMenuBarPresentationUsesValueAndLabelRowsForSelectedItems() {
@@ -6132,6 +6155,81 @@ func testMonitorSnapshotMenuBarPresentationUsesReadableCellWidthsForCommonStatus
     ])
 }
 
+func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
+    let latestUsage = UsageLog(
+        id: 133605,
+        model: "codex-mini-latest",
+        serviceTier: "priority",
+        reasoningEffort: "xhigh",
+        inputTokens: 1_000,
+        outputTokens: 1_000,
+        cacheReadTokens: 85_400,
+        inputCost: 0.00125,
+        outputCost: 0.006,
+        actualCost: 0.00725
+    )
+    let activities = (1...33).map { index in
+        CodexTaskActivity(
+            nodeID: "node-\(index)",
+            sessionID: "session-\(index)",
+            turnID: "turn-\(index)",
+            badge: "A\(index)",
+            cwd: nil,
+            model: "gpt-5",
+            status: index >= 32 ? .running : .done,
+            phase: index >= 32 ? .tooling : .completed,
+            toolName: nil,
+            startedAt: Date(timeIntervalSince1970: Double(100 + index)),
+            updatedAt: Date(timeIntervalSince1970: Double(200 + index)),
+            completedAt: index >= 32 ? nil : Date(timeIntervalSince1970: Double(200 + index)),
+            timeline: []
+        )
+    }
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: DashboardStats(todayRequests: 223, todayActualCost: 53.24, rpm: 99),
+        menuBarUsageStats: UsagePeriodStats(totalRequests: 223, totalActualCost: 53.24),
+        latestUsage: latestUsage,
+        realtime: nil,
+        realtimeConcurrency: UserRealtimeConcurrency(
+            userID: 2,
+            userEmail: "target@example.com",
+            username: "target",
+            currentInUse: 2,
+            maxCapacity: 100,
+            loadPercentage: 0.02,
+            waitingInQueue: 0
+        ),
+        adminNormalAccountCount: 2,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        codexTaskActivities: activities,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        showsMenuBarText: true,
+        menuBarDisplayItems: MenuBarDisplayItem.adminVisibleCases
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(
+        presentation.topRow,
+        "$53.24 | 223r | Codex | xh | 86.4Kc | T | $1.25/M | $6/M | 2C | 2N | A33R +32"
+    )
+    XCTAssertEqual(
+        presentation.bottomRow,
+        "Cost | Req | Model | Eff | Ctx | Fast | In | Out | Conc | Acct | T33R2Q0D0E0"
+    )
+    XCTAssertEqual(presentation.cells.map(\.width), [58, 36, 56, 26, 50, 24, 54, 54, 36, 36, 88])
+    XCTAssertFalse(presentation.topRow.contains("i$"))
+    XCTAssertFalse(presentation.topRow.contains("o$"))
+}
+
 func testMonitorSnapshotMenuBarPresentationTreatsNoneReasoningEffortAsNo() {
     let latestUsage = UsageLog(
         id: 133606,
@@ -6227,7 +6325,7 @@ func testMonitorSnapshotMenuBarPresentationCompressesPricesAndRates() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "2048r | i$10/M | o$60/M | 3rpm")
+    XCTAssertEqual(presentation.topRow, "2048r | $10/M | $60/M | 3rpm")
     XCTAssertEqual(presentation.bottomRow, "Req | In | Out | RPM")
 }
 
@@ -6438,7 +6536,7 @@ func testMonitorSnapshotIncludesCodexTaskPresentationWhenSelected() {
     ])
 }
 
-func testMonitorSnapshotCodexTaskPresentationUsesTaskBadgesAndPersistentCounts() {
+func testMonitorSnapshotCodexTaskPresentationUsesLatestTaskBadgeAndPersistentCounts() {
     let activities = [
         CodexTaskActivity(
             nodeID: "local-node",
@@ -6491,10 +6589,10 @@ func testMonitorSnapshotCodexTaskPresentationUsesTaskBadgesAndPersistentCounts()
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "A2Q A1R")
+    XCTAssertEqual(presentation.topRow, "A2Q +1")
     XCTAssertEqual(presentation.bottomRow, "T2R1Q1D0E0")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "A2Q A1R", label: "T2R1Q1D0E0", width: 88),
+        MenuBarStatusCell(value: "A2Q +1", label: "T2R1Q1D0E0", width: 88),
     ])
     XCTAssertFalse(presentation.topRow.contains("--"))
     XCTAssertFalse(presentation.bottomRow.contains("--"))
@@ -6538,10 +6636,10 @@ func testMonitorSnapshotCodexTaskPresentationUsesWiderFixedTaskCellForManyTasks(
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "A5R A4D +3")
+    XCTAssertEqual(presentation.topRow, "A5R +4")
     XCTAssertEqual(presentation.bottomRow, "T5R1Q0D0E0")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "A5R A4D +3", label: "T5R1Q0D0E0", width: 88),
+        MenuBarStatusCell(value: "A5R +4", label: "T5R1Q0D0E0", width: 88),
     ])
 }
 

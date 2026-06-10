@@ -111,14 +111,14 @@ swift run Sub2APIStatusBar
 
 The default appearance follows the current macOS Light/Dark Mode setting. Settings lets users override it to Light or Dark.
 
-When menu bar text is enabled, the status item uses a fixed-cell two-row layout: each enabled item owns a stable cell, adjacent cells are separated by the same vertical divider, the top row shows selected values, and the bottom row shows short labels or compact task counts. The default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, fast status, input price, output price, realtime RPM for normal users, task status, and administrator-only realtime concurrency and normal account count. Enabled fields remain present in the two-row status item; unavailable numeric values use explicit zero, reasoning effort uses `no` when absent or reported as `-`, and model uses explicit "No ..." text rather than placeholder dashes. Codex task counts use a compact persistent `T/R/Q/D/E` row such as `T2R1Q1D0E0`. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
+When menu bar text is enabled, the status item uses a fixed-cell two-row layout: each enabled item owns a stable cell, adjacent cells are separated by the same vertical divider, the top row shows selected values, and the bottom row shows short labels or compact task counts. The default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, fast status, input price, output price, realtime RPM for normal users, task status, and administrator-only realtime concurrency and normal account count. Enabled fields remain present in the two-row status item; unavailable numeric values use explicit zero, reasoning effort uses `no` when absent or reported as `-`, and model uses explicit "No ..." text rather than placeholder dashes. Long model identifiers use readable short names in the status item instead of showing only an ellipsis. Input and output price values do not repeat `i` / `o` prefixes because the lower row already labels them as `In` and `Out`. Codex task counts use a compact persistent `T/R/Q/D/E` row such as `T2R1Q1D0E0`. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
 
 Admin accounts can additionally enable realtime concurrency and normal account count in the menu bar text. Administrator-only menu bar items are hidden for normal user accounts. Realtime RPM remains a normal-user item because the current administrator usage endpoints do not provide a selected-user realtime RPM contract.
 
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.22 ./scripts/build-app.sh
+VERSION=v0.1.23 ./scripts/build-app.sh
 ```
 
 Output:
@@ -135,28 +135,28 @@ Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.22 \
+VERSION=v0.1.23 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.22 ./scripts/package-release.sh
+VERSION=v0.1.23 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.22-macOS.zip
-dist/Sub2APIStatusBar-0.1.22-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.23-macOS.zip
+dist/Sub2APIStatusBar-0.1.23-macOS.zip.sha256
 ```
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.22 \
+VERSION=v0.1.23 \
 ./scripts/package-release.sh
 ```
 
@@ -171,7 +171,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.22 \
+VERSION=v0.1.23 \
 ./scripts/notarize-release.sh
 ```
 

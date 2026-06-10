@@ -1853,7 +1853,11 @@ public struct MonitorSnapshot: Equatable, Sendable {
 
     private static func menuBarModelName(_ model: String) -> String {
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.lowercased().hasPrefix("gpt-") {
+        let normalized = trimmed.lowercased()
+        if normalized == "codex" || normalized.hasPrefix("codex-") {
+            return "Codex"
+        }
+        if normalized.hasPrefix("gpt-") {
             return "GPT-" + trimmed.dropFirst(4)
         }
         return trimmed
@@ -1890,7 +1894,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
 
     private func menuBarCell(for item: MenuBarDisplayItem, config: AppConfig, compact: Bool) -> MenuBarStatusCell {
         if item == .codexTasks {
-            let taskSummary = CodexMenuBarTaskSummary.make(activities: codexTaskActivities, maxTasks: compact ? 2 : 3)
+            let taskSummary = CodexMenuBarTaskSummary.make(activities: codexTaskActivities, maxTasks: compact ? 1 : 3)
             return MenuBarStatusCell(
                 value: taskSummary.topRow,
                 label: taskSummary.bottomRow,
@@ -1937,14 +1941,14 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return latestUsage?.isFastEnabled == true ? "T" : "F"
         case .inputPrice:
             guard let price = latestUsage?.inputPricePerMillion else {
-                return "i$0/M"
+                return "$0/M"
             }
-            return compact ? "i\(StatusFormatters.menuBarTokenPricePerMillion(price))/M" : "in \(StatusFormatters.tokenPricePerMillion(price))/1M"
+            return compact ? "\(StatusFormatters.menuBarTokenPricePerMillion(price))/M" : "\(StatusFormatters.tokenPricePerMillion(price))/1M"
         case .outputPrice:
             guard let price = latestUsage?.outputPricePerMillion else {
-                return "o$0/M"
+                return "$0/M"
             }
-            return compact ? "o\(StatusFormatters.menuBarTokenPricePerMillion(price))/M" : "out \(StatusFormatters.tokenPricePerMillion(price))/1M"
+            return compact ? "\(StatusFormatters.menuBarTokenPricePerMillion(price))/M" : "\(StatusFormatters.tokenPricePerMillion(price))/1M"
         case .rpm:
             let rpm = mode == .admin ? nil : stats?.rpm ?? realtime?.requestsPerMinute
             guard let rpm else {
@@ -1963,7 +1967,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
             }
             return compact ? "\(StatusFormatters.menuBarCount(Int64(normalAccounts)))N" : "\(StatusFormatters.menuBarCount(Int64(normalAccounts))) normal"
         case .codexTasks:
-            return CodexMenuBarTaskSummary.make(activities: codexTaskActivities, maxTasks: compact ? 2 : 3).topRow
+            return CodexMenuBarTaskSummary.make(activities: codexTaskActivities, maxTasks: compact ? 1 : 3).topRow
         }
     }
 
@@ -1978,11 +1982,11 @@ public struct MonitorSnapshot: Equatable, Sendable {
         case .reasoningEffort:
             return 26
         case .contextLength:
-            return 40
+            return 50
         case .fast:
             return 24
         case .inputPrice, .outputPrice:
-            return 40
+            return 54
         case .rpm:
             return 36
         case .realtimeConcurrency:

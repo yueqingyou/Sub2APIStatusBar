@@ -1,21 +1,30 @@
 import Foundation
 
+enum SharedISO8601DateParser {
+    private static let lock = NSLock()
+    private static let fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let standard = ISO8601DateFormatter()
+
+    static func date(from value: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return fractional.date(from: value) ?? standard.date(from: value)
+    }
+}
+
 public extension JSONDecoder {
-    static var sub2api: JSONDecoder {
+    static var tokenRouter: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let raw = try container.decode(String.self)
 
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = fractional.date(from: raw) {
-                return date
-            }
-
-            let standard = ISO8601DateFormatter()
-            if let date = standard.date(from: raw) {
+            if let date = SharedISO8601DateParser.date(from: raw) {
                 return date
             }
 
@@ -30,14 +39,7 @@ public extension JSONDecoder {
             let container = try decoder.singleValueContainer()
             let raw = try container.decode(String.self)
 
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = fractional.date(from: raw) {
-                return date
-            }
-
-            let standard = ISO8601DateFormatter()
-            if let date = standard.date(from: raw) {
+            if let date = SharedISO8601DateParser.date(from: raw) {
                 return date
             }
 
@@ -48,7 +50,7 @@ public extension JSONDecoder {
 }
 
 public extension JSONEncoder {
-    static var sub2api: JSONEncoder {
+    static var tokenRouter: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         encoder.dateEncodingStrategy = .iso8601

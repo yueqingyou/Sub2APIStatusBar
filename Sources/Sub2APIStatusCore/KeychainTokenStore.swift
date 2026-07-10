@@ -66,11 +66,11 @@ public final class KeychainTokenStore: TokenStore, Sendable {
         guard let data = readData(account: account, allowAuthenticationUI: allowAuthenticationUI) else {
             return nil
         }
-        return try? JSONDecoder.sub2api.decode(StoredAuthTokens.self, from: data)
+        return try? JSONDecoder.tokenRouter.decode(StoredAuthTokens.self, from: data)
     }
 
     private func saveCredentials(_ tokens: StoredAuthTokens) throws {
-        try saveData(JSONEncoder.sub2api.encode(tokens), account: Account.sharedCredentials)
+        try saveData(JSONEncoder.tokenRouter.encode(tokens), account: Account.sharedCredentials)
     }
 
     private func readString(account: String, allowAuthenticationUI: Bool) -> String? {

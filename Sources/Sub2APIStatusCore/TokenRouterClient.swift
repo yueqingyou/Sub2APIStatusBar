@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Sub2APIClient: Sendable {
+public struct TokenRouterClient: Sendable {
     public var config: AppConfig
     public var session: URLSession
     public var retryPolicy: HTTPRetryPolicy
@@ -61,18 +61,18 @@ public struct Sub2APIClient: Sendable {
         return try await get("/usage", query: query)
     }
 
-    public func usageDashboardTrend(startDate: String, endDate: String, granularity: String = "day") async throws -> DashboardTrendResponse {
-        try await get("/usage/dashboard/trend", query: [
+    public func usageDashboardSnapshot(
+        startDate: String,
+        endDate: String,
+        granularity: String = "day"
+    ) async throws -> TokenRouterDashboardSnapshot {
+        try await get("/usage/dashboard/snapshot-v2", query: [
             URLQueryItem(name: "start_date", value: startDate),
             URLQueryItem(name: "end_date", value: endDate),
             URLQueryItem(name: "granularity", value: granularity),
-        ])
-    }
-
-    public func usageDashboardModels(startDate: String, endDate: String) async throws -> DashboardModelsResponse {
-        try await get("/usage/dashboard/models", query: [
-            URLQueryItem(name: "start_date", value: startDate),
-            URLQueryItem(name: "end_date", value: endDate),
+            URLQueryItem(name: "include_trend", value: "true"),
+            URLQueryItem(name: "include_model_stats", value: "true"),
+            URLQueryItem(name: "include_group_stats", value: "false"),
         ])
     }
 
@@ -190,40 +190,27 @@ public struct Sub2APIClient: Sendable {
         return try await get("/admin/usage", query: query)
     }
 
-    public func adminDashboardTrend(
+    public func adminDashboardSnapshot(
         userID: Int64,
         startDate: String,
         endDate: String,
         granularity: String = "day",
         timezone: String? = nil
-    ) async throws -> DashboardTrendResponse {
+    ) async throws -> TokenRouterDashboardSnapshot {
         var query = [
             URLQueryItem(name: "user_id", value: String(userID)),
             URLQueryItem(name: "start_date", value: startDate),
             URLQueryItem(name: "end_date", value: endDate),
             URLQueryItem(name: "granularity", value: granularity),
+            URLQueryItem(name: "include_stats", value: "false"),
+            URLQueryItem(name: "include_trend", value: "true"),
+            URLQueryItem(name: "include_model_stats", value: "true"),
+            URLQueryItem(name: "include_group_stats", value: "false"),
         ]
         if let timezone, !timezone.isEmpty {
             query.append(URLQueryItem(name: "timezone", value: timezone))
         }
-        return try await get("/admin/dashboard/trend", query: query)
-    }
-
-    public func adminDashboardModels(
-        userID: Int64,
-        startDate: String,
-        endDate: String,
-        timezone: String? = nil
-    ) async throws -> DashboardModelsResponse {
-        var query = [
-            URLQueryItem(name: "user_id", value: String(userID)),
-            URLQueryItem(name: "start_date", value: startDate),
-            URLQueryItem(name: "end_date", value: endDate),
-        ]
-        if let timezone, !timezone.isEmpty {
-            query.append(URLQueryItem(name: "timezone", value: timezone))
-        }
-        return try await get("/admin/dashboard/models", query: query)
+        return try await get("/admin/dashboard/snapshot-v2", query: query)
     }
 
     public func adminUserSubscriptions(userID: Int64) async throws -> [AdminUserSubscription] {
@@ -246,14 +233,14 @@ public struct Sub2APIClient: Sendable {
     public func post<Body: Encodable & Sendable, Value: Decodable & Sendable>(_ path: String, body: Body) async throws -> Value {
         var request = try makeRequest(path: path)
         request.httpMethod = "POST"
-        request.httpBody = try JSONEncoder.sub2api.encode(body)
+        request.httpBody = try JSONEncoder.tokenRouter.encode(body)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         return try await send(request, allowsRetry: false)
     }
 
     private func makeRequest(path: String, query: [URLQueryItem] = []) throws -> URLRequest {
         guard let baseURL = config.apiBaseURL else {
-            throw Sub2APIError.invalidBaseURL
+            throw TokenRouterError.invalidBaseURL
         }
 
         let cleanPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
@@ -261,7 +248,7 @@ public struct Sub2APIClient: Sendable {
         components?.queryItems = query.isEmpty ? nil : query
 
         guard let url = components?.url else {
-            throw Sub2APIError.invalidBaseURL
+            throw TokenRouterError.invalidBaseURL
         }
 
         var request = URLRequest(url: url)
@@ -280,11 +267,11 @@ public struct Sub2APIClient: Sendable {
                 let (data, response) = try await session.data(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     let message = String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
-                    throw Sub2APIError.badStatus(http.statusCode, message)
+                    throw TokenRouterError.badStatus(http.statusCode, message)
                 }
 
-                let decoder = JSONDecoder.sub2api
-                if let envelope = try? decoder.decode(Sub2APIEnvelope<Value>.self, from: data) {
+                let decoder = JSONDecoder.tokenRouter
+                if let envelope = try? decoder.decode(TokenRouterEnvelope<Value>.self, from: data) {
                     return try envelope.value()
                 }
                 return try decoder.decode(Value.self, from: data)
@@ -339,7 +326,7 @@ public struct HTTPRetryPolicy: Equatable, Sendable {
             return false
         }
 
-        if let apiError = error as? Sub2APIError {
+        if let apiError = error as? TokenRouterError {
             return apiError.isTransientFailure
         }
 

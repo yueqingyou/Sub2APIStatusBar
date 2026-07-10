@@ -17,7 +17,7 @@ struct LoginPanel: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 18)
+                    RoundedRectangle(cornerRadius: 8)
                         .fill(ClaudeTheme.accent.opacity(0.16))
                     Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
                         .font(.system(size: 32, weight: .semibold))
@@ -26,7 +26,7 @@ struct LoginPanel: View {
                 .frame(width: 54, height: 54)
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Sub2API")
+                    Text("TokenRouter")
                         .font(.system(size: 26, weight: .semibold, design: .rounded))
                     Text(strings.phrase("连接你的服务", "Connect your server"))
                         .font(.callout)
@@ -181,7 +181,7 @@ struct SettingsView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 settingsHeader
 
                 generalSettingsCard
@@ -224,26 +224,10 @@ struct SettingsView: View {
     }
 
     private var settingsHeader: some View {
-        HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(ClaudeTheme.accent.opacity(0.16))
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundStyle(ClaudeTheme.accent)
-            }
-            .frame(width: 44, height: 44)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(strings.phrase("设置", "Settings"))
-                    .font(.system(size: 24, weight: .semibold, design: .rounded))
-                Text(strings.phrase("语言、外观、连接、菜单栏显示和更新在同一控制台中管理。", "Manage language, appearance, connection, menu bar display, and updates in this console."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
+        PanelPageHeader(
+            title: strings.phrase("设置", "Settings"),
+            subtitle: strings.phrase("外观、连接、菜单栏与更新", "Appearance, connection, menu bar, and updates")
+        )
     }
 
     private var generalSettingsCard: some View {

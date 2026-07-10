@@ -148,11 +148,7 @@ struct UpdateAvailableBanner: View {
             .help(strings.phrase("打开发布页", "Open release"))
         }
         .padding(12)
-        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(ClaudeTheme.accent.opacity(0.18), lineWidth: 1)
-        )
+        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var strings: AppStrings {

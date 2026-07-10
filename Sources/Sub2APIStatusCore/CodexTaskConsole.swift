@@ -42,6 +42,7 @@ public struct CodexTaskConsoleRow: Identifiable, Sendable, Equatable {
     public let id: String
     public let badge: String
     public let status: String
+    public let isActive: Bool
     public let nodeID: String
     public let sessionID: String
     public let turnID: String
@@ -70,6 +71,7 @@ public struct CodexTaskConsoleRow: Identifiable, Sendable, Equatable {
         id = activity.id
         badge = activity.badge
         status = Self.statusCode(activity.status)
+        isActive = activity.status == .running || activity.status == .waiting
         nodeID = activity.nodeID
         sessionID = activity.sessionID
         turnID = activity.turnID
@@ -110,6 +112,8 @@ public struct CodexTaskConsoleRow: Identifiable, Sendable, Equatable {
 public struct CodexTaskGatewayUsageDetail: Sendable, Equatable {
     public let requestID: String?
     public let model: String?
+    public let upstreamModel: String?
+    public let modelMappingChain: String?
     public let serviceTier: String?
     public let reasoningEffort: String?
     public let inboundEndpoint: String?
@@ -131,6 +135,8 @@ public struct CodexTaskGatewayUsageDetail: Sendable, Equatable {
     public init(usage: UsageLog) {
         requestID = Self.nonEmpty(usage.requestID)
         model = Self.nonEmpty(usage.model)
+        upstreamModel = Self.nonEmpty(usage.upstreamModel)
+        modelMappingChain = Self.nonEmpty(usage.modelMappingChain)
         serviceTier = Self.nonEmpty(usage.serviceTier)
         reasoningEffort = Self.nonEmpty(usage.reasoningEffort)
         inboundEndpoint = Self.nonEmpty(usage.inboundEndpoint)
@@ -199,6 +205,11 @@ public enum CodexTaskConsoleModel {
     public static func rows(activities: [CodexTaskActivity]) -> [CodexTaskConsoleRow] {
         activities
             .sorted { lhs, rhs in
+                let lhsIsActive = lhs.status == .running || lhs.status == .waiting
+                let rhsIsActive = rhs.status == .running || rhs.status == .waiting
+                if lhsIsActive != rhsIsActive {
+                    return lhsIsActive
+                }
                 if lhs.updatedAt == rhs.updatedAt {
                     return lhs.id < rhs.id
                 }

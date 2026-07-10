@@ -14,6 +14,7 @@ public final class LocalCodexHookReceiverServer {
     private let port: UInt16
     private let onEvent: @MainActor (CodexHookEvent) -> Void
     private let onStateChange: @MainActor (LocalCodexHookReceiverState) -> Void
+    private let receiverLock = NSLock()
     private var receiver: CodexHookHTTPReceiver
     private var serverSocket: Int32?
     private var acceptTask: Task<Void, Never>?
@@ -38,6 +39,8 @@ public final class LocalCodexHookReceiverServer {
 
     @MainActor
     public func updateNodeSecrets(_ nodeSecrets: [String: String]) {
+        receiverLock.lock()
+        defer { receiverLock.unlock() }
         receiver = CodexHookHTTPReceiver(
             ingestor: CodexHookEventIngestor(nodeSecrets: nodeSecrets, allowedClockSkewSeconds: 300)
         )
@@ -162,22 +165,27 @@ public final class LocalCodexHookReceiverServer {
         throw CodexHookHTTPMessageCodecError.invalidRequest
     }
 
-    @MainActor
-    private func responseStatus(for requestData: Data) -> Int {
+    private func responseStatus(for requestData: Data) async -> Int {
         do {
             let request = try CodexHookHTTPMessageCodec.parseRequest(requestData)
-            let response = receiver.handle(request, now: Date())
+            let response = handleRequest(request)
             if response.error == .invalidSignature,
                let nodeID = request.header(CodexHookHTTPReceiver.nodeIDHeader) {
-                onStateChange(.invalidSignature(nodeID: nodeID))
+                await onStateChange(.invalidSignature(nodeID: nodeID))
             }
             if let event = response.result?.event {
-                onEvent(event)
+                await onEvent(event)
             }
             return response.statusCode
         } catch {
             return 400
         }
+    }
+
+    private func handleRequest(_ request: CodexHookHTTPRequest) -> CodexHookHTTPResponse {
+        receiverLock.lock()
+        defer { receiverLock.unlock() }
+        return receiver.handle(request, now: Date())
     }
 
     private func writeAll(_ data: Data, to clientSocket: Int32) {

@@ -411,7 +411,7 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         guard let url = request.url else {
-            client?.urlProtocol(self, didFailWithError: Sub2APIError.invalidBaseURL)
+            client?.urlProtocol(self, didFailWithError: TokenRouterError.invalidBaseURL)
             return
         }
 
@@ -451,10 +451,20 @@ func testAppConfigNormalizesBaseURLAndRefreshInterval() {
 
     XCTAssert(config.baseURL == "http://127.0.0.1:8080")
     XCTAssert(config.authToken == "token")
-    XCTAssert(config.refreshIntervalSeconds == 1)
+    XCTAssert(config.refreshIntervalSeconds == 5)
     XCTAssert(config.monitorMode == .user)
     XCTAssert(config.showsMenuBarText == false)
     XCTAssert(config.launchAtLogin == false)
+}
+
+func testTokenRouterRefreshPolicySeparatesAutomaticAndManualSlowRefreshes() {
+    let policy = TokenRouterRefreshPolicy(slowRefreshInterval: 60)
+    let now = Date(timeIntervalSince1970: 1_000)
+
+    XCTAssertTrue(policy.shouldRefreshSlowData(lastAttemptAt: nil, now: now, isManualRefresh: false))
+    XCTAssertFalse(policy.shouldRefreshSlowData(lastAttemptAt: now.addingTimeInterval(-59), now: now, isManualRefresh: false))
+    XCTAssertTrue(policy.shouldRefreshSlowData(lastAttemptAt: now.addingTimeInterval(-60), now: now, isManualRefresh: false))
+    XCTAssertTrue(policy.shouldRefreshSlowData(lastAttemptAt: now, now: now, isManualRefresh: true))
 }
 
 func testAppConfigNormalizesCodexTaskTimelineEventLimit() {
@@ -2561,56 +2571,56 @@ func testCodexTaskActivityStoreCreatesRunningTurnFromUserPromptSubmit() {
     XCTAssertEqual(activity?.badge, "A1")
 }
 
-func testCodexTaskActivityStoreKeepsSameSessionAsOneTaskAcrossTurns() {
+func testCodexTaskActivityStoreCreatesSeparateTasksForTurnsInSameSession() {
     var store = CodexTaskActivityStore()
 
     store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 120), hookEvent: .preToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash"))
     store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 300), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
 
-    XCTAssertEqual(store.activities.count, 1)
-    let activity = store.activities.first
-    XCTAssertEqual(activity?.id, "node-a|session-1")
-    XCTAssertEqual(activity?.badge, "A1")
-    XCTAssertEqual(activity?.sessionID, "session-1")
-    XCTAssertEqual(activity?.turnID, "turn-2")
-    XCTAssertEqual(activity?.status, .running)
-    XCTAssertEqual(activity?.phase, .prompt)
-    XCTAssertEqual(activity?.completedAt, nil)
-    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2", "event-3"])
-    XCTAssertEqual(activity?.timeline.map(\.turnID), ["turn-1", "turn-1", "turn-2"])
+    XCTAssertEqual(store.activities.count, 2)
+    let firstTurn = store.activities.first { $0.turnID == "turn-1" }
+    let secondTurn = store.activities.first { $0.turnID == "turn-2" }
+    XCTAssertEqual(firstTurn?.id, "node-a|session-1|turn-1")
+    XCTAssertEqual(firstTurn?.badge, "A1")
+    XCTAssertEqual(firstTurn?.timeline.map(\.eventID), ["event-1", "event-2"])
+    XCTAssertEqual(secondTurn?.id, "node-a|session-1|turn-2")
+    XCTAssertEqual(secondTurn?.badge, "A2")
+    XCTAssertEqual(secondTurn?.status, .running)
+    XCTAssertEqual(secondTurn?.phase, .prompt)
+    XCTAssertEqual(secondTurn?.timeline.map(\.eventID), ["event-3"])
 }
 
-func testCodexTaskActivityStoreIgnoresLateStopForPreviousTurnAfterSessionContinues() {
+func testCodexTaskActivityStoreAppliesLateStopOnlyToMatchingTurn() {
     var store = CodexTaskActivityStore()
 
     store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 200), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 210), hookEvent: .stop, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
 
-    XCTAssertEqual(store.activities.count, 1)
-    let activity = store.activities.first
-    XCTAssertEqual(activity?.turnID, "turn-2")
-    XCTAssertEqual(activity?.status, .running)
-    XCTAssertEqual(activity?.phase, .prompt)
-    XCTAssertEqual(activity?.completedAt, nil)
-    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2", "event-3"])
+    XCTAssertEqual(store.activities.count, 2)
+    let firstTurn = store.activities.first { $0.turnID == "turn-1" }
+    let secondTurn = store.activities.first { $0.turnID == "turn-2" }
+    XCTAssertEqual(firstTurn?.status, .done)
+    XCTAssertEqual(firstTurn?.timeline.map(\.eventID), ["event-1", "event-3"])
+    XCTAssertEqual(secondTurn?.status, .running)
+    XCTAssertEqual(secondTurn?.timeline.map(\.eventID), ["event-2"])
 }
 
-func testCodexTaskActivityStoreReopensCompletedSessionWhenNewTurnStarts() {
+func testCodexTaskActivityStoreKeepsCompletedTurnWhenNewTurnStarts() {
     var store = CodexTaskActivityStore()
 
     store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 150), hookEvent: .stop, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 300), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: "/workspace/app", model: "gpt-5", toolName: nil))
 
-    XCTAssertEqual(store.activities.count, 1)
-    let activity = store.activities.first
-    XCTAssertEqual(activity?.turnID, "turn-2")
-    XCTAssertEqual(activity?.status, .running)
-    XCTAssertEqual(activity?.phase, .prompt)
-    XCTAssertEqual(activity?.completedAt, nil)
-    XCTAssertEqual(activity?.timeline.map(\.hookEvent), [.userPromptSubmit, .stop, .userPromptSubmit])
+    XCTAssertEqual(store.activities.count, 2)
+    let firstTurn = store.activities.first { $0.turnID == "turn-1" }
+    let secondTurn = store.activities.first { $0.turnID == "turn-2" }
+    XCTAssertEqual(firstTurn?.status, .done)
+    XCTAssertEqual(firstTurn?.timeline.map(\.hookEvent), [.userPromptSubmit, .stop])
+    XCTAssertEqual(secondTurn?.status, .running)
+    XCTAssertEqual(secondTurn?.timeline.map(\.hookEvent), [.userPromptSubmit])
 }
 
 func testCodexTaskActivityStoreDoesNotLetLatePreviousTurnStopOverwriteCurrentTurnMetadata() {
@@ -2620,14 +2630,14 @@ func testCodexTaskActivityStoreDoesNotLetLatePreviousTurnStopOverwriteCurrentTur
     store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 200), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 210), hookEvent: .stop, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil, statusHint: "failed", errorMessage: "old turn failed"))
 
-    let activity = store.activities.first
-    XCTAssertEqual(activity?.turnID, "turn-2")
-    XCTAssertEqual(activity?.status, .running)
-    XCTAssertEqual(activity?.statusHint, nil)
-    XCTAssertEqual(activity?.errorMessage, nil)
-    XCTAssertEqual(activity?.updatedAt, Date(timeIntervalSince1970: 200))
-    XCTAssertEqual(activity?.timeline.last?.turnID, "turn-1")
-    XCTAssertEqual(activity?.timeline.last?.errorMessage, "old turn failed")
+    let firstTurn = store.activities.first { $0.turnID == "turn-1" }
+    let secondTurn = store.activities.first { $0.turnID == "turn-2" }
+    XCTAssertEqual(firstTurn?.status, .error)
+    XCTAssertEqual(firstTurn?.errorMessage, "old turn failed")
+    XCTAssertEqual(secondTurn?.status, .running)
+    XCTAssertNil(secondTurn?.statusHint)
+    XCTAssertNil(secondTurn?.errorMessage)
+    XCTAssertEqual(secondTurn?.updatedAt, Date(timeIntervalSince1970: 200))
 }
 
 func testCodexTaskActivityStoreDoesNotRewindToLatePreviousTurnNonTerminalEvent() {
@@ -2637,14 +2647,16 @@ func testCodexTaskActivityStoreDoesNotRewindToLatePreviousTurnNonTerminalEvent()
     store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 200), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 210), hookEvent: .postToolUse, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: "Bash", statusHint: "success"))
 
-    let activity = store.activities.first
-    XCTAssertEqual(activity?.turnID, "turn-2")
-    XCTAssertEqual(activity?.status, .running)
-    XCTAssertEqual(activity?.phase, .prompt)
-    XCTAssertEqual(activity?.toolName, nil)
-    XCTAssertEqual(activity?.statusHint, nil)
-    XCTAssertEqual(activity?.updatedAt, Date(timeIntervalSince1970: 200))
-    XCTAssertEqual(activity?.timeline.map(\.turnID), ["turn-1", "turn-2", "turn-1"])
+    let firstTurn = store.activities.first { $0.turnID == "turn-1" }
+    let secondTurn = store.activities.first { $0.turnID == "turn-2" }
+    XCTAssertEqual(firstTurn?.status, .running)
+    XCTAssertEqual(firstTurn?.phase, .tooling)
+    XCTAssertEqual(firstTurn?.toolName, "Bash")
+    XCTAssertEqual(firstTurn?.timeline.map(\.eventID), ["event-1", "event-3"])
+    XCTAssertEqual(secondTurn?.status, .running)
+    XCTAssertEqual(secondTurn?.phase, .prompt)
+    XCTAssertNil(secondTurn?.toolName)
+    XCTAssertEqual(secondTurn?.updatedAt, Date(timeIntervalSince1970: 200))
 }
 
 func testCodexTaskActivityStoreDoesNotReopenCompletedTurnFromLateNonTerminalEvent() {
@@ -2669,11 +2681,13 @@ func testCodexTaskActivityStorePersistenceReloadsActivitiesAcrossAppRestarts() t
     let storageURL = root.appendingPathComponent("codex-task-activities.json")
     let persistence = CodexTaskActivityStorePersistence(storageURL: storageURL)
     var store = CodexTaskActivityStore()
+    let completedAt = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+    let startedAt = completedAt.addingTimeInterval(-20)
 
     store.apply(CodexHookEvent(
         eventID: "event-1",
         nodeID: "remote-node",
-        observedAt: Date(timeIntervalSince1970: 100),
+        observedAt: startedAt,
         hookEvent: .userPromptSubmit,
         sessionID: "session-1",
         turnID: "turn-1",
@@ -2688,7 +2702,7 @@ func testCodexTaskActivityStorePersistenceReloadsActivitiesAcrossAppRestarts() t
     store.apply(CodexHookEvent(
         eventID: "event-2",
         nodeID: "remote-node",
-        observedAt: Date(timeIntervalSince1970: 120),
+        observedAt: completedAt,
         hookEvent: .stop,
         sessionID: "session-1",
         turnID: "turn-1",
@@ -2698,16 +2712,214 @@ func testCodexTaskActivityStorePersistenceReloadsActivitiesAcrossAppRestarts() t
     ))
 
     try persistence.save(store)
+    let savedData = try Data(contentsOf: storageURL)
+    let savedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: savedData) as? [String: Any])
     let reloaded = try persistence.load()
 
+    XCTAssertEqual(savedObject["schema_version"] as? Int, 2)
+    XCTAssertNotNil(savedObject["activities"] as? [[String: Any]])
+    XCTAssertFalse(String(decoding: savedData, as: UTF8.self).contains("rawPayloadJSON"))
+    let attributes = try FileManager.default.attributesOfItem(atPath: storageURL.path)
+    XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     XCTAssertEqual(reloaded.activities.count, 1)
     let activity = reloaded.activities.first
-    XCTAssertEqual(activity?.id, "remote-node|session-1")
+    XCTAssertEqual(activity?.id, "remote-node|session-1|turn-1")
     XCTAssertEqual(activity?.status, .done)
-    XCTAssertEqual(activity?.completedAt, Date(timeIntervalSince1970: 120))
+    XCTAssertEqual(activity?.completedAt, completedAt)
     XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-1", "event-2"])
-    XCTAssertEqual(activity?.timeline.first?.rawPayloadJSON, #"{"event_id":"event-1"}"#)
+    XCTAssertNil(activity?.timeline.first?.rawPayloadJSON)
     XCTAssertEqual(activity?.userAgent, "codex_cli_rs/0.136.0")
+}
+
+func testCodexTaskActivityStorePersistencePrunesLegacyTerminalHistoryBeforeReturning() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storageURL = root.appendingPathComponent("codex-task-activities.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let now = Date()
+    let activities = (0 ..< 205).map { index in
+        let observedAt = now.addingTimeInterval(-TimeInterval(index))
+        return CodexTaskActivity(
+            nodeID: "node-a",
+            sessionID: "session-\(index)",
+            turnID: "turn-\(index)",
+            badge: "A\(index + 1)",
+            cwd: nil,
+            model: nil,
+            status: .done,
+            phase: .completed,
+            toolName: nil,
+            startedAt: observedAt,
+            updatedAt: observedAt,
+            completedAt: observedAt,
+            timeline: [
+                CodexTaskActivity.TimelineEvent(
+                    eventID: "event-\(index)",
+                    hookEvent: .stop,
+                    observedAt: observedAt,
+                    sessionID: "session-\(index)",
+                    turnID: "turn-\(index)",
+                    cwd: nil,
+                    model: nil,
+                    toolName: nil
+                ),
+            ]
+        )
+    }
+    try JSONEncoder.codexHook.encode(activities).write(to: storageURL)
+
+    let loaded = try CodexTaskActivityStorePersistence(storageURL: storageURL).load()
+
+    XCTAssertEqual(loaded.activities.count, CodexTaskActivityStore.maxTerminalActivities)
+    XCTAssertTrue(loaded.activities.contains { $0.sessionID == "session-0" })
+    XCTAssertFalse(loaded.activities.contains { $0.sessionID == "session-204" })
+}
+
+func testCodexTaskActivityStoreKeepsRawPayloadOnlyForThreeNewestTimelineEvents() {
+    var store = CodexTaskActivityStore()
+
+    for index in 1 ... 5 {
+        store.apply(CodexHookEvent(
+            eventID: "event-\(index)",
+            nodeID: "node-a",
+            observedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+            hookEvent: index == 1 ? .userPromptSubmit : .postToolUse,
+            sessionID: "session-1",
+            turnID: "turn-1",
+            cwd: nil,
+            model: nil,
+            toolName: index == 1 ? nil : "Bash",
+            rawPayloadJSON: #"{"index":\#(index)}"#
+        ))
+    }
+
+    let timeline = store.activities.first?.timeline ?? []
+    XCTAssertEqual(timeline.map(\.eventID), ["event-1", "event-2", "event-3", "event-4", "event-5"])
+    XCTAssertEqual(timeline.compactMap(\.rawPayloadJSON).count, 3)
+    XCTAssertNil(timeline[0].rawPayloadJSON)
+    XCTAssertNil(timeline[1].rawPayloadJSON)
+    XCTAssertNotNil(timeline[2].rawPayloadJSON)
+}
+
+func testCodexTaskActivityStoreMergesLoadedHistoryWithoutOverwritingNewerLiveState() {
+    var loadedStore = CodexTaskActivityStore()
+    loadedStore.apply(CodexHookEvent(
+        eventID: "event-loaded",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: "/loaded",
+        model: "gpt-5.5",
+        toolName: nil
+    ))
+
+    var liveStore = CodexTaskActivityStore()
+    liveStore.apply(CodexHookEvent(
+        eventID: "event-live",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .postToolUse,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: "/live",
+        model: "gpt-5.6-sol",
+        toolName: "Bash"
+    ))
+
+    liveStore.merge(activities: loadedStore.activities)
+
+    let activity = liveStore.activities.first
+    XCTAssertEqual(activity?.updatedAt, Date(timeIntervalSince1970: 120))
+    XCTAssertEqual(activity?.toolName, "Bash")
+    XCTAssertEqual(activity?.timeline.map(\.eventID), ["event-loaded", "event-live"])
+}
+
+func testCodexTaskActivityStoreMergesDuplicatePersistedEventIDsWithoutCrashing() throws {
+    var persistedStore = CodexTaskActivityStore()
+    persistedStore.apply(CodexHookEvent(
+        eventID: "event-duplicate",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 100),
+        hookEvent: .userPromptSubmit,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: nil
+    ))
+    var persistedActivity = try XCTUnwrap(persistedStore.activities.first)
+    persistedActivity.timeline.append(CodexTaskActivity.TimelineEvent(
+        eventID: "event-duplicate",
+        hookEvent: .postToolUse,
+        observedAt: Date(timeIntervalSince1970: 110),
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: "Read"
+    ))
+
+    var liveStore = CodexTaskActivityStore()
+    liveStore.apply(CodexHookEvent(
+        eventID: "event-live",
+        nodeID: "node-a",
+        observedAt: Date(timeIntervalSince1970: 120),
+        hookEvent: .postToolUse,
+        sessionID: "session-1",
+        turnID: "turn-1",
+        cwd: nil,
+        model: nil,
+        toolName: "Bash"
+    ))
+
+    liveStore.merge(activities: [persistedActivity])
+
+    let duplicateEvents = liveStore.activities.first?.timeline.filter { $0.eventID == "event-duplicate" }
+    XCTAssertEqual(duplicateEvents?.count, 1)
+    XCTAssertEqual(duplicateEvents?.first?.observedAt, Date(timeIntervalSince1970: 110))
+    XCTAssertEqual(duplicateEvents?.first?.toolName, "Read")
+}
+
+func testCodexTaskActivityStorePersistenceMigratesLegacyMixedSessionTimelineIntoTurns() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let storageURL = root.appendingPathComponent("codex-task-activities.json")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let firstTurnStartedAt = Date().addingTimeInterval(-120)
+    let firstTurnCompletedAt = firstTurnStartedAt.addingTimeInterval(20)
+    let secondTurnStartedAt = firstTurnStartedAt.addingTimeInterval(100)
+    let timeline = [
+        CodexTaskActivity.TimelineEvent(eventID: "event-1", hookEvent: .userPromptSubmit, observedAt: firstTurnStartedAt, sessionID: "session-1", turnID: "turn-1", cwd: "/workspace", model: "gpt-5.5", toolName: nil),
+        CodexTaskActivity.TimelineEvent(eventID: "event-2", hookEvent: .stop, observedAt: firstTurnCompletedAt, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil),
+        CodexTaskActivity.TimelineEvent(eventID: "event-3", hookEvent: .userPromptSubmit, observedAt: secondTurnStartedAt, sessionID: "session-1", turnID: "turn-2", cwd: "/workspace", model: "gpt-5.6-sol", toolName: nil),
+    ]
+    let legacyActivity = CodexTaskActivity(
+        nodeID: "node-a",
+        sessionID: "session-1",
+        turnID: "turn-2",
+        badge: "A1",
+        cwd: "/workspace",
+        model: "gpt-5.6-sol",
+        status: .running,
+        phase: .prompt,
+        toolName: nil,
+        startedAt: firstTurnStartedAt,
+        updatedAt: secondTurnStartedAt,
+        completedAt: nil,
+        timeline: timeline
+    )
+    try JSONEncoder.codexHook.encode([legacyActivity]).write(to: storageURL)
+
+    let migrated = try CodexTaskActivityStorePersistence(storageURL: storageURL).load()
+    let migratedData = try Data(contentsOf: storageURL)
+    let migratedObject = try XCTUnwrap(JSONSerialization.jsonObject(with: migratedData) as? [String: Any])
+
+    XCTAssertEqual(migrated.activities.count, 2)
+    XCTAssertEqual(migratedObject["schema_version"] as? Int, 2)
+    XCTAssertEqual(migrated.activities.first { $0.turnID == "turn-1" }?.status, .done)
+    XCTAssertEqual(migrated.activities.first { $0.turnID == "turn-2" }?.status, .running)
+    XCTAssertEqual(migrated.activities.first { $0.turnID == "turn-1" }?.timeline.count, 2)
+    XCTAssertEqual(migrated.activities.first { $0.turnID == "turn-2" }?.timeline.count, 1)
 }
 
 func testCodexTaskActivityStoreKeepsOnlyRegisteredNodesWhenRegistryChanges() {
@@ -2842,18 +3054,63 @@ func testCodexHookEventRejectsNonCanonicalPayloads() throws {
     XCTAssertThrowsError(try JSONDecoder.codexHook.decode(CodexHookEvent.self, from: camelCase))
 }
 
-func testCodexTaskActivityStoreMarksOnlyRunningTurnsStale() {
+func testCodexTaskActivityStoreMarksRunningAndWaitingTurnsStale() {
     var store = CodexTaskActivityStore()
     store.apply(CodexHookEvent(eventID: "event-1", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 100), hookEvent: .userPromptSubmit, sessionID: "session-1", turnID: "turn-1", cwd: nil, model: nil, toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-2", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 110), hookEvent: .userPromptSubmit, sessionID: "session-2", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
     store.apply(CodexHookEvent(eventID: "event-3", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 115), hookEvent: .stop, sessionID: "session-2", turnID: "turn-2", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "event-4", nodeID: "node-a", observedAt: Date(timeIntervalSince1970: 120), hookEvent: .permissionRequest, sessionID: "session-3", turnID: "turn-3", cwd: nil, model: nil, toolName: "Bash"))
 
     store.markStale(now: Date(timeIntervalSince1970: 500), staleAfter: 300)
 
     let staleActivity = store.activities.first { $0.turnID == "turn-1" }
     let doneActivity = store.activities.first { $0.turnID == "turn-2" }
+    let waitingActivity = store.activities.first { $0.turnID == "turn-3" }
     XCTAssertEqual(staleActivity?.status, .stale)
     XCTAssertEqual(doneActivity?.status, .done)
+    XCTAssertEqual(waitingActivity?.status, .stale)
+}
+
+func testCodexTaskActivityStoreBoundsTimelineAndTerminalHistory() {
+    var store = CodexTaskActivityStore()
+    for index in 0..<25 {
+        store.apply(CodexHookEvent(
+            eventID: "timeline-\(index)",
+            nodeID: "node-a",
+            observedAt: Date(timeIntervalSince1970: Double(100 + index)),
+            hookEvent: index == 0 ? .userPromptSubmit : .postToolUse,
+            sessionID: "session-live",
+            turnID: "turn-live",
+            cwd: nil,
+            model: nil,
+            toolName: index == 0 ? nil : "Bash"
+        ))
+    }
+    for index in 0..<205 {
+        let time = Date(timeIntervalSince1970: Double(1_000 + index * 2))
+        store.apply(CodexHookEvent(eventID: "done-start-\(index)", nodeID: "node-a", observedAt: time, hookEvent: .userPromptSubmit, sessionID: "session-\(index)", turnID: "turn-\(index)", cwd: nil, model: nil, toolName: nil))
+        store.apply(CodexHookEvent(eventID: "done-stop-\(index)", nodeID: "node-a", observedAt: time.addingTimeInterval(1), hookEvent: .stop, sessionID: "session-\(index)", turnID: "turn-\(index)", cwd: nil, model: nil, toolName: nil))
+    }
+
+    store.prune(now: Date(timeIntervalSince1970: 2_000))
+
+    XCTAssertEqual(store.activities.first { $0.turnID == "turn-live" }?.timeline.count, 20)
+    XCTAssertEqual(store.activities.filter { $0.status == .done }.count, 200)
+    XCTAssertEqual(store.activities.filter { $0.status == .running }.count, 1)
+}
+
+func testCodexTaskActivityStorePrunesTerminalTasksOlderThanSevenDays() {
+    var store = CodexTaskActivityStore()
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let old = now.addingTimeInterval(-(7 * 24 * 60 * 60) - 2)
+    store.apply(CodexHookEvent(eventID: "old-start", nodeID: "node-a", observedAt: old, hookEvent: .userPromptSubmit, sessionID: "old", turnID: "old", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "old-stop", nodeID: "node-a", observedAt: old.addingTimeInterval(1), hookEvent: .stop, sessionID: "old", turnID: "old", cwd: nil, model: nil, toolName: nil))
+    store.apply(CodexHookEvent(eventID: "live", nodeID: "node-a", observedAt: old, hookEvent: .userPromptSubmit, sessionID: "live", turnID: "live", cwd: nil, model: nil, toolName: nil))
+
+    store.prune(now: now)
+
+    XCTAssertNil(store.activities.first { $0.turnID == "old" })
+    XCTAssertNotNil(store.activities.first { $0.turnID == "live" })
 }
 
 func testCodexTaskActivityStoreKeepsBadgeStableAcrossUpdates() {
@@ -3462,26 +3719,29 @@ func testCodexTaskConsoleRowsExposeIdentityAndSortByRecentUpdate() {
 
     let rows = CodexTaskConsoleModel.rows(activities: [older, newer])
 
-    XCTAssertEqual(rows.map(\.badge), ["A2", "A1"])
-    XCTAssertEqual(rows.first?.status, "D")
-    XCTAssertEqual(rows.first?.nodeID, "remote-node")
-    XCTAssertEqual(rows.first?.sessionID, "session-b")
-    XCTAssertEqual(rows.first?.turnID, "turn-b")
-    XCTAssertEqual(rows.last?.toolName, "Bash")
-    XCTAssertEqual(rows.last?.events.map(\.eventID), ["event-0", "event-1"])
-    XCTAssertEqual(rows.last?.events.first?.eventName, "UserPromptSubmit")
-    XCTAssertEqual(rows.last?.events.first?.sessionID, "session-a")
-    XCTAssertEqual(rows.last?.events.first?.turnID, "turn-a")
-    XCTAssertEqual(rows.last?.events.first?.statusHint, "running")
-    XCTAssertEqual(rows.last?.events.first?.toolUseID, "tool-0")
-    XCTAssertEqual(rows.last?.events.first?.transcriptPath, "/tmp/transcript.jsonl")
-    XCTAssertEqual(rows.last?.events.first?.userAgent, "Codex Desktop/0.125.0")
-    XCTAssertEqual(rows.last?.userAgent, "Codex Desktop/0.125.0")
-    XCTAssertEqual(rows.last?.events.first?.rawPayloadHash, "sha256:abc123")
-    XCTAssertEqual(rows.last?.events.first?.rawPayloadJSON, #"{"event_id":"event-0"}"#)
-    XCTAssertEqual(rows.last?.events.last?.toolName, "Bash")
-    XCTAssertEqual(rows.last?.latestEvents(limit: 1).map(\.eventID), ["event-1"])
-    XCTAssertEqual(rows.last?.latestEvents(limit: 20).map(\.eventID), ["event-1", "event-0"])
+    XCTAssertEqual(rows.map(\.badge), ["A1", "A2"])
+    XCTAssertEqual(rows.first?.status, "R")
+    XCTAssertEqual(rows.first?.isActive, true)
+    XCTAssertEqual(rows.first?.nodeID, "local-node")
+    XCTAssertEqual(rows.first?.sessionID, "session-a")
+    XCTAssertEqual(rows.first?.turnID, "turn-a")
+    XCTAssertEqual(rows.first?.toolName, "Bash")
+    XCTAssertEqual(rows.first?.events.map(\.eventID), ["event-0", "event-1"])
+    XCTAssertEqual(rows.first?.events.first?.eventName, "UserPromptSubmit")
+    XCTAssertEqual(rows.first?.events.first?.sessionID, "session-a")
+    XCTAssertEqual(rows.first?.events.first?.turnID, "turn-a")
+    XCTAssertEqual(rows.first?.events.first?.statusHint, "running")
+    XCTAssertEqual(rows.first?.events.first?.toolUseID, "tool-0")
+    XCTAssertEqual(rows.first?.events.first?.transcriptPath, "/tmp/transcript.jsonl")
+    XCTAssertEqual(rows.first?.events.first?.userAgent, "Codex Desktop/0.125.0")
+    XCTAssertEqual(rows.first?.userAgent, "Codex Desktop/0.125.0")
+    XCTAssertEqual(rows.first?.events.first?.rawPayloadHash, "sha256:abc123")
+    XCTAssertEqual(rows.first?.events.first?.rawPayloadJSON, #"{"event_id":"event-0"}"#)
+    XCTAssertEqual(rows.first?.events.last?.toolName, "Bash")
+    XCTAssertEqual(rows.first?.latestEvents(limit: 1).map(\.eventID), ["event-1"])
+    XCTAssertEqual(rows.first?.latestEvents(limit: 20).map(\.eventID), ["event-1", "event-0"])
+    XCTAssertEqual(rows.last?.status, "D")
+    XCTAssertEqual(rows.last?.isActive, false)
 }
 
 func testCodexTaskConsoleGatewayUsageDetailKeepsSupplementaryFields() {
@@ -3489,6 +3749,8 @@ func testCodexTaskConsoleGatewayUsageDetailKeepsSupplementaryFields() {
         id: 133605,
         requestID: "req-133605",
         model: "gpt-5.5",
+        upstreamModel: "gpt-5.5-openai-compact",
+        modelMappingChain: "gpt-5.5 -> gpt-5.5-openai-compact",
         serviceTier: "priority",
         reasoningEffort: "xhigh",
         inboundEndpoint: "/openai/v1/responses",
@@ -3512,6 +3774,8 @@ func testCodexTaskConsoleGatewayUsageDetailKeepsSupplementaryFields() {
 
     XCTAssertEqual(detail?.requestID, "req-133605")
     XCTAssertEqual(detail?.model, "gpt-5.5")
+    XCTAssertEqual(detail?.upstreamModel, "gpt-5.5-openai-compact")
+    XCTAssertEqual(detail?.modelMappingChain, "gpt-5.5 -> gpt-5.5-openai-compact")
     XCTAssertEqual(detail?.serviceTier, "priority")
     XCTAssertEqual(detail?.reasoningEffort, "xhigh")
     XCTAssertEqual(detail?.inboundEndpoint, "/openai/v1/responses")
@@ -3599,10 +3863,13 @@ func testCodexHookEventIngestorVerifiesDecodesAndAppliesEvent() throws {
     )
 
     XCTAssertEqual(result.event.eventID, "event-1")
-    XCTAssert(result.event.rawPayloadJSON?.contains("\"event_id\" : \"event-1\"") == true)
+    let rawPayload = try XCTUnwrap(result.event.rawPayloadJSON?.data(using: .utf8))
+    let rawObject = try XCTUnwrap(JSONSerialization.jsonObject(with: rawPayload) as? [String: Any])
+    XCTAssertEqual(rawObject["event_id"] as? String, "event-1")
     XCTAssertEqual(result.activities.first?.status, .running)
     XCTAssertEqual(result.activities.first?.badge, "A1")
-    XCTAssert(result.activities.first?.timeline.first?.rawPayloadJSON?.contains("\"session_id\" : \"session-1\"") == true)
+    XCTAssertEqual(result.activities.first?.timeline.first?.rawPayloadJSON, result.event.rawPayloadJSON)
+    XCTAssertEqual(rawObject["session_id"] as? String, "session-1")
 }
 
 func testCodexHookEventIngestorRejectsMismatchedNodeHeader() throws {
@@ -4245,7 +4512,7 @@ func testLegacyAutoLanguageNormalizesToChinese() throws {
     }
     """.data(using: .utf8)!
 
-    let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
+    let config = try JSONDecoder.tokenRouter.decode(AppConfig.self, from: data)
 
     XCTAssert(config.language == .zhHans)
 }
@@ -4258,7 +4525,7 @@ func testLegacyConfigWithoutAppearanceDefaultsToSystem() throws {
     }
     """.data(using: .utf8)!
 
-    let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
+    let config = try JSONDecoder.tokenRouter.decode(AppConfig.self, from: data)
 
     XCTAssert(config.appearance == .system)
 }
@@ -4444,9 +4711,9 @@ func testConfigStoreMigratesLegacyJSONTokensOutOfConfigFile() throws {
 func testStoredAuthTokensEncodeAsSingleCredentialsPayload() throws {
     let tokens = StoredAuthTokens(authToken: "access", refreshToken: "refresh")
 
-    let data = try JSONEncoder.sub2api.encode(tokens)
+    let data = try JSONEncoder.tokenRouter.encode(tokens)
     let rawJSON = try XCTUnwrap(String(data: data, encoding: .utf8))
-    let decoded = try JSONDecoder.sub2api.decode(StoredAuthTokens.self, from: data)
+    let decoded = try JSONDecoder.tokenRouter.decode(StoredAuthTokens.self, from: data)
 
     XCTAssert(rawJSON.contains("auth_token"))
     XCTAssert(rawJSON.contains("refresh_token"))
@@ -4497,7 +4764,7 @@ func testAppConfigRejectsUnknownMonitorMode() {
     }
     """.data(using: .utf8)!
 
-    XCTAssertThrowsError(try JSONDecoder.sub2api.decode(AppConfig.self, from: data))
+    XCTAssertThrowsError(try JSONDecoder.tokenRouter.decode(AppConfig.self, from: data))
 }
 
 func testUserModeNormalizationRemovesAdminOnlyMenuItems() {
@@ -4561,7 +4828,7 @@ func testAppConfigSupportsAdminModeAndSelectedUser() throws {
     }
     """.data(using: .utf8)!
 
-    let config = try JSONDecoder.sub2api.decode(AppConfig.self, from: data)
+    let config = try JSONDecoder.tokenRouter.decode(AppConfig.self, from: data)
 
     XCTAssert(config.monitorMode == .admin)
     XCTAssert(config.adminMonitoredUserID == 42)
@@ -4665,7 +4932,7 @@ func testApiEnvelopeDecodesWrappedData() throws {
     }
     """.data(using: .utf8)!
 
-    let metrics = try JSONDecoder.sub2api.decode(Sub2APIEnvelope<RealtimeMetrics>.self, from: json).value()
+    let metrics = try JSONDecoder.tokenRouter.decode(TokenRouterEnvelope<RealtimeMetrics>.self, from: json).value()
 
     XCTAssert(metrics.activeRequests == 2)
     XCTAssert(metrics.requestsPerMinute == 13.5)
@@ -4673,10 +4940,10 @@ func testApiEnvelopeDecodesWrappedData() throws {
     XCTAssert(metrics.errorRate == 0.025)
 }
 
-func testSub2APIErrorIdentifiesUnauthorizedResponses() {
-    XCTAssert(Sub2APIError.badStatus(401, "expired").isUnauthorized == true)
-    XCTAssert(Sub2APIError.badStatus(403, "forbidden").isUnauthorized == false)
-    XCTAssert(Sub2APIError.invalidBaseURL.isUnauthorized == false)
+func testTokenRouterErrorIdentifiesUnauthorizedResponses() {
+    XCTAssert(TokenRouterError.badStatus(401, "expired").isUnauthorized == true)
+    XCTAssert(TokenRouterError.badStatus(403, "forbidden").isUnauthorized == false)
+    XCTAssert(TokenRouterError.invalidBaseURL.isUnauthorized == false)
 }
 
 func testAppVersionComparesSemanticVersions() {
@@ -4884,7 +5151,7 @@ func testCurrentUserResponseDecodesDirectUserPayload() throws {
     }
     """.data(using: .utf8)!
 
-    let response = try JSONDecoder.sub2api.decode(CurrentUserResponse.self, from: json)
+    let response = try JSONDecoder.tokenRouter.decode(CurrentUserResponse.self, from: json)
 
     XCTAssert(response.user.balance == 12.34)
     XCTAssert(response.user.username == "das")
@@ -4903,7 +5170,7 @@ func testCurrentUserResponseRequiresConcurrencyField() {
     }
     """.data(using: .utf8)!
 
-    XCTAssertThrowsError(try JSONDecoder.sub2api.decode(CurrentUserResponse.self, from: json))
+    XCTAssertThrowsError(try JSONDecoder.tokenRouter.decode(CurrentUserResponse.self, from: json))
 }
 
 func testCurrentUserRecognizesAdminRole() throws {
@@ -4919,7 +5186,7 @@ func testCurrentUserRecognizesAdminRole() throws {
     }
     """.data(using: .utf8)!
 
-    let response = try JSONDecoder.sub2api.decode(CurrentUserResponse.self, from: json)
+    let response = try JSONDecoder.tokenRouter.decode(CurrentUserResponse.self, from: json)
 
     XCTAssert(response.user.isAdmin == true)
 }
@@ -4947,7 +5214,7 @@ func testAdminUserConcurrencyStatsDecodeRealUserConcurrencyPayload() throws {
     }
     """.data(using: .utf8)!
 
-    let stats = try JSONDecoder.sub2api.decode(Sub2APIEnvelope<AdminUserConcurrencyStats>.self, from: json).value()
+    let stats = try JSONDecoder.tokenRouter.decode(TokenRouterEnvelope<AdminUserConcurrencyStats>.self, from: json).value()
     let target = try XCTUnwrap(stats.concurrency(forUserID: 42, userEmail: "target@example.com", username: "target", maxCapacity: 100))
 
     XCTAssert(stats.enabled == true)
@@ -4973,8 +5240,8 @@ func testAdminUserConcurrencyStatsTreatsMissingActiveUserAsZeroOnlyWhenEnabled()
     }
     """.data(using: .utf8)!
 
-    let enabled = try JSONDecoder.sub2api.decode(AdminUserConcurrencyStats.self, from: enabledJSON)
-    let disabled = try JSONDecoder.sub2api.decode(AdminUserConcurrencyStats.self, from: disabledJSON)
+    let enabled = try JSONDecoder.tokenRouter.decode(AdminUserConcurrencyStats.self, from: enabledJSON)
+    let disabled = try JSONDecoder.tokenRouter.decode(AdminUserConcurrencyStats.self, from: disabledJSON)
 
     XCTAssert(enabled.concurrency(forUserID: 99, userEmail: "idle@example.com", username: nil, maxCapacity: 12)?.currentInUse == 0)
     XCTAssert(enabled.concurrency(forUserID: 99, userEmail: "idle@example.com", username: nil, maxCapacity: 12)?.maxCapacity == 12)
@@ -5003,7 +5270,7 @@ func testAdminUsersPageDecodesStrictUserListShape() throws {
     }
     """.data(using: .utf8)!
 
-    let page = try JSONDecoder.sub2api.decode(AdminUsersPage.self, from: json)
+    let page = try JSONDecoder.tokenRouter.decode(AdminUsersPage.self, from: json)
 
     XCTAssert(page.items.first?.id == 42)
     XCTAssert(page.items.first?.email == "target@example.com")
@@ -5012,7 +5279,7 @@ func testAdminUsersPageDecodesStrictUserListShape() throws {
     XCTAssert(page.pageSize == 20)
 }
 
-func testSub2APIClientFetchesAllAdminUsersAcrossPages() async throws {
+func testTokenRouterClientFetchesAllAdminUsersAcrossPages() async throws {
     StubURLProtocol.responses = [
         "/api/v1/admin/users?page=1&page_size=1000": Data("""
         {
@@ -5059,7 +5326,7 @@ func testSub2APIClientFetchesAllAdminUsersAcrossPages() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
-    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
 
     let users = try await client.allAdminUsers()
 
@@ -5070,7 +5337,7 @@ func testSub2APIClientFetchesAllAdminUsersAcrossPages() async throws {
     ])
 }
 
-func testSub2APIClientFetchesNormalAccountCountFromAccountFilterTotal() async throws {
+func testTokenRouterClientFetchesNormalAccountCountFromAccountFilterTotal() async throws {
     StubURLProtocol.responses = [
         "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true": Data("""
         {
@@ -5099,7 +5366,7 @@ func testSub2APIClientFetchesNormalAccountCountFromAccountFilterTotal() async th
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
-    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
 
     let count = try await client.adminNormalAccountCount()
 
@@ -5218,7 +5485,7 @@ func testNormalAccountCompositionCompactLineUsesPlatformsWhenPlansAreUnavailable
     XCTAssertEqual(composition.compactLine(language: .zhHans), "API 1 · OAuth 1 · OpenAI 1 · Gemini 1")
 }
 
-func testSub2APIClientFetchesNormalAccountCompositionFromFlatAccountList() async throws {
+func testTokenRouterClientFetchesNormalAccountCompositionFromFlatAccountList() async throws {
     StubURLProtocol.responses = [
         "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true": Data("""
         {
@@ -5280,7 +5547,7 @@ func testSub2APIClientFetchesNormalAccountCompositionFromFlatAccountList() async
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
-    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
 
     let composition = try await client.adminNormalAccountComposition()
 
@@ -5293,7 +5560,7 @@ func testSub2APIClientFetchesNormalAccountCompositionFromFlatAccountList() async
     ])
 }
 
-func testSub2APIClientRequiresNormalAccountCountTotal() async throws {
+func testTokenRouterClientRequiresNormalAccountCountTotal() async throws {
     StubURLProtocol.responses = [
         "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true": Data("""
         {
@@ -5308,7 +5575,7 @@ func testSub2APIClientRequiresNormalAccountCountTotal() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
-    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
 
     do {
         _ = try await client.adminNormalAccountCount()
@@ -5320,7 +5587,7 @@ func testSub2APIClientRequiresNormalAccountCountTotal() async throws {
     }
 }
 
-func testSub2APIClientRequiresNormalAccountCompositionTotal() async throws {
+func testTokenRouterClientRequiresNormalAccountCompositionTotal() async throws {
     StubURLProtocol.responses = [
         "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true": Data("""
         {
@@ -5348,7 +5615,7 @@ func testSub2APIClientRequiresNormalAccountCompositionTotal() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
-    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
 
     do {
         _ = try await client.adminNormalAccountComposition()
@@ -5360,7 +5627,7 @@ func testSub2APIClientRequiresNormalAccountCompositionTotal() async throws {
     }
 }
 
-func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async throws {
+func testTokenRouterClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async throws {
     StubURLProtocol.responses = [
         "/api/v1/admin/users/2": Data("""
         {
@@ -5396,6 +5663,8 @@ func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async t
               "account_id": 9,
               "request_id": "req-admin-133605",
               "model": "gpt-5.5",
+              "upstream_model": "gpt-5.5-openai-compact",
+              "model_mapping_chain": "gpt-5.5 -> gpt-5.5-openai-compact",
               "service_tier": "priority",
               "reasoning_effort": "xhigh",
               "inbound_endpoint": "/openai/v1/responses",
@@ -5420,112 +5689,80 @@ func testSub2APIClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async t
           "pages": 1
         }
         """.utf8),
-        "/api/v1/admin/dashboard/trend?user_id=2&start_date=2026-05-15&end_date=2026-05-21&granularity=day&timezone=Asia/Shanghai": Data("""
-        {
-          "trend": [
-            {
-              "date": "2026-05-21",
-              "requests": 3955,
-              "input_tokens": 38968948,
-              "output_tokens": 3027292,
-              "cache_read_tokens": 469653760,
-              "total_tokens": 511650000,
-              "cost": 1010.9990586,
-              "actual_cost": 1010.9990586
-            }
-          ]
-        }
-        """.utf8),
-        "/api/v1/admin/dashboard/models?user_id=2&start_date=2026-05-15&end_date=2026-05-21&timezone=Asia/Shanghai": Data("""
-        {
-          "models": [
-            {
-              "model": "gpt-5.5",
-              "requests": 38595,
-              "input_tokens": 355961052,
-              "output_tokens": 28255560,
-              "cache_read_tokens": 4380570437,
-              "total_tokens": 4772887049,
-              "cost": 6224.069159,
-              "actual_cost": 6224.069159
-            }
-          ]
-        }
-        """.utf8),
     ]
     StubURLProtocol.requestedPaths = []
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
-    let client = Sub2APIClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
 
     let user = try await client.adminUser(id: 2)
     let stats = try await client.adminUsageStats(userID: 2, startDate: "2026-05-21", endDate: "2026-05-21", timezone: "Asia/Shanghai")
     let latest = try await client.adminUsageLogs(userID: 2, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: "Asia/Shanghai")
-    let trend = try await client.adminDashboardTrend(userID: 2, startDate: "2026-05-15", endDate: "2026-05-21", granularity: "day", timezone: "Asia/Shanghai")
-    let models = try await client.adminDashboardModels(userID: 2, startDate: "2026-05-15", endDate: "2026-05-21", timezone: "Asia/Shanghai")
 
     XCTAssert(user.balance == 66937.34)
     XCTAssert(stats.totalRequests == 3953)
     XCTAssert(stats.totalCacheReadTokens == 469_289_472)
     XCTAssert(latest.items.first?.model == "gpt-5.5")
+    XCTAssert(latest.items.first?.upstreamModel == "gpt-5.5-openai-compact")
+    XCTAssert(latest.items.first?.modelMappingChain == "gpt-5.5 -> gpt-5.5-openai-compact")
     XCTAssert(latest.items.first?.reasoningEffort == "xhigh")
     XCTAssert(latest.items.first?.requestID == "req-admin-133605")
     XCTAssert(latest.items.first?.userAgent == "codex_cli_rs/0.125.0")
     XCTAssert(latest.items.first?.inboundEndpoint == "/openai/v1/responses")
     XCTAssert(latest.items.first?.upstreamEndpoint == "/v1/responses")
     XCTAssert(latest.items.first?.stream == true)
-    XCTAssert(trend.trend.first?.requests == 3955)
-    XCTAssert(models.models.first?.model == "gpt-5.5")
     XCTAssert(StubURLProtocol.requestedPaths == [
         "/api/v1/admin/users/2",
         "/api/v1/admin/usage/stats?user_id=2&start_date=2026-05-21&end_date=2026-05-21&timezone=Asia/Shanghai",
         "/api/v1/admin/usage?user_id=2&page=1&page_size=1&sort_by=created_at&sort_order=desc&timezone=Asia/Shanghai",
-        "/api/v1/admin/dashboard/trend?user_id=2&start_date=2026-05-15&end_date=2026-05-21&granularity=day&timezone=Asia/Shanghai",
-        "/api/v1/admin/dashboard/models?user_id=2&start_date=2026-05-15&end_date=2026-05-21&timezone=Asia/Shanghai",
     ])
 }
 
-func testDashboardSnapshotDecodesTokenBreakdownAndModelDistribution() throws {
-    let json = """
+func testTokenRouterClientFetchesTokenRouterDashboardSnapshots() async throws {
+    let response = Data("""
     {
-      "generated_at": "2026-04-28T13:00:00Z",
-      "stats": {
-        "today_requests": 1119,
-        "today_tokens": 121800000,
-        "today_input_tokens": 7400000,
-        "today_output_tokens": 513900,
-        "total_tokens": 594300000,
-        "total_input_tokens": 40200000,
-        "total_output_tokens": 3500000,
-        "today_actual_cost": 113.3052,
-        "rpm": 3,
-        "tpm": 12200,
-        "average_duration_ms": 14570
-      },
-      "model_distribution": [
-        {
-          "model": "gpt-5.5",
-          "requests": 2116,
-          "total_tokens": 244400000,
-          "input_tokens": 200000000,
-          "output_tokens": 44400000,
-          "actual_cost": 218.2116,
-          "standard_cost": 218.2116
-        }
-      ]
+      "code": 0,
+      "message": "success",
+      "data": {
+        "generated_at": "2026-07-10T08:00:00Z",
+        "start_date": "2026-07-03",
+        "end_date": "2026-07-10",
+        "granularity": "day",
+        "trend": [{"date":"2026-07-10","requests":2,"total_tokens":100}],
+        "models": [{"model":"gpt-5.6-sol","requests":2,"total_tokens":100}]
+      }
     }
-    """.data(using: .utf8)!
+    """.utf8)
+    StubURLProtocol.responses = [
+        "/api/v1/usage/dashboard/snapshot-v2?start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_trend=true&include_model_stats=true&include_group_stats=false": response,
+        "/api/v1/admin/dashboard/snapshot-v2?user_id=2&start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_stats=false&include_trend=true&include_model_stats=true&include_group_stats=false&timezone=Asia/Shanghai": response,
+    ]
+    StubURLProtocol.requestedPaths = []
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [StubURLProtocol.self]
+    let client = TokenRouterClient(
+        config: AppConfig(baseURL: "https://example.test", authToken: "token"),
+        session: URLSession(configuration: configuration)
+    )
 
-    let snapshot = try JSONDecoder.sub2api.decode(DashboardSnapshot.self, from: json)
+    let userSnapshot = try await client.usageDashboardSnapshot(
+        startDate: "2026-07-03",
+        endDate: "2026-07-10"
+    )
+    let adminSnapshot = try await client.adminDashboardSnapshot(
+        userID: 2,
+        startDate: "2026-07-03",
+        endDate: "2026-07-10",
+        timezone: "Asia/Shanghai"
+    )
 
-    XCTAssert(snapshot.stats?.todayInputTokens == 7_400_000)
-    XCTAssert(snapshot.stats?.todayOutputTokens == 513_900)
-    XCTAssert(snapshot.stats?.totalInputTokens == 40_200_000)
-    XCTAssert(snapshot.stats?.totalOutputTokens == 3_500_000)
-    XCTAssert(snapshot.modelDistribution?.first?.model == "gpt-5.5")
-    XCTAssert(snapshot.modelDistribution?.first?.requests == 2116)
-    XCTAssert(snapshot.modelDistribution?.first?.actualCost == 218.2116)
+    XCTAssertEqual(userSnapshot.models.first?.model, "gpt-5.6-sol")
+    XCTAssertEqual(adminSnapshot.trend.first?.requests, 2)
+    XCTAssertEqual(StubURLProtocol.requestedPaths, [
+        "/api/v1/usage/dashboard/snapshot-v2?start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_trend=true&include_model_stats=true&include_group_stats=false",
+        "/api/v1/admin/dashboard/snapshot-v2?user_id=2&start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_stats=false&include_trend=true&include_model_stats=true&include_group_stats=false&timezone=Asia/Shanghai",
+    ])
 }
 
 func testUsageDashboardDecodesUserStatsTrendAndModels() throws {
@@ -5554,7 +5791,7 @@ func testUsageDashboardDecodesUserStatsTrendAndModels() throws {
       "tpm": 10752
     }
     """.data(using: .utf8)!
-    let trendJSON = """
+    let snapshotJSON = """
     {
       "trend": [
         {
@@ -5568,11 +5805,7 @@ func testUsageDashboardDecodesUserStatsTrendAndModels() throws {
           "cost": 117.71206585,
           "actual_cost": 117.71206585
         }
-      ]
-    }
-    """.data(using: .utf8)!
-    let modelsJSON = """
-    {
+      ],
       "models": [
         {
           "model": "gpt-5.5",
@@ -5590,16 +5823,15 @@ func testUsageDashboardDecodesUserStatsTrendAndModels() throws {
     }
     """.data(using: .utf8)!
 
-    let stats = try JSONDecoder.sub2api.decode(DashboardStats.self, from: statsJSON)
-    let trend = try JSONDecoder.sub2api.decode(DashboardTrendResponse.self, from: trendJSON)
-    let models = try JSONDecoder.sub2api.decode(DashboardModelsResponse.self, from: modelsJSON)
+    let stats = try JSONDecoder.tokenRouter.decode(DashboardStats.self, from: statsJSON)
+    let snapshot = try JSONDecoder.tokenRouter.decode(TokenRouterDashboardSnapshot.self, from: snapshotJSON)
 
     XCTAssert(stats.todayCacheReadTokens == 118_193_024)
     XCTAssert(stats.todayCost == 117.56682985)
-    XCTAssert(trend.trend.first?.inputTokens == 7_672_001)
-    XCTAssert(trend.trend.first?.cacheReadTokens == 118_310_656)
-    XCTAssert(models.models.first?.accountCost == 222.61852)
-    XCTAssert(models.models.first?.standardCost == 222.61852)
+    XCTAssert(snapshot.trend.first?.inputTokens == 7_672_001)
+    XCTAssert(snapshot.trend.first?.cacheReadTokens == 118_310_656)
+    XCTAssert(snapshot.models.first?.accountCost == 222.61852)
+    XCTAssert(snapshot.models.first?.standardCost == 222.61852)
 }
 
 func testMenuBarUsageWindowBuildsDateRangesLikeWebPreset() {
@@ -5642,7 +5874,7 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
     }
     """.data(using: .utf8)!
 
-    let usage = try JSONDecoder.sub2api.decode(UsageLog.self, from: json)
+    let usage = try JSONDecoder.tokenRouter.decode(UsageLog.self, from: json)
 
     XCTAssert(usage.model == "gpt-5.5")
     XCTAssert(usage.userID == 2)
@@ -5677,7 +5909,7 @@ func testUsageLogRecognizesUpdatedFastModeServiceTierAlias() throws {
     }
     """.data(using: .utf8)!
 
-    let usage = try JSONDecoder.sub2api.decode(UsageLog.self, from: json)
+    let usage = try JSONDecoder.tokenRouter.decode(UsageLog.self, from: json)
 
     XCTAssert(usage.isFastEnabled == true)
 }
@@ -5692,7 +5924,7 @@ func testUsagePeriodStatsDecodesPartialStatsPayload() throws {
     }
     """.data(using: .utf8)!
 
-    let stats = try JSONDecoder.sub2api.decode(UsagePeriodStats.self, from: json)
+    let stats = try JSONDecoder.tokenRouter.decode(UsagePeriodStats.self, from: json)
 
     XCTAssert(stats.totalRequests == 1051)
     XCTAssert(stats.totalActualCost == 123.45)
@@ -5757,7 +5989,7 @@ func testSubscriptionSummaryDecodesUsdUsageIntoProgress() throws {
     }
     """.data(using: .utf8)!
 
-    let summary = try JSONDecoder.sub2api.decode(SubscriptionSummary.self, from: json)
+    let summary = try JSONDecoder.tokenRouter.decode(SubscriptionSummary.self, from: json)
 
     XCTAssert(summary.totalUsedUSD == 498.38329835)
     XCTAssert(summary.subscriptions.first?.dailyProgress ?? 0 > 0.93)
@@ -5791,7 +6023,7 @@ func testAdminUserSubscriptionBuildsSelectedUserSubscriptionSummary() throws {
     """.data(using: .utf8)!
     let referenceDate = ISO8601DateFormatter().date(from: "2026-05-21T00:00:00+08:00")!
 
-    let subscriptions = try JSONDecoder.sub2api.decode([AdminUserSubscription].self, from: json)
+    let subscriptions = try JSONDecoder.tokenRouter.decode([AdminUserSubscription].self, from: json)
     let summary = SubscriptionSummary(adminSubscriptions: subscriptions, referenceDate: referenceDate)
 
     XCTAssert(subscriptions.first?.userID == 2)
@@ -6034,8 +6266,117 @@ func testMonitorSnapshotMenuBarModelPresentationUsesReadableCodexShortName() {
         menuBarDisplayItems: [.model]
     )
 
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "Codex")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "Mini Latest")
     XCTAssertEqual(snapshot.latestUsage?.model, "codex-mini-latest")
+}
+
+func testMonitorSnapshotMenuBarModelPresentationUsesReadableClaudeShortName() {
+    let latestUsage = UsageLog(id: 133605, model: "claude-opus-4-1-20250805")
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model]
+    )
+
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "Opus 4.1")
+    XCTAssertEqual(snapshot.latestUsage?.model, "claude-opus-4-1-20250805")
+}
+
+func testStatusFormattersUseReadableClaudeModelNames() {
+    XCTAssertEqual(StatusFormatters.menuBarModelName("claude-opus-4-1-20250805"), "Opus 4.1")
+    XCTAssertEqual(StatusFormatters.menuBarModelName("claude-3-5-sonnet-20241022"), "Sonnet 3.5")
+    XCTAssertEqual(StatusFormatters.menuBarModelName("anthropic/claude-3-5-haiku-20241022"), "Haiku 3.5")
+    XCTAssertEqual(StatusFormatters.modelDisplayName("claude-opus-4-1-20250805"), "Claude Opus 4.1")
+}
+
+func testStatusFormattersBuildFutureProofModelPresentations() {
+    let gpt = StatusFormatters.modelPresentation("gpt-5.6-sol")
+    XCTAssertEqual(gpt.rawValue, "gpt-5.6-sol")
+    XCTAssertEqual(gpt.displayName, "GPT-5.6 sol")
+    XCTAssertEqual(gpt.compactName, "5.6-sol")
+    XCTAssertFalse(gpt.isLossy)
+
+    let codex = StatusFormatters.modelPresentation("codex-auto-review")
+    XCTAssertEqual(codex.rawValue, "codex-auto-review")
+    XCTAssertEqual(codex.displayName, "Codex Auto Review")
+    XCTAssertEqual(codex.compactName, "Auto Review")
+    XCTAssertFalse(codex.isLossy)
+
+    let unknown = StatusFormatters.modelPresentation("vendor/new-model_ultra")
+    XCTAssertEqual(unknown.rawValue, "vendor/new-model_ultra")
+    XCTAssertEqual(unknown.displayName, "vendor/new-model_ultra")
+    XCTAssertEqual(unknown.compactName, "vendor/new-model_ultra")
+    XCTAssertFalse(unknown.isLossy)
+}
+
+func testStatusFormattersBuildReasoningEffortPresentationsWithoutRejectingNewValues() {
+    let missing = StatusFormatters.reasoningEffortPresentation(nil)
+    XCTAssertNil(missing.rawValue)
+    XCTAssertEqual(missing.displayName, "None")
+    XCTAssertEqual(missing.compactName, "no")
+    XCTAssertFalse(missing.isProvided)
+
+    let minimal = StatusFormatters.reasoningEffortPresentation("minimal")
+    XCTAssertEqual(minimal.displayName, "Minimal")
+    XCTAssertEqual(minimal.compactName, "min")
+    XCTAssertTrue(minimal.isProvided)
+
+    let extraHigh = StatusFormatters.reasoningEffortPresentation("x-high")
+    XCTAssertEqual(extraHigh.displayName, "Extra High")
+    XCTAssertEqual(extraHigh.compactName, "xh")
+    XCTAssertTrue(extraHigh.isProvided)
+
+    let maximum = StatusFormatters.reasoningEffortPresentation("max")
+    XCTAssertEqual(maximum.displayName, "Max")
+    XCTAssertEqual(maximum.compactName, "max")
+    XCTAssertTrue(maximum.isProvided)
+
+    let unknown = StatusFormatters.reasoningEffortPresentation("ultracode")
+    XCTAssertEqual(unknown.rawValue, "ultracode")
+    XCTAssertEqual(unknown.displayName, "ultracode")
+    XCTAssertEqual(unknown.compactName, "ultracode")
+    XCTAssertTrue(unknown.isProvided)
+}
+
+func testMonitorSnapshotMenuBarTooltipKeepsFullClaudeModelName() {
+    let latestUsage = UsageLog(id: 133605, model: "claude-opus-4-1-20250805")
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: DashboardStats(),
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model]
+    )
+
+    XCTAssertEqual(
+        snapshot.menuBarTooltip(statusText: "OK", config: config),
+        """
+        TokenRouter OK
+        Opus 4.1
+        Model
+        Model: claude-opus-4-1-20250805
+        """
+    )
 }
 
 func testMonitorSnapshotMenuBarPresentationUsesValueAndLabelRowsForSelectedItems() {
@@ -6147,8 +6488,8 @@ func testMonitorSnapshotMenuBarPresentationUsesReadableCellWidthsForCommonStatus
 
     XCTAssertEqual(presentation.cells, [
         MenuBarStatusCell(value: "$597.00", label: "Cost", width: 58),
-        MenuBarStatusCell(value: "GPT-5.5", label: "Model", width: 56),
-        MenuBarStatusCell(value: "no", label: "Eff", width: 26),
+        MenuBarStatusCell(value: "GPT-5.5", label: "Model", width: 70),
+        MenuBarStatusCell(value: "no", label: "Eff", width: 32),
         MenuBarStatusCell(value: "F", label: "Fast", width: 24),
         MenuBarStatusCell(value: "1N", label: "Acct", width: 36),
         MenuBarStatusCell(value: "0", label: "T0R0Q0D0E0", width: 88, valueTone: .secondary),
@@ -6219,13 +6560,13 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
 
     XCTAssertEqual(
         presentation.topRow,
-        "$53.24 | 223r | Codex | xh | 86.4Kc | T | $1.25/M | $6/M | 2C | 2N | A33R +32"
+        "$53.24 | 223r | Mini Latest | xh | 86.4Kc | T | $1.25/M | $6/M | 2C | 2N | A33R +32"
     )
     XCTAssertEqual(
         presentation.bottomRow,
         "Cost | Req | Model | Eff | Ctx | Fast | In | Out | Conc | Acct | T33R2Q0D0E0"
     )
-    XCTAssertEqual(presentation.cells.map(\.width), [58, 36, 56, 26, 50, 24, 54, 54, 36, 36, 88])
+    XCTAssertEqual(presentation.cells.map(\.width), [58, 36, 70, 32, 50, 24, 54, 54, 36, 36, 88])
     XCTAssertFalse(presentation.topRow.contains("i$"))
     XCTAssertFalse(presentation.topRow.contains("o$"))
 }
@@ -6258,8 +6599,60 @@ func testMonitorSnapshotMenuBarPresentationTreatsNoneReasoningEffortAsNo() {
     XCTAssertEqual(presentation.topRow, "no")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "no", label: "Eff", width: 26)
+        MenuBarStatusCell(value: "no", label: "Eff", width: 32)
     ])
+}
+
+func testMonitorSnapshotMenuBarPresentationFitsGPT56SolAndMaxReasoning() {
+    let latestUsage = UsageLog(
+        id: 133608,
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max"
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: latestUsage,
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model, .reasoningEffort]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "5.6-sol | max")
+    XCTAssertEqual(presentation.bottomRow, "Model | Eff")
+    XCTAssertEqual(presentation.cells.map(\.width), [70, 32])
+    XCTAssertTrue(snapshot.menuBarTooltip(statusText: "OK", config: config).contains("Model: gpt-5.6-sol"))
+}
+
+func testMonitorSnapshotMenuBarPresentationKeepsMinimalReasoningDistinctFromMissing() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: UsageLog(id: 133609, model: "gpt-5.6-sol", reasoningEffort: "minimal"),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: Date(timeIntervalSince1970: 0),
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.reasoningEffort]
+    )
+
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "min")
 }
 
 func testMonitorSnapshotMenuBarPresentationShowsDashReasoningEffortAsNo() {
@@ -6290,7 +6683,7 @@ func testMonitorSnapshotMenuBarPresentationShowsDashReasoningEffortAsNo() {
     XCTAssertEqual(presentation.topRow, "no")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "no", label: "Eff", width: 26)
+        MenuBarStatusCell(value: "no", label: "Eff", width: 32)
     ])
 }
 
@@ -6409,7 +6802,7 @@ func testMonitorSnapshotMenuBarPresentationKeepsEnabledItemsWhenDisconnected() {
     XCTAssertEqual(
         tooltip,
         """
-        Sub2API Disconnected
+        TokenRouter Disconnected
         $0.00 | No model | F | 0rpm
         Cost | Model | Fast | RPM
         """
@@ -6441,7 +6834,7 @@ func testMonitorSnapshotMenuBarTooltipUsesSamePersistentValueAndLabelRows() {
     XCTAssertEqual(
         tooltip,
         """
-        Sub2API OK
+        TokenRouter OK
         $0.00 | No model | no | 0c | F | 0rpm
         Cost | Model | Eff | Ctx | Fast | RPM
         """
@@ -6643,7 +7036,7 @@ func testMonitorSnapshotCodexTaskPresentationUsesWiderFixedTaskCellForManyTasks(
     ])
 }
 
-func testSub2APIClientRetriesTransientFailuresBeforeDecodingSuccess() async throws {
+func testTokenRouterClientRetriesTransientFailuresBeforeDecodingSuccess() async throws {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
@@ -6655,7 +7048,7 @@ func testSub2APIClientRetriesTransientFailuresBeforeDecodingSuccess() async thro
         ],
     ]
     StubURLProtocol.requestedPaths = []
-    let client = Sub2APIClient(
+    let client = TokenRouterClient(
         config: AppConfig(baseURL: "http://127.0.0.1:8080", authToken: "token"),
         session: session,
         retryPolicy: HTTPRetryPolicy(maxRetries: 2, baseDelaySeconds: 0)
@@ -6667,7 +7060,7 @@ func testSub2APIClientRetriesTransientFailuresBeforeDecodingSuccess() async thro
     XCTAssert(StubURLProtocol.requestedPaths == ["/api/v1/auth/me", "/api/v1/auth/me"])
 }
 
-func testSub2APIClientDoesNotRetryUnauthorizedResponses() async {
+func testTokenRouterClientDoesNotRetryUnauthorizedResponses() async {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
@@ -6679,7 +7072,7 @@ func testSub2APIClientDoesNotRetryUnauthorizedResponses() async {
         ],
     ]
     StubURLProtocol.requestedPaths = []
-    let client = Sub2APIClient(
+    let client = TokenRouterClient(
         config: AppConfig(baseURL: "http://127.0.0.1:8080", authToken: "expired"),
         session: session,
         retryPolicy: HTTPRetryPolicy(maxRetries: 2, baseDelaySeconds: 0)
@@ -6689,12 +7082,12 @@ func testSub2APIClientDoesNotRetryUnauthorizedResponses() async {
         _ = try await client.currentUser()
         XCTFail("401 should throw without retrying so the auth refresh path can handle it.")
     } catch {
-        XCTAssert((error as? Sub2APIError)?.isUnauthorized == true)
+        XCTAssert((error as? TokenRouterError)?.isUnauthorized == true)
         XCTAssert(StubURLProtocol.requestedPaths == ["/api/v1/auth/me"])
     }
 }
 
-func testSub2APIClientDoesNotRetryPostRequests() async {
+func testTokenRouterClientDoesNotRetryPostRequests() async {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
     let session = URLSession(configuration: configuration)
@@ -6706,7 +7099,7 @@ func testSub2APIClientDoesNotRetryPostRequests() async {
         ],
     ]
     StubURLProtocol.requestedPaths = []
-    let client = Sub2APIClient(
+    let client = TokenRouterClient(
         config: AppConfig(baseURL: "http://127.0.0.1:8080"),
         session: session,
         retryPolicy: HTTPRetryPolicy(maxRetries: 2, baseDelaySeconds: 0)

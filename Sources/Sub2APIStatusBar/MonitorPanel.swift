@@ -28,22 +28,22 @@ struct MonitorPanel: View {
     }
 
     private var header: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 12) {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(iconColor.opacity(0.13))
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(iconColor.opacity(0.15))
                     Image(systemName: iconName)
-                        .font(.system(size: 20, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(iconColor)
                 }
-                .frame(width: 42, height: 42)
+                .frame(width: 32, height: 32)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Sub2API")
-                        .font(.system(size: 19, weight: .semibold, design: .rounded))
+                    Text("TokenRouter")
+                        .font(.system(size: 16, weight: .semibold))
                     Text(model.snapshot.connected ? lastUpdatedText : strings.phrase("未连接", "Disconnected"))
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -53,16 +53,16 @@ struct MonitorPanel: View {
                     isRefreshing: model.isRefreshing,
                     label: strings.phrase("刷新", "Refresh")
                 ) {
-                    model.refresh()
+                    model.refresh(manual: true)
                 }
             }
             .buttonStyle(.borderless)
 
             PanelPageTabs(selection: $selectedPage, strings: strings)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 14)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .background(ClaudeTheme.header)
     }
 
@@ -88,7 +88,11 @@ struct MonitorPanel: View {
 
     private var overviewContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                PanelPageHeader(
+                    title: strings.phrase("概览", "Overview"),
+                    subtitle: strings.phrase("用量、并发与账户状态", "Usage, concurrency, and account status")
+                )
                 statusSection
 
                 if let updateInfo = model.updateInfo, updateInfo.isUpdateAvailable {
@@ -116,42 +120,35 @@ struct MonitorPanel: View {
     }
 
     private var statusSection: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(strings.phrase("状态概览", "Status Overview"))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(strings.statusLabel(for: model.snapshot))
-                            .font(.system(size: 32, weight: .semibold, design: .rounded))
-                            .foregroundStyle(iconColor)
-                    }
-                    Spacer()
-                    Text(statusScopeLabel)
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(iconColor.opacity(0.16), in: Capsule())
-                        .foregroundStyle(iconColor)
-                }
-
-                if model.config.authToken.isEmpty {
-                    Text(strings.phrase("设置服务地址和令牌后开始监控。", "Set Base URL and token to start monitoring."))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(statusDescription)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+        HStack(spacing: 10) {
+            Circle()
+                .fill(iconColor)
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(strings.statusLabel(for: model.snapshot))
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(ClaudeTheme.primaryText)
+                Text(statusDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            Spacer(minLength: 8)
+            Text(statusScopeLabel)
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(iconColor.opacity(0.12), in: Capsule())
+                .foregroundStyle(iconColor)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var userSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let user = model.snapshot.currentUser {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.snapshot.mode != .admin, let user = model.snapshot.currentUser {
                 UserAccountCard(user: user)
             }
 
@@ -197,11 +194,11 @@ struct MonitorPanel: View {
             balanceMetric(caption: strings.phrase("可用", "Available")),
             userAPIKeysMetric(stats),
             MetricItem(title: strings.phrase("今日请求", "Today Requests"), value: StatusFormatters.menuBarCount(stats.todayRequests), caption: requestCaption(stats), systemImage: "chart.bar", tint: ClaudeTheme.accent),
-            MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: costCaption(stats), systemImage: "dollarsign.circle", tint: ClaudeTheme.gold),
-            MetricItem(title: strings.phrase("今日 Token", "Today Tokens"), value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: ClaudeTheme.warm),
-            MetricItem(title: totalTokenTitle, value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.ink),
+            MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: costCaption(stats), systemImage: "dollarsign.circle", tint: ClaudeTheme.accent),
+            MetricItem(title: strings.phrase("今日 Token", "Today Tokens"), value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: ClaudeTheme.accent),
+            MetricItem(title: totalTokenTitle, value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.accent),
             performanceMetric(stats),
-            MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), caption: strings.phrase("平均耗时", "Average time"), systemImage: "clock", tint: ClaudeTheme.danger),
+            MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), caption: strings.phrase("平均耗时", "Average time"), systemImage: "clock", tint: ClaudeTheme.accent),
         ].compactMap { $0 })
         return items
     }

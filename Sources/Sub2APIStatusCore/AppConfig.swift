@@ -385,7 +385,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
 
         authToken = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshToken = refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        refreshIntervalSeconds = min(max(refreshIntervalSeconds, 1), 300)
+        refreshIntervalSeconds = min(max(refreshIntervalSeconds, 5), 300)
         codexTaskTimelineEventLimit = min(
             max(codexTaskTimelineEventLimit, Self.codexTaskTimelineEventLimitRange.lowerBound),
             Self.codexTaskTimelineEventLimitRange.upperBound
@@ -493,14 +493,14 @@ public final class LocalCredentialsTokenStore: TokenStore, Sendable {
 
     private func saveLocalTokens(_ tokens: StoredAuthTokens) throws {
         try FileManager.default.createDirectory(at: credentialsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONEncoder.sub2api.encode(tokens)
+        let data = try JSONEncoder.tokenRouter.encode(tokens)
         try data.write(to: credentialsURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o600))], ofItemAtPath: credentialsURL.path)
     }
 
     private func loadLocalTokens() -> StoredAuthTokens? {
         guard let data = try? Data(contentsOf: credentialsURL),
-              let tokens = try? JSONDecoder.sub2api.decode(StoredAuthTokens.self, from: data) else {
+              let tokens = try? JSONDecoder.tokenRouter.decode(StoredAuthTokens.self, from: data) else {
             return nil
         }
         return tokens
@@ -530,7 +530,7 @@ public final class ConfigStore: Sendable {
     public func load() -> AppConfig {
         let storedTokens = tokenStore.loadTokens()
         guard let data = try? Data(contentsOf: configURL),
-              var decoded = try? JSONDecoder.sub2api.decode(AppConfig.self, from: data) else {
+              var decoded = try? JSONDecoder.tokenRouter.decode(AppConfig.self, from: data) else {
             var defaults = AppConfig.defaults()
             if !storedTokens.authToken.isEmpty {
                 defaults.authToken = storedTokens.authToken

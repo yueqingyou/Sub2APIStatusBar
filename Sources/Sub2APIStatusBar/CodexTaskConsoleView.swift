@@ -16,7 +16,8 @@ struct CodexTaskConsoleView: View {
     let realtimeConcurrency: UserRealtimeConcurrency?
     let timelineEventLimit: Int
     let strings: AppStrings
-    @State private var expandedTimelineTaskIDs: Set<String> = []
+    @State private var expandedTaskIDs: Set<String> = []
+    @State private var isGatewayExpanded = false
 
     private var rows: [CodexTaskConsoleRow] {
         CodexTaskConsoleModel.rows(activities: activities)
@@ -31,97 +32,124 @@ struct CodexTaskConsoleView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                headerCard
-                gatewayUsageCard
-                gatewayConcurrencyCard
+        let consoleRows = rows
+        let activeRows = consoleRows.filter(\.isActive)
+        let recentRows = consoleRows.filter { !$0.isActive }
 
-                if rows.isEmpty {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                consoleHeader(activeCount: activeRows.count, recentCount: recentRows.count)
+
+                if consoleRows.isEmpty {
                     emptyCard
                 } else {
-                    ForEach(rows) { row in
-                        taskCard(row)
+                    if !activeRows.isEmpty {
+                        sectionHeader(
+                            strings.phrase("活动中", "Active"),
+                            count: activeRows.count,
+                            systemImage: "bolt.fill"
+                        )
+                        ForEach(activeRows) { row in
+                            taskCard(row)
+                        }
+                    }
+
+                    if !recentRows.isEmpty {
+                        sectionHeader(
+                            strings.phrase("最近完成", "Recent"),
+                            count: recentRows.count,
+                            systemImage: "clock"
+                        )
+                        ForEach(recentRows) { row in
+                            taskCard(row)
+                        }
                     }
                 }
+
+                gatewaySection
             }
             .padding(16)
         }
     }
 
-    private var headerCard: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(strings.phrase("任务控制台", "Task Console"))
-                    .font(.headline)
-                Text(strings.phrase(
-                    "这里显示 hooks 上报的 node_id、session_id 和 turn_id。事件时间线默认折叠，网关最近请求只作为费用、Token 与 User-Agent 辅助明细。",
-                    "This page shows hook-reported node_id, session_id, and turn_id. The event timeline is collapsed by default; the latest gateway request is supplementary cost, token, and User-Agent detail only."
-                ))
-                .font(.callout)
-                .foregroundStyle(ClaudeTheme.secondaryText)
-
-                let summary = CodexMenuBarTaskSummary.make(activities: activities, maxTasks: 3)
-                HStack(spacing: 8) {
-                    badge(summary.topRow)
-                    badge(summary.bottomRow)
-                }
+    private func consoleHeader(activeCount: Int, recentCount: Int) -> some View {
+        HStack(spacing: 12) {
+            PanelPageHeader(
+                title: strings.phrase("任务", "Tasks"),
+                subtitle: strings.phrase("Codex hooks 实时状态", "Live Codex hook status")
+            )
+            Spacer()
+            HStack(spacing: 6) {
+                summaryBadge(value: activeCount, label: strings.phrase("活动", "active"), tint: ClaudeTheme.success)
+                summaryBadge(value: recentCount, label: strings.phrase("历史", "recent"), tint: ClaudeTheme.slate)
             }
         }
     }
 
     @ViewBuilder
-    private var gatewayConcurrencyCard: some View {
-        if let gatewayConcurrency {
-            GlassCard {
-                VStack(alignment: .leading, spacing: 2) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(strings.phrase("网关并发负载", "Gateway Concurrency Load"))
-                            .font(.headline)
-                        Text(strings.phrase(
-                            "该分区展示管理员接口返回的所选用户占用并发槽位。它不是任务身份来源；如果这里有占用但下方没有任务，说明尚未收到可信 Codex hooks 事件。",
-                            "This section shows selected-user occupied concurrency from admin APIs. It is not a task identity source; if it has usage but no task appears below, no trusted Codex hook event has been received yet."
-                        ))
-                        .font(.caption)
-                        .foregroundStyle(ClaudeTheme.secondaryText)
+    private var gatewaySection: some View {
+        if gatewayUsage != nil || gatewayConcurrency != nil {
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        isGatewayExpanded.toggle()
                     }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "network")
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                        Text(strings.phrase("网关明细", "Gateway Details"))
+                            .font(.callout.weight(.semibold))
+                        if let gatewayConcurrency {
+                            Text(gatewayConcurrency.capacityText)
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(ClaudeTheme.secondaryText)
+                        }
+                        Spacer()
+                        Image(systemName: isGatewayExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
 
-                    InfoRow(label: "user_id", value: String(gatewayConcurrency.userID))
-                    if let userEmail = gatewayConcurrency.userEmail {
-                        InfoRow(label: "email", value: userEmail)
+                if isGatewayExpanded {
+                    if let gatewayConcurrency {
+                        gatewayConcurrencyContent(gatewayConcurrency)
                     }
-                    if let username = gatewayConcurrency.username {
-                        InfoRow(label: "username", value: username)
+                    if gatewayConcurrency != nil, gatewayUsage != nil {
+                        Divider()
                     }
-                    InfoRow(label: "in_use", value: gatewayConcurrency.capacityText)
-                    InfoRow(label: "waiting", value: String(gatewayConcurrency.waitingInQueue))
-                    InfoRow(label: "load", value: StatusFormatters.percent(gatewayConcurrency.loadPercentage / 100))
+                    if let gatewayUsage {
+                        gatewayUsageContent(gatewayUsage)
+                    }
                 }
             }
+            .padding(12)
+            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
     }
 
-    @ViewBuilder
-    private var gatewayUsageCard: some View {
-        if let gatewayUsage {
-            GlassCard {
-                gatewayUsageContent(gatewayUsage)
+    private func gatewayConcurrencyContent(_ gatewayConcurrency: CodexTaskGatewayConcurrencyDetail) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            InfoRow(label: "user_id", value: String(gatewayConcurrency.userID))
+            if let userEmail = gatewayConcurrency.userEmail {
+                InfoRow(label: "email", value: userEmail)
             }
+            if let username = gatewayConcurrency.username {
+                InfoRow(label: "username", value: username)
+            }
+            InfoRow(label: "in_use", value: gatewayConcurrency.capacityText)
+            InfoRow(label: "waiting", value: String(gatewayConcurrency.waitingInQueue))
+            InfoRow(label: "load", value: StatusFormatters.percent(gatewayConcurrency.loadPercentage / 100))
         }
     }
 
     private func gatewayUsageContent(_ gatewayUsage: CodexTaskGatewayUsageDetail) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(strings.phrase("最近网关请求", "Latest Gateway Request"))
-                    .font(.headline)
-                Text(strings.phrase(
-                    "该分区只展示网关明细，不能作为 Codex session/turn 关联依据。",
-                    "This section is gateway detail only and is not used to associate Codex sessions or turns."
-                ))
-                .font(.caption)
-                .foregroundStyle(ClaudeTheme.secondaryText)
-            }
+            Text(strings.phrase("最近请求", "Latest Request"))
+                .font(.callout.weight(.semibold))
 
             ForEach(gatewayInfoLines(gatewayUsage)) { line in
                 InfoRow(label: line.label, value: line.value)
@@ -154,85 +182,84 @@ struct CodexTaskConsoleView: View {
     }
 
     private func taskCard(_ row: CodexTaskConsoleRow) -> some View {
-        GlassCard {
-            taskCardContent(row)
-        }
+        taskCardContent(row)
+            .padding(12)
+            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func taskCardContent(_ row: CodexTaskConsoleRow) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
-                badge(row.badge)
-                statusBadge(row.status)
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(row.sessionID)
-                        .font(.system(.callout, design: .monospaced).weight(.semibold))
-                        .lineLimit(1)
-                    Text("\(row.nodeID) · \(row.turnID)")
-                        .font(.caption)
-                        .foregroundStyle(ClaudeTheme.secondaryText)
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
-
-            taskDetailRows(row)
-
-            if !row.events.isEmpty {
-                Divider()
-                    .overlay(ClaudeTheme.border)
-                timelineSection(row)
-            }
-        }
-    }
-
-    private func timelineSection(_ row: CodexTaskConsoleRow) -> some View {
-        let isExpanded = expandedTimelineTaskIDs.contains(row.id)
-        let visibleEvents = row.latestEvents(limit: timelineEventLimit)
-        return VStack(alignment: .leading, spacing: 8) {
+        let isExpanded = expandedTaskIDs.contains(row.id)
+        return VStack(alignment: .leading, spacing: 10) {
             Button {
-                toggleTimeline(row.id)
+                toggleTask(row.id)
             } label: {
-                HStack(spacing: 8) {
-                    Label(
-                        strings.phrase("事件时间线", "Event Timeline"),
-                        systemImage: isExpanded ? "chevron.down.circle.fill" : "chevron.right.circle.fill"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ClaudeTheme.secondaryText)
-                    Spacer()
-                    if let latest = row.events.last {
-                        Text(strings.phrase(
-                            "最新 \(latest.eventName)",
-                            "Latest \(latest.eventName)"
-                        ))
-                        .font(.caption2)
-                        .foregroundStyle(ClaudeTheme.secondaryText)
-                        .lineLimit(1)
+                HStack(alignment: .center, spacing: 10) {
+                    Circle()
+                        .fill(statusColor(row.status))
+                        .frame(width: 8, height: 8)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(taskTitle(row))
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(ClaudeTheme.primaryText)
+                            .lineLimit(1)
+                        Text(taskSubtitle(row))
+                            .font(.caption)
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                            .lineLimit(1)
                     }
-                    Text(eventCountText(row.events.count))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(ClaudeTheme.primaryText)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(ClaudeTheme.elevatedCard, in: Capsule())
+
+                    Spacer(minLength: 8)
+                    VStack(alignment: .trailing, spacing: 4) {
+                        statusBadge(row.status)
+                        Text(Self.relativeTimestamp(row.updatedAt))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                    }
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ClaudeTheme.secondaryText)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             if isExpanded {
-                if row.events.count > visibleEvents.count {
-                    Text(strings.phrase(
-                        "仅显示最近 \(visibleEvents.count) 条事件，可在设置中调整。",
-                        "Showing the latest \(visibleEvents.count) events. Change this in Settings."
-                    ))
-                    .font(.caption2)
+                Divider()
+                    .overlay(ClaudeTheme.border)
+                taskDetailRows(row)
+
+                if !row.events.isEmpty {
+                    Divider()
+                        .overlay(ClaudeTheme.border)
+                    timelineSection(row)
+                }
+            }
+        }
+    }
+
+    private func timelineSection(_ row: CodexTaskConsoleRow) -> some View {
+        let visibleEvents = row.latestEvents(limit: timelineEventLimit)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Label(strings.phrase("事件", "Events"), systemImage: "list.bullet.rectangle")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(ClaudeTheme.secondaryText)
-                }
-                ForEach(visibleEvents) { event in
-                    eventRow(event)
-                }
+                Spacer()
+                Text(eventCountText(row.events.count))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(ClaudeTheme.secondaryText)
+            }
+            if row.events.count > visibleEvents.count {
+                Text(strings.phrase(
+                    "显示最近 \(visibleEvents.count) 条",
+                    "Latest \(visibleEvents.count) shown"
+                ))
+                .font(.caption2)
+                .foregroundStyle(ClaudeTheme.secondaryText)
+            }
+            ForEach(visibleEvents) { event in
+                eventRow(event)
             }
         }
     }
@@ -260,7 +287,7 @@ struct CodexTaskConsoleView: View {
                 InfoRow(label: "turn_id", value: event.turnID)
             }
             if let model = event.model, !model.isEmpty {
-                InfoRow(label: "model", value: model)
+                InfoRow(label: "model", value: Self.modelDetail(model))
             }
             if let toolName = event.toolName, !toolName.isEmpty {
                 InfoRow(label: "tool", value: toolName)
@@ -273,7 +300,7 @@ struct CodexTaskConsoleView: View {
                 Text(strings.phrase("原始 JSON", "Raw JSON"))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(ClaudeTheme.secondaryText)
-                Text(rawPayloadJSON)
+                Text(Self.prettyJSON(rawPayloadJSON))
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(ClaudeTheme.secondaryText)
                     .textSelection(.enabled)
@@ -282,12 +309,12 @@ struct CodexTaskConsoleView: View {
                     .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
-        .padding(10)
-        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(ClaudeTheme.border, lineWidth: 1)
-        )
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(ClaudeTheme.border)
+                .frame(width: 2)
+        }
     }
 
     @ViewBuilder
@@ -297,22 +324,41 @@ struct CodexTaskConsoleView: View {
         }
     }
 
-    private func badge(_ value: String) -> some View {
-        Text(value)
-            .font(.system(.caption, design: .rounded).weight(.semibold))
-            .foregroundStyle(ClaudeTheme.primaryText)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(ClaudeTheme.elevatedCard, in: Capsule())
-            .overlay(Capsule().stroke(ClaudeTheme.border, lineWidth: 1))
+    private func sectionHeader(_ title: String, count: Int, systemImage: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.caption)
+            Text(title)
+                .font(.callout.weight(.semibold))
+            Text(String(count))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(ClaudeTheme.secondaryText)
+            Spacer()
+        }
+        .foregroundStyle(ClaudeTheme.primaryText)
+        .padding(.top, 4)
+    }
+
+    private func summaryBadge(value: Int, label: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Text(String(value))
+                .font(.caption.weight(.semibold).monospacedDigit())
+            Text(label)
+                .font(.caption2)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(tint.opacity(0.1), in: Capsule())
     }
 
     private func statusBadge(_ status: String) -> some View {
-        Text(status)
-            .font(.system(.caption, design: .rounded).weight(.bold))
+        Label(statusText(status), systemImage: statusIcon(status))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(statusColor(status))
-            .frame(width: 24, height: 24)
-            .background(statusColor(status).opacity(0.14), in: Circle())
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(statusColor(status).opacity(0.12), in: Capsule())
     }
 
     private func statusColor(_ status: String) -> Color {
@@ -330,11 +376,66 @@ struct CodexTaskConsoleView: View {
         }
     }
 
-    private func toggleTimeline(_ rowID: String) {
-        if expandedTimelineTaskIDs.contains(rowID) {
-            expandedTimelineTaskIDs.remove(rowID)
+    private func statusText(_ status: String) -> String {
+        switch status {
+        case "R":
+            return strings.phrase("运行中", "Running")
+        case "Q":
+            return strings.phrase("等待中", "Waiting")
+        case "D":
+            return strings.phrase("已完成", "Done")
+        case "E":
+            return strings.phrase("失败", "Failed")
+        case "S":
+            return strings.phrase("已失联", "Stale")
+        default:
+            return strings.phrase("未知", "Unknown")
+        }
+    }
+
+    private func statusIcon(_ status: String) -> String {
+        switch status {
+        case "R":
+            return "play.fill"
+        case "Q":
+            return "pause.fill"
+        case "D":
+            return "checkmark"
+        case "E":
+            return "xmark"
+        case "S":
+            return "exclamationmark.circle"
+        default:
+            return "questionmark"
+        }
+    }
+
+    private func taskTitle(_ row: CodexTaskConsoleRow) -> String {
+        if let cwd = row.cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
+            let name = URL(fileURLWithPath: cwd).lastPathComponent
+            if !name.isEmpty {
+                return name
+            }
+        }
+        return strings.phrase("Codex 任务", "Codex Task")
+    }
+
+    private func taskSubtitle(_ row: CodexTaskConsoleRow) -> String {
+        var parts = [row.nodeID]
+        if let model = row.model, !model.isEmpty {
+            parts.append(StatusFormatters.modelPresentation(model).compactName)
+        }
+        if let toolName = row.toolName, !toolName.isEmpty {
+            parts.append(toolName)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func toggleTask(_ rowID: String) {
+        if expandedTaskIDs.contains(rowID) {
+            expandedTaskIDs.remove(rowID)
         } else {
-            expandedTimelineTaskIDs.insert(rowID)
+            expandedTaskIDs.insert(rowID)
         }
     }
 
@@ -343,10 +444,24 @@ struct CodexTaskConsoleView: View {
     }
 
     private static func timestamp(_ date: Date) -> String {
+        timestampFormatter.string(from: date)
+    }
+
+    private static func relativeTimestamp(_ date: Date) -> String {
+        relativeTimestampFormatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    private static let timestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: date)
-    }
+        return formatter
+    }()
+
+    private static let relativeTimestampFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     private static func tokenSummary(_ usage: CodexTaskGatewayUsageDetail) -> String {
         [
@@ -364,13 +479,26 @@ struct CodexTaskConsoleView: View {
         return String(format: "%.1fms", value)
     }
 
+    private static func prettyJSON(_ raw: String) -> String {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              JSONSerialization.isValidJSONObject(object),
+              let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let pretty = String(data: prettyData, encoding: .utf8) else {
+            return raw
+        }
+        return pretty
+    }
+
     private func gatewayInfoLines(_ usage: CodexTaskGatewayUsageDetail) -> [GatewayInfoLine] {
         var lines: [GatewayInfoLine] = []
         appendLine("request_id", usage.requestID, to: &lines)
         if let createdAt = usage.createdAt {
             lines.append(GatewayInfoLine(label: "created", value: Self.timestamp(createdAt)))
         }
-        appendLine("model", usage.model, to: &lines)
+        appendModelLine(usage.model, to: &lines)
+        appendLine("upstream_model", usage.upstreamModel.map(Self.modelDetail), to: &lines)
+        appendLine("model_mapping", usage.modelMappingChain, to: &lines)
         appendLine("service_tier", usage.serviceTier, to: &lines)
         appendLine("reasoning", usage.reasoningEffort, to: &lines)
         appendLine("inbound", usage.inboundEndpoint, to: &lines)
@@ -398,7 +526,7 @@ struct CodexTaskConsoleView: View {
             GatewayInfoLine(label: "node_id", value: row.nodeID),
         ]
         appendLine("cwd", row.cwd, to: &lines)
-        appendLine("model", row.model, to: &lines)
+        appendModelLine(row.model, to: &lines)
         appendLine("tool", row.toolName, to: &lines)
         appendLine("tool_use_id", row.toolUseID, to: &lines)
         appendLine("status_hint", row.statusHint, to: &lines)
@@ -427,5 +555,20 @@ struct CodexTaskConsoleView: View {
             return
         }
         lines.append(GatewayInfoLine(label: label, value: value))
+    }
+
+    private func appendModelLine(_ value: String?, to lines: inout [GatewayInfoLine]) {
+        guard let value, !value.isEmpty else {
+            return
+        }
+        lines.append(GatewayInfoLine(label: "model", value: Self.modelDetail(value)))
+    }
+
+    private static func modelDetail(_ model: String) -> String {
+        let presentation = StatusFormatters.modelPresentation(model)
+        guard presentation.isLossy else {
+            return presentation.displayName
+        }
+        return "\(presentation.displayName) (\(presentation.rawValue))"
     }
 }

@@ -30,7 +30,7 @@ public final class CodexNodeStore {
             return []
         }
         let data = try Data(contentsOf: nodesURL)
-        return try JSONDecoder.sub2api.decode([CodexNode].self, from: data)
+        return try JSONDecoder.tokenRouter.decode([CodexNode].self, from: data)
     }
 
     public func save(_ nodes: [CodexNode]) throws {
@@ -59,7 +59,7 @@ public final class CodexNodeStore {
             return [:]
         }
         let data = try Data(contentsOf: secretsURL)
-        return try JSONDecoder.sub2api.decode([String: String].self, from: data)
+        return try JSONDecoder.tokenRouter.decode([String: String].self, from: data)
     }
 
     public func saveSecrets(_ secrets: [String: String]) throws {

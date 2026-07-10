@@ -44,7 +44,7 @@ public struct CodexHookEventIngestor: Sendable, Equatable {
         }
 
         let event = try JSONDecoder.codexHook.decode(CodexHookEvent.self, from: body)
-            .withRawPayloadJSON(Self.prettyJSON(body) ?? (String(data: body, encoding: .utf8) ?? ""))
+            .withRawPayloadJSON(String(data: body, encoding: .utf8) ?? "")
         guard event.schemaVersion == CodexHookEvent.currentSchemaVersion else {
             throw CodexHookIngestError.unsupportedSchemaVersion(event.schemaVersion)
         }
@@ -64,20 +64,6 @@ public struct CodexHookEventIngestor: Sendable, Equatable {
 
     private static func parseTimestamp(_ value: String) -> Date? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: trimmed) {
-            return date
-        }
-        return ISO8601DateFormatter().date(from: trimmed)
-    }
-
-    private static func prettyJSON(_ data: Data) -> String? {
-        guard let object = try? JSONSerialization.jsonObject(with: data),
-              JSONSerialization.isValidJSONObject(object),
-              let prettyData = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) else {
-            return nil
-        }
-        return String(data: prettyData, encoding: .utf8)
+        return SharedISO8601DateParser.date(from: trimmed)
     }
 }

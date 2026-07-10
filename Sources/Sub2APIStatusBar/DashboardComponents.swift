@@ -34,7 +34,7 @@ struct UserAccountCard: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             DefaultAvatar(name: displayName, email: user.email)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -59,8 +59,8 @@ struct UserAccountCard: View {
                     .background((status.lowercased() == "active" ? ClaudeTheme.success : ClaudeTheme.muted).opacity(0.14), in: Capsule())
             }
         }
-        .padding(12)
-        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(10)
+        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var strings: AppStrings {
@@ -75,25 +75,22 @@ struct MonitoredUserCard: View {
     let concurrency: UserRealtimeConcurrency?
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(ClaudeTheme.warning.opacity(0.16))
+                Circle()
+                    .fill(ClaudeTheme.warning.opacity(0.14))
                 Image(systemName: "scope")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(ClaudeTheme.warning)
             }
-            .frame(width: 42, height: 42)
+            .frame(width: 34, height: 34)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(strings.phrase("监控用户", "Monitored User"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(user.displayName)
-                    .font(.headline)
+                    .font(.callout.weight(.semibold))
                     .lineLimit(1)
                 Text(user.email)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
@@ -102,22 +99,18 @@ struct MonitoredUserCard: View {
             Spacer()
 
             if let concurrency {
-                VStack(alignment: .trailing, spacing: 4) {
+                VStack(alignment: .trailing, spacing: 2) {
                     Text(strings.phrase("并发占用", "Concurrency"))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Text("\(concurrency.currentInUse)/\(concurrency.maxCapacity)")
-                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .font(.system(size: 16, weight: .semibold).monospacedDigit())
                         .foregroundStyle(ClaudeTheme.warning)
                 }
             }
         }
-        .padding(12)
-        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(ClaudeTheme.warning.opacity(0.2), lineWidth: 1)
-        )
+        .padding(10)
+        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var strings: AppStrings {
@@ -143,17 +136,13 @@ struct DefaultAvatar: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(ClaudeTheme.avatarBackground)
             Text(initials)
                 .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(ClaudeTheme.avatarForeground)
         }
         .frame(width: 42, height: 42)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(ClaudeTheme.border, lineWidth: 1)
-        )
     }
 }
 
@@ -163,21 +152,20 @@ struct MetricGrid: View {
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
             ForEach(items) { item in
-                HStack(spacing: 10) {
+                HStack(spacing: 9) {
                     if let systemImage = item.systemImage {
                         SafeSystemImage(systemName: systemImage)
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(item.tint)
-                            .frame(width: 32, height: 32)
-                            .background(item.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 6))
+                            .frame(width: 24, height: 24)
                     }
 
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(item.title)
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                         Text(item.value)
-                            .font(.system(size: 18, weight: .semibold, design: .rounded))
+                            .font(.system(size: 16, weight: .semibold).monospacedDigit())
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                         if let caption = item.caption {
@@ -199,12 +187,10 @@ struct MetricGrid: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(ClaudeTheme.border, lineWidth: 1)
-                )
+                .frame(minHeight: 58)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
     }
@@ -307,7 +293,7 @@ struct SubscriptionEmptyState: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(ClaudeTheme.slate.opacity(0.14))
                 Image(systemName: "tray")
                     .font(.system(size: 17, weight: .semibold))
@@ -426,11 +412,21 @@ struct ModelDistributionView: View {
         SectionBlock(title: strings.phrase("模型分布", "Model Distribution")) {
             VStack(spacing: 10) {
                 ForEach(visibleModels) { item in
+                    let presentation = StatusFormatters.modelPresentation(item.model)
                     VStack(spacing: 7) {
                         HStack {
-                            Text(item.model)
-                                .font(.callout.weight(.medium))
-                                .lineLimit(1)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(presentation.displayName)
+                                    .font(.callout.weight(.medium))
+                                    .lineLimit(1)
+                                if presentation.isLossy {
+                                    Text(item.model)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .help(item.model)
                             Spacer()
                             Text(StatusFormatters.preciseCurrency(item.actualCost))
                                 .font(.callout.weight(.medium))

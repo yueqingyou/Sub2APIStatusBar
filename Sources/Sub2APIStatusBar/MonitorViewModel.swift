@@ -43,8 +43,14 @@ final class MonitorViewModel: ObservableObject {
     private let sshTunnelManager = SSHTunnelManager()
     private let launchAtLoginManager = LaunchAtLoginManager(appBundleURL: Bundle.main.bundleURL)
     private let transientRefreshRetryPolicy = HTTPRetryPolicy.default
+    private let tokenRouterRefreshPolicy = TokenRouterRefreshPolicy()
+    private let codexTaskPersistenceQueue = DispatchQueue(label: "sub2api-statusbar.codex-task-persistence", qos: .utility)
     private var codexTaskActivityStore = CodexTaskActivityStore()
     private var lastPersistedCodexTaskActivities: [CodexTaskActivity] = []
+    private var pendingPersistedCodexTaskActivities: [CodexTaskActivity]?
+    private var codexTaskPersistenceWorkItem: DispatchWorkItem?
+    private var hasLoadedCodexTaskActivities = false
+    private var isLoadingCodexTaskActivities = false
     private var codexNodeHealthStore = CodexNodeHealthStore()
     private var codexNodeRegistry = CodexNodeRegistry(registeredNodes: [])
     private var codexHookReceiverServers: [UInt16: LocalCodexHookReceiverServer] = [:]
@@ -56,6 +62,10 @@ final class MonitorViewModel: ObservableObject {
     private var codexHookInstallStatusRefreshTask: Task<Void, Never>?
     private var probingRemoteTunnelNodeIDs: Set<String> = []
     private var lastRemoteTunnelPathProbeAtByNodeID: [String: Date] = [:]
+    private var cachedAuthenticatedUser: CurrentUser?
+    private var cachedAuthenticationBaseURL = ""
+    private var cachedAuthenticationToken = ""
+    private var lastSlowRefreshAttemptAt: Date?
     private let codexRuntimeStateRefresher = CodexRuntimeStateRefresher(
         taskStaleAfterSeconds: 30 * 60,
         nodeStaleAfterSeconds: 30 * 60
@@ -81,25 +91,25 @@ final class MonitorViewModel: ObservableObject {
         config = loaded
         settingsDraft = loaded
         snapshot = .idle(mode: loaded.monitorMode)
-        loadCodexTaskActivities()
         loadCodexNodeRegistry()
     }
 
     func start() {
+        loadCodexTaskActivities()
         syncCodexHookReceivers()
         ensureRemoteCodexTunnels()
-        refresh()
+        refresh(manual: true)
         scheduleTimer()
         checkForUpdates(silent: true)
     }
 
-    func refresh() {
+    func refresh(manual: Bool = false) {
         Task {
-            await refreshNow()
+            await refreshNow(forceSlowRefresh: manual)
         }
     }
 
-    func refreshNow() async {
+    func refreshNow(forceSlowRefresh: Bool = false) async {
         guard !isRefreshing else {
             return
         }
@@ -115,13 +125,24 @@ final class MonitorViewModel: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
 
-        let client = Sub2APIClient(config: config)
+        let client = TokenRouterClient(config: config)
+        let now = Date()
+        let shouldRefreshSlowData = tokenRouterRefreshPolicy.shouldRefreshSlowData(
+            lastAttemptAt: lastSlowRefreshAttemptAt,
+            now: now,
+            isManualRefresh: forceSlowRefresh
+        )
         do {
-            publish(try await userSnapshot(client: client))
+            publish(try await userSnapshot(client: client, refreshSlowData: shouldRefreshSlowData))
+            if shouldRefreshSlowData {
+                lastSlowRefreshAttemptAt = now
+            }
         } catch {
             if await refreshAuthTokenIfNeeded(after: error) {
                 do {
-                    publish(try await userSnapshot(client: Sub2APIClient(config: config)))
+                    resetTokenRouterRefreshState(clearIdentity: true)
+                    publish(try await userSnapshot(client: TokenRouterClient(config: config), refreshSlowData: true))
+                    lastSlowRefreshAttemptAt = now
                     return
                 } catch {
                     publishDisconnected(error)
@@ -132,28 +153,43 @@ final class MonitorViewModel: ObservableObject {
         }
     }
 
-    private func userSnapshot(client: Sub2APIClient) async throws -> MonitorSnapshot {
-        let currentUser = try await client.currentUser().user
+    private func userSnapshot(client: TokenRouterClient, refreshSlowData: Bool) async throws -> MonitorSnapshot {
+        let currentUser = try await authenticatedUser(client: client)
         applyCapabilityPolicyForCurrentUser(currentUser)
         if currentUser.isAdmin {
-            return try await adminSnapshot(currentUser: currentUser, client: client)
+            return try await adminSnapshot(currentUser: currentUser, client: client, refreshSlowData: refreshSlowData)
         }
 
-        async let summaryTask = client.subscriptionSummary()
-        async let statsTask = client.usageDashboardStats()
         let timezone = TimeZone.current.identifier
         async let menuBarStatsTask = menuBarUsageStats(client: client, timezone: timezone)
-        async let latestUsageTask = client.usageLogs(page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc")
-        let range = Self.lastSevenDayRange()
-        async let trendTask = client.usageDashboardTrend(startDate: range.start, endDate: range.end, granularity: "day")
-        async let modelsTask = client.usageDashboardModels(startDate: range.start, endDate: range.end)
+        async let latestUsageTask = try? client.usageLogs(page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc")
 
-        let summary = try await summaryTask
-        let stats = try? await statsTask
-        let menuBarStats = try? await menuBarStatsTask
-        let latestUsage = try? await latestUsageTask
-        let trend = try? await trendTask
-        let models = try? await modelsTask
+        let canReuseUserSnapshot = snapshot.mode == .user && snapshot.currentUser?.id == currentUser.id
+        var stats = canReuseUserSnapshot ? snapshot.stats : nil
+        var summary = canReuseUserSnapshot ? snapshot.subscriptionSummary : nil
+        var trend = canReuseUserSnapshot ? snapshot.trend : nil
+        var modelDistribution = canReuseUserSnapshot ? snapshot.modelDistribution : nil
+
+        if refreshSlowData {
+            let range = Self.lastSevenDayRange()
+            async let summaryTask = try? client.subscriptionSummary()
+            async let statsTask = try? client.usageDashboardStats()
+            async let dashboardSnapshotTask = try? client.usageDashboardSnapshot(startDate: range.start, endDate: range.end)
+
+            if let refreshedSummary = await summaryTask {
+                summary = refreshedSummary
+            }
+            if let refreshedStats = await statsTask {
+                stats = refreshedStats
+            }
+            if let dashboardSnapshot = await dashboardSnapshotTask {
+                trend = dashboardSnapshot.trend
+                modelDistribution = dashboardSnapshot.models
+            }
+        }
+
+        let menuBarStats = try await menuBarStatsTask
+        let latestUsage = await latestUsageTask?.items.first ?? (canReuseUserSnapshot ? snapshot.latestUsage : nil)
         let codexActivities = refreshCodexRuntimeState()
         return MonitorSnapshot(
             mode: .user,
@@ -161,9 +197,9 @@ final class MonitorViewModel: ObservableObject {
             currentUser: currentUser,
             stats: stats,
             menuBarUsageStats: menuBarStats,
-            latestUsage: latestUsage?.items.first,
-            trend: trend?.trend,
-            modelDistribution: models?.models,
+            latestUsage: latestUsage,
+            trend: trend,
+            modelDistribution: modelDistribution,
             realtime: nil,
             monitoredUser: nil,
             realtimeConcurrency: nil,
@@ -175,99 +211,115 @@ final class MonitorViewModel: ObservableObject {
         )
     }
 
-    private func adminSnapshot(currentUser: CurrentUser, client: Sub2APIClient) async throws -> MonitorSnapshot {
+    private func adminSnapshot(
+        currentUser: CurrentUser,
+        client: TokenRouterClient,
+        refreshSlowData: Bool
+    ) async throws -> MonitorSnapshot {
         let timezone = TimeZone.current.identifier
         let selectedUserID = config.adminMonitoredUserID ?? currentUser.id
+        let canReuseAdminSnapshot = snapshot.mode == .admin && snapshot.monitoredUser?.id == selectedUserID
 
-        async let usersTask = client.allAdminUsers()
-        async let selectedUserTask = client.adminUser(id: selectedUserID)
-        async let concurrencyTask = client.adminUserConcurrencyStats()
-        async let normalAccountCompositionTask = client.adminNormalAccountComposition()
+        var target = canReuseAdminSnapshot ? snapshot.monitoredUser : nil
+        if refreshSlowData || target == nil {
+            if let refreshedTarget = try? await client.adminUser(id: selectedUserID) {
+                target = refreshedTarget
+            }
+        }
+        guard let target else {
+            throw TokenRouterError.missingData
+        }
+
+        async let concurrencyTask = try? client.adminUserConcurrencyStats()
         async let menuBarStatsTask = adminMenuBarUsageStats(client: client, userID: selectedUserID, timezone: timezone)
-        async let latestUsageTask = client.adminUsageLogs(userID: selectedUserID, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: timezone)
-        let today = Self.todayString()
-        let range = Self.lastSevenDayRange()
-        async let dayStatsTask = client.adminUsageStats(userID: selectedUserID, startDate: today, endDate: today, timezone: timezone)
-        async let trendTask = client.adminDashboardTrend(userID: selectedUserID, startDate: range.start, endDate: range.end, granularity: "day", timezone: timezone)
-        async let modelsTask = client.adminDashboardModels(userID: selectedUserID, startDate: range.start, endDate: range.end, timezone: timezone)
-        async let subscriptionsTask = client.adminUserSubscriptions(userID: selectedUserID)
+        async let latestUsageTask = try? client.adminUsageLogs(userID: selectedUserID, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: timezone)
 
-        var messages: [String] = []
+        var stats = canReuseAdminSnapshot ? snapshot.stats : nil
+        var trend = canReuseAdminSnapshot ? snapshot.trend : nil
+        var modelDistribution = canReuseAdminSnapshot ? snapshot.modelDistribution : nil
+        var normalAccountComposition = canReuseAdminSnapshot ? snapshot.adminNormalAccountComposition : nil
+        var subscriptionSummary = canReuseAdminSnapshot ? snapshot.subscriptionSummary : nil
 
-        do {
-            adminUsers = try await usersTask
-        } catch {
-            adminUsers = []
-            messages.append(error.localizedDescription)
+        if refreshSlowData {
+            let today = Self.todayString()
+            let range = Self.lastSevenDayRange()
+            async let usersTask = try? client.allAdminUsers()
+            async let normalAccountCompositionTask = try? client.adminNormalAccountComposition()
+            async let dayStatsTask = try? client.adminUsageStats(userID: selectedUserID, startDate: today, endDate: today, timezone: timezone)
+            async let dashboardSnapshotTask = try? client.adminDashboardSnapshot(userID: selectedUserID, startDate: range.start, endDate: range.end, timezone: timezone)
+            async let subscriptionsTask = try? client.adminUserSubscriptions(userID: selectedUserID)
+
+            if let users = await usersTask {
+                adminUsers = users
+            }
+            if let composition = await normalAccountCompositionTask {
+                normalAccountComposition = composition
+            }
+            if let dayStats = await dayStatsTask {
+                stats = DashboardStats(monitoredUsageStats: dayStats)
+            }
+            if let dashboardSnapshot = await dashboardSnapshotTask {
+                trend = dashboardSnapshot.trend
+                modelDistribution = dashboardSnapshot.models
+            }
+            if let subscriptions = await subscriptionsTask {
+                subscriptionSummary = SubscriptionSummary(adminSubscriptions: subscriptions)
+            }
         }
 
-        let target: AdminUserSummary
-        do {
-            target = try await selectedUserTask
-        } catch {
-            _ = try? await concurrencyTask
-            _ = try? await normalAccountCompositionTask
-            _ = try? await menuBarStatsTask
-            _ = try? await latestUsageTask
-            _ = try? await dayStatsTask
-            _ = try? await trendTask
-            _ = try? await modelsTask
-            _ = try? await subscriptionsTask
-            throw error
-        }
-
-        let normalAccountComposition: NormalAccountComposition?
-        do {
-            normalAccountComposition = try await normalAccountCompositionTask
-        } catch {
-            normalAccountComposition = nil
-            messages.append(error.localizedDescription)
-        }
-
-        let concurrency: UserRealtimeConcurrency?
-        do {
-            let stats = try await concurrencyTask
-            concurrency = stats.concurrency(
+        let menuBarStats = try await menuBarStatsTask
+        let latestUsage = await latestUsageTask?.items.first ?? (canReuseAdminSnapshot ? snapshot.latestUsage : nil)
+        let concurrencyStats = await concurrencyTask
+        let concurrency = concurrencyStats?.concurrency(
                 forUserID: target.id,
                 userEmail: target.email,
                 username: target.username,
                 maxCapacity: target.concurrency
-            )
-            if concurrency == nil {
-                messages.append(AppStrings(config.language).phrase("实时并发监控未启用。", "Realtime concurrency monitoring is disabled."))
-            }
-        } catch {
-            concurrency = nil
-            messages.append(error.localizedDescription)
-        }
-
-        let dayStats = try? await dayStatsTask
-        let menuBarStats = try? await menuBarStatsTask
-        let latestUsage = try? await latestUsageTask
-        let trend = try? await trendTask
-        let models = try? await modelsTask
-        let subscriptions = try? await subscriptionsTask
+            ) ?? (canReuseAdminSnapshot ? snapshot.realtimeConcurrency : nil)
         let codexActivities = refreshCodexRuntimeState()
         return MonitorSnapshot(
             mode: .admin,
             connected: true,
             currentUser: currentUser,
-            stats: dayStats.map(DashboardStats.init(monitoredUsageStats:)),
+            stats: stats,
             menuBarUsageStats: menuBarStats,
-            latestUsage: latestUsage?.items.first,
-            trend: trend?.trend,
-            modelDistribution: models?.models,
+            latestUsage: latestUsage,
+            trend: trend,
+            modelDistribution: modelDistribution,
             realtime: nil,
             monitoredUser: target,
             realtimeConcurrency: concurrency,
             adminNormalAccountCount: normalAccountComposition?.total,
             adminNormalAccountComposition: normalAccountComposition,
             accountHealth: nil,
-            subscriptionSummary: subscriptions.map { SubscriptionSummary(adminSubscriptions: $0) },
+            subscriptionSummary: subscriptionSummary,
             codexTaskActivities: codexActivities,
             lastUpdatedAt: Date(),
-            message: messages.first
+            message: nil
         )
+    }
+
+    private func authenticatedUser(client: TokenRouterClient) async throws -> CurrentUser {
+        if let cachedAuthenticatedUser,
+           cachedAuthenticationBaseURL == config.baseURL,
+           cachedAuthenticationToken == config.authToken {
+            return cachedAuthenticatedUser
+        }
+
+        let user = try await client.currentUser().user
+        cachedAuthenticatedUser = user
+        cachedAuthenticationBaseURL = config.baseURL
+        cachedAuthenticationToken = config.authToken
+        return user
+    }
+
+    private func resetTokenRouterRefreshState(clearIdentity: Bool) {
+        lastSlowRefreshAttemptAt = nil
+        if clearIdentity {
+            cachedAuthenticatedUser = nil
+            cachedAuthenticationBaseURL = ""
+            cachedAuthenticationToken = ""
+        }
     }
 
     private func applyCapabilityPolicyForCurrentUser(_ currentUser: CurrentUser) {
@@ -285,18 +337,18 @@ final class MonitorViewModel: ObservableObject {
         }
     }
 
-    private func menuBarUsageStats(client: Sub2APIClient, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
+    private func menuBarUsageStats(client: TokenRouterClient, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
         let range = config.menuBarUsageWindow.dateRange(now: now)
         return try await client.usageStats(startDate: range.start, endDate: range.end, timezone: timezone)
     }
 
-    private func adminMenuBarUsageStats(client: Sub2APIClient, userID: Int64, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
+    private func adminMenuBarUsageStats(client: TokenRouterClient, userID: Int64, timezone: String, now: Date = Date()) async throws -> UsagePeriodStats {
         let range = config.menuBarUsageWindow.dateRange(now: now)
         return try await client.adminUsageStats(userID: userID, startDate: range.start, endDate: range.end, timezone: timezone)
     }
 
     private func refreshAuthTokenIfNeeded(after error: Error) async -> Bool {
-        guard let apiError = error as? Sub2APIError,
+        guard let apiError = error as? TokenRouterError,
               apiError.isUnauthorized,
               !config.refreshToken.isEmpty else {
             return false
@@ -305,7 +357,7 @@ final class MonitorViewModel: ObservableObject {
         var refreshConfig = config
         refreshConfig.authToken = ""
         do {
-            let response = try await Sub2APIClient(config: refreshConfig).refreshToken(config.refreshToken)
+            let response = try await TokenRouterClient(config: refreshConfig).refreshToken(config.refreshToken)
             var next = config
             next.authToken = response.accessToken
             next.refreshToken = response.refreshToken ?? config.refreshToken
@@ -344,7 +396,6 @@ final class MonitorViewModel: ObservableObject {
         codexTaskActivityStore.apply(event)
         codexNodeHealthStore.markEventReceived(event, now: Date())
         let activities = refreshCodexRuntimeState()
-        persistCodexTaskActivities(activities)
         publish(snapshot.withCodexTaskActivities(activities))
     }
 
@@ -354,7 +405,6 @@ final class MonitorViewModel: ObservableObject {
         codexNodeHealthStore.configure(nodes: registry.nodes, now: Date())
         codexTaskActivityStore.keepOnlyActivities(forNodeIDs: Set(registry.nodes.map(\.id)))
         let activities = refreshCodexRuntimeState()
-        persistCodexTaskActivities(activities)
         publish(snapshot.withCodexTaskActivities(activities))
         publishCodexNodeHealthStatuses()
         syncCodexHookReceivers()
@@ -924,7 +974,7 @@ final class MonitorViewModel: ObservableObject {
             )
             let (_, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
-                throw Sub2APIError.badStatus(0, "Invalid test event response.")
+                throw TokenRouterError.badStatus(0, "Invalid test event response.")
             }
             guard (200..<300).contains(httpResponse.statusCode) else {
                 let failurePrefix = codexTestEventFailurePrefix(context, remote: false)
@@ -1519,25 +1569,78 @@ final class MonitorViewModel: ObservableObject {
     }
 
     private func loadCodexTaskActivities() {
-        do {
-            codexTaskActivityStore = try codexTaskActivityPersistence.load()
-            lastPersistedCodexTaskActivities = codexTaskActivityStore.activities
-            snapshot = snapshot.withCodexTaskActivities(refreshCodexRuntimeState())
-        } catch {
-            settingsError = error.localizedDescription
+        guard !hasLoadedCodexTaskActivities, !isLoadingCodexTaskActivities else {
+            return
+        }
+        isLoadingCodexTaskActivities = true
+        let persistence = codexTaskActivityPersistence
+
+        Task { @MainActor [weak self] in
+            do {
+                let loadedStore = try await Task.detached(priority: .utility) {
+                    try persistence.load()
+                }.value
+                guard let self else {
+                    return
+                }
+                self.isLoadingCodexTaskActivities = false
+                self.hasLoadedCodexTaskActivities = true
+                self.lastPersistedCodexTaskActivities = loadedStore.activities
+                self.codexTaskActivityStore.merge(activities: loadedStore.activities)
+                self.codexTaskActivityStore.keepOnlyActivities(
+                    forNodeIDs: Set(self.codexNodeRegistry.nodes.map(\.id))
+                )
+                let activities = self.refreshCodexRuntimeState()
+                self.publish(self.snapshot.withCodexTaskActivities(activities))
+            } catch {
+                guard let self else {
+                    return
+                }
+                self.isLoadingCodexTaskActivities = false
+                self.hasLoadedCodexTaskActivities = true
+                self.settingsError = error.localizedDescription
+                let activities = self.refreshCodexRuntimeState()
+                self.publish(self.snapshot.withCodexTaskActivities(activities))
+            }
         }
     }
 
     private func persistCodexTaskActivities(_ activities: [CodexTaskActivity]) {
-        guard activities != lastPersistedCodexTaskActivities else {
+        guard hasLoadedCodexTaskActivities,
+              activities != lastPersistedCodexTaskActivities,
+              activities != pendingPersistedCodexTaskActivities else {
             return
         }
-        do {
-            try codexTaskActivityPersistence.save(activities)
-            lastPersistedCodexTaskActivities = activities
-        } catch {
-            settingsError = error.localizedDescription
+        pendingPersistedCodexTaskActivities = activities
+        codexTaskPersistenceWorkItem?.cancel()
+
+        let persistence = codexTaskActivityPersistence
+        let workItem = DispatchWorkItem { [weak self] in
+            let result: Result<Void, Error>
+            do {
+                try persistence.save(activities)
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    return
+                }
+                if self.pendingPersistedCodexTaskActivities == activities {
+                    self.pendingPersistedCodexTaskActivities = nil
+                }
+                switch result {
+                case .success:
+                    self.lastPersistedCodexTaskActivities = activities
+                case let .failure(error):
+                    self.settingsError = error.localizedDescription
+                }
+            }
         }
+        codexTaskPersistenceWorkItem = workItem
+        codexTaskPersistenceQueue.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
     private func isTransientRefreshFailure(_ error: Error) -> Bool {
@@ -1616,6 +1719,11 @@ final class MonitorViewModel: ObservableObject {
             }
             config = next
             settingsDraft = next
+            let authenticationChanged = previousConfig.baseURL != next.baseURL || previousConfig.authToken != next.authToken
+            let monitoredUserChanged = previousConfig.adminMonitoredUserID != next.adminMonitoredUserID
+            if authenticationChanged || monitoredUserChanged {
+                resetTokenRouterRefreshState(clearIdentity: authenticationChanged)
+            }
             relocalizeUpdateStatusIfNeeded(previousLanguage: previousConfig.language, nextLanguage: next.language)
             scheduleTimer()
             onSnapshotChange?(snapshot)
@@ -1657,6 +1765,7 @@ final class MonitorViewModel: ObservableObject {
             try store.save(next)
             config = next
             settingsDraft = next
+            resetTokenRouterRefreshState(clearIdentity: true)
             loginEmail = ""
             loginPassword = ""
             publish(.idle(mode: next.monitorMode))
@@ -1669,7 +1778,7 @@ final class MonitorViewModel: ObservableObject {
         settingsError = nil
         var draft = settingsDraft
         draft.authToken = ""
-        let client = Sub2APIClient(config: draft)
+        let client = TokenRouterClient(config: draft)
         Task { @MainActor in
             isLoggingIn = true
             do {
@@ -1834,15 +1943,7 @@ final class MonitorViewModel: ObservableObject {
     }
 
     private static func hasMenuBarReasoningEffort(_ value: String?) -> Bool {
-        guard let value = nonEmpty(value) else {
-            return false
-        }
-        let normalized = value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: " ", with: "")
-        return normalized != "none" && normalized != "no" && normalized != "-"
+        StatusFormatters.reasoningEffortPresentation(value).isProvided
     }
 
     private var currentAppVersion: String {

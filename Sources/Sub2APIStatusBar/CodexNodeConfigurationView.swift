@@ -7,8 +7,8 @@ struct CodexNodeConfigurationView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                summaryCard
+            LazyVStack(alignment: .leading, spacing: 12) {
+                summaryHeader
                 nodeListCard
                 installPreviewCard
                 formCard
@@ -17,33 +17,27 @@ struct CodexNodeConfigurationView: View {
         }
     }
 
-    private var summaryCard: some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(strings.phrase("Codex 节点与 hooks", "Codex Nodes and Hooks"), systemImage: "point.3.connected.trianglepath.dotted")
-                    .font(.headline)
-                Text(strings.phrase(
-                    "配置本机或远端 Codex hooks，远端事件通过 SSH-R 回传。",
-                    "Configure local or remote Codex hooks. Remote events return through SSH-R."
-                ))
-                .font(.callout)
-                .foregroundStyle(ClaudeTheme.secondaryText)
-                HStack(spacing: 8) {
-                    receiverBadge
-                    Spacer()
-                    Button {
-                        model.resetCodexNodeForm(kind: .local)
-                    } label: {
-                        Label(strings.phrase("新增本机", "Add Local"), systemImage: "plus")
-                    }
-                    Button {
-                        model.resetCodexNodeForm(kind: .remote)
-                    } label: {
-                        Label(strings.phrase("新增远端", "Add Remote"), systemImage: "plus")
-                    }
+    private var summaryHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PanelPageHeader(
+                title: strings.phrase("节点", "Nodes"),
+                subtitle: strings.phrase("本机与远端 Codex hooks", "Local and remote Codex hooks")
+            )
+            HStack(spacing: 8) {
+                receiverBadge
+                Spacer()
+                Button {
+                    model.resetCodexNodeForm(kind: .local)
+                } label: {
+                    Label(strings.phrase("本机", "Local"), systemImage: "plus")
                 }
-                .buttonStyle(.borderless)
+                Button {
+                    model.resetCodexNodeForm(kind: .remote)
+                } label: {
+                    Label(strings.phrase("远端", "Remote"), systemImage: "plus")
+                }
             }
+            .buttonStyle(.borderless)
         }
     }
 
@@ -54,7 +48,6 @@ struct CodexNodeConfigurationView: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .background(ClaudeTheme.elevatedCard, in: Capsule())
-            .overlay(Capsule().stroke(ClaudeTheme.border, lineWidth: 1))
     }
 
     @ViewBuilder
@@ -167,11 +160,7 @@ struct CodexNodeConfigurationView: View {
             .buttonStyle(.borderless)
         }
         .padding(12)
-        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(ClaudeTheme.border, lineWidth: 1)
-        )
+        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     @ViewBuilder
@@ -209,11 +198,7 @@ struct CodexNodeConfigurationView: View {
                             .padding(10)
                     }
                     .frame(minHeight: 180, maxHeight: 260)
-                    .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(ClaudeTheme.border, lineWidth: 1)
-                    )
+                    .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     HStack {
                         Button {

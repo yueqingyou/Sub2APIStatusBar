@@ -210,6 +210,23 @@ public struct CodexTaskActivity: Identifiable, Codable, Sendable, Equatable {
         public let rawPayloadHash: String?
         public let rawPayloadJSON: String?
 
+        private enum CodingKeys: String, CodingKey {
+            case eventID
+            case hookEvent
+            case observedAt
+            case sessionID
+            case turnID
+            case cwd
+            case model
+            case toolName
+            case statusHint
+            case toolUseID
+            case errorMessage
+            case transcriptPath
+            case userAgent
+            case rawPayloadHash
+        }
+
         public init(
             eventID: String,
             hookEvent: CodexHookEventName,
@@ -243,9 +260,65 @@ public struct CodexTaskActivity: Identifiable, Codable, Sendable, Equatable {
             self.rawPayloadHash = rawPayloadHash
             self.rawPayloadJSON = rawPayloadJSON
         }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            eventID = try container.decode(String.self, forKey: .eventID)
+            hookEvent = try container.decode(CodexHookEventName.self, forKey: .hookEvent)
+            observedAt = try container.decode(Date.self, forKey: .observedAt)
+            sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID) ?? ""
+            turnID = try container.decodeIfPresent(String.self, forKey: .turnID) ?? ""
+            cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+            model = try container.decodeIfPresent(String.self, forKey: .model)
+            toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+            statusHint = try container.decodeIfPresent(String.self, forKey: .statusHint)
+            toolUseID = try container.decodeIfPresent(String.self, forKey: .toolUseID)
+            errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
+            transcriptPath = try container.decodeIfPresent(String.self, forKey: .transcriptPath)
+            userAgent = try container.decodeIfPresent(String.self, forKey: .userAgent)
+            rawPayloadHash = try container.decodeIfPresent(String.self, forKey: .rawPayloadHash)
+            rawPayloadJSON = nil
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(eventID, forKey: .eventID)
+            try container.encode(hookEvent, forKey: .hookEvent)
+            try container.encode(observedAt, forKey: .observedAt)
+            try container.encode(sessionID, forKey: .sessionID)
+            try container.encode(turnID, forKey: .turnID)
+            try container.encodeIfPresent(cwd, forKey: .cwd)
+            try container.encodeIfPresent(model, forKey: .model)
+            try container.encodeIfPresent(toolName, forKey: .toolName)
+            try container.encodeIfPresent(statusHint, forKey: .statusHint)
+            try container.encodeIfPresent(toolUseID, forKey: .toolUseID)
+            try container.encodeIfPresent(errorMessage, forKey: .errorMessage)
+            try container.encodeIfPresent(transcriptPath, forKey: .transcriptPath)
+            try container.encodeIfPresent(userAgent, forKey: .userAgent)
+            try container.encodeIfPresent(rawPayloadHash, forKey: .rawPayloadHash)
+        }
+
+        fileprivate func withoutRawPayloadJSON() -> TimelineEvent {
+            TimelineEvent(
+                eventID: eventID,
+                hookEvent: hookEvent,
+                observedAt: observedAt,
+                sessionID: sessionID,
+                turnID: turnID,
+                cwd: cwd,
+                model: model,
+                toolName: toolName,
+                statusHint: statusHint,
+                toolUseID: toolUseID,
+                errorMessage: errorMessage,
+                transcriptPath: transcriptPath,
+                userAgent: userAgent,
+                rawPayloadHash: rawPayloadHash
+            )
+        }
     }
 
-    public var id: String { "\(nodeID)|\(sessionID)" }
+    public var id: String { "\(nodeID)|\(sessionID)|\(turnID)" }
     public let nodeID: String
     public let sessionID: String
     public var turnID: String
@@ -272,6 +345,10 @@ public struct CodexTaskActivity: Identifiable, Codable, Sendable, Equatable {
 }
 
 public struct CodexTaskActivityStore: Sendable, Equatable {
+    public static let maxTimelineEvents = 20
+    public static let maxTerminalActivities = 200
+    public static let terminalRetentionSeconds: TimeInterval = 7 * 24 * 60 * 60
+
     private var activityByKey: [String: CodexTaskActivity] = [:]
     private var seenEventIDs = Set<String>()
     private var badgeByKey: [String: String] = [:]
@@ -285,7 +362,8 @@ public struct CodexTaskActivityStore: Sendable, Equatable {
             }
             return lhs.startedAt < rhs.startedAt
         }
-        for activity in sortedActivities {
+        for var activity in sortedActivities {
+            activity.timeline = Self.trimmedTimeline(activity.timeline)
             activityByKey[activity.id] = activity
             badgeByKey[activity.id] = activity.badge
             seenEventIDs.formUnion(activity.timeline.map(\.eventID))
@@ -301,6 +379,27 @@ public struct CodexTaskActivityStore: Sendable, Equatable {
             activityByKey[key] != nil
         }
         seenEventIDs = Set(activityByKey.values.flatMap { $0.timeline.map(\.eventID) })
+    }
+
+    public mutating func merge(activities: [CodexTaskActivity]) {
+        for incomingActivity in activities {
+            guard var existingActivity = activityByKey[incomingActivity.id] else {
+                var activity = incomingActivity
+                activity.timeline = Self.trimmedTimeline(activity.timeline)
+                activityByKey[activity.id] = activity
+                continue
+            }
+
+            let mergedTimeline = existingActivity.timeline + incomingActivity.timeline
+
+            if incomingActivity.updatedAt > existingActivity.updatedAt {
+                existingActivity = incomingActivity
+            }
+            existingActivity.timeline = Self.trimmedTimeline(mergedTimeline)
+            activityByKey[existingActivity.id] = existingActivity
+        }
+
+        rebuildIndexes()
     }
 
     public var activities: [CodexTaskActivity] {
@@ -348,19 +447,23 @@ public struct CodexTaskActivityStore: Sendable, Equatable {
         )
 
         activity.timeline.append(Self.timelineEvent(from: event))
-
-        let updatesCurrentTurn = existingActivity.map { Self.updatesCurrentTurn($0, with: event) } ?? true
-        if updatesCurrentTurn {
-            activity.turnID = event.turnID
-            activity.updatedAt = event.observedAt
-        }
+        activity.timeline = Self.trimmedTimeline(activity.timeline)
 
         let explicitStatus = Self.explicitStatus(from: event)
 
-        guard updatesCurrentTurn else {
+        guard !activity.isTerminal || event.hookEvent == .stop else {
             activityByKey[key] = activity
+            prune(now: event.observedAt)
             return
         }
+
+        guard event.observedAt >= activity.updatedAt else {
+            activityByKey[key] = activity
+            prune(now: event.observedAt)
+            return
+        }
+
+        activity.updatedAt = event.observedAt
 
         if activity.cwd == nil {
             activity.cwd = event.cwd
@@ -419,19 +522,7 @@ public struct CodexTaskActivityStore: Sendable, Equatable {
         }
 
         activityByKey[key] = activity
-    }
-
-    private static func updatesCurrentTurn(_ activity: CodexTaskActivity, with event: CodexHookEvent) -> Bool {
-        let sameTurn = activity.turnID == event.turnID
-        if !sameTurn {
-            return event.hookEvent == .userPromptSubmit
-        }
-
-        if activity.isTerminal, event.hookEvent != .stop {
-            return false
-        }
-
-        return true
+        prune(now: event.observedAt)
     }
 
     public mutating func markStale(now: Date, staleAfter seconds: TimeInterval) {
@@ -441,17 +532,41 @@ public struct CodexTaskActivityStore: Sendable, Equatable {
 
         for key in activityByKey.keys {
             guard var activity = activityByKey[key],
-                  activity.status == .running,
+                  activity.status == .running || activity.status == .waiting,
                   now.timeIntervalSince(activity.updatedAt) >= seconds else {
                 continue
             }
             activity.status = .stale
             activityByKey[key] = activity
         }
+        prune(now: now)
+    }
+
+    public mutating func prune(now: Date) {
+        let terminalCutoff = now.addingTimeInterval(-Self.terminalRetentionSeconds)
+        let activeKeys = Set(activityByKey.compactMap { key, activity in
+            Self.isRetainedTerminal(activity.status) ? nil : key
+        })
+        let terminalKeys = activityByKey
+            .filter { _, activity in
+                Self.isRetainedTerminal(activity.status) && activity.updatedAt >= terminalCutoff
+            }
+            .sorted { lhs, rhs in
+                if lhs.value.updatedAt == rhs.value.updatedAt {
+                    return lhs.key < rhs.key
+                }
+                return lhs.value.updatedAt > rhs.value.updatedAt
+            }
+            .prefix(Self.maxTerminalActivities)
+            .map(\.key)
+        let keptKeys = activeKeys.union(terminalKeys)
+
+        activityByKey = activityByKey.filter { keptKeys.contains($0.key) }
+        rebuildIndexes()
     }
 
     private func activityKey(for event: CodexHookEvent) -> String {
-        "\(event.nodeID)|\(event.sessionID)"
+        "\(event.nodeID)|\(event.sessionID)|\(event.turnID)"
     }
 
     private func nextBadge() -> String {
@@ -463,6 +578,11 @@ public struct CodexTaskActivityStore: Sendable, Equatable {
             return max(partialResult, number)
         } + 1
         return "A\(nextNumber)"
+    }
+
+    private mutating func rebuildIndexes() {
+        badgeByKey = Dictionary(uniqueKeysWithValues: activityByKey.map { ($0.key, $0.value.badge) })
+        seenEventIDs = Set(activityByKey.values.flatMap { $0.timeline.map(\.eventID) })
     }
 
     private static func explicitStatus(from event: CodexHookEvent) -> CodexTaskActivity.Status? {
@@ -499,6 +619,38 @@ public struct CodexTaskActivityStore: Sendable, Equatable {
             return .running
         }
         return status
+    }
+
+    private static func isRetainedTerminal(_ status: CodexTaskActivity.Status) -> Bool {
+        status == .done || status == .error || status == .stale
+    }
+
+    private static func trimmedTimeline(_ timeline: [CodexTaskActivity.TimelineEvent]) -> [CodexTaskActivity.TimelineEvent] {
+        var eventByID: [String: CodexTaskActivity.TimelineEvent] = [:]
+        for event in timeline {
+            guard let existing = eventByID[event.eventID] else {
+                eventByID[event.eventID] = event
+                continue
+            }
+            if event.observedAt >= existing.observedAt {
+                eventByID[event.eventID] = event
+            }
+        }
+
+        let trimmed = Array(
+            eventByID.values
+                .sorted { lhs, rhs in
+                    if lhs.observedAt == rhs.observedAt {
+                        return lhs.eventID < rhs.eventID
+                    }
+                    return lhs.observedAt < rhs.observedAt
+                }
+                .suffix(Self.maxTimelineEvents)
+        )
+        let rawPayloadStartIndex = max(0, trimmed.count - 3)
+        return trimmed.enumerated().map { index, event in
+            index < rawPayloadStartIndex ? event.withoutRawPayloadJSON() : event
+        }
     }
 
     private static func timelineEvent(from event: CodexHookEvent) -> CodexTaskActivity.TimelineEvent {

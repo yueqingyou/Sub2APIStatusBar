@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Sub2APIError: Error, LocalizedError, Equatable, Sendable {
+public enum TokenRouterError: Error, LocalizedError, Equatable, Sendable {
     case api(code: Int, message: String)
     case missingData
     case invalidBaseURL
@@ -38,17 +38,17 @@ public enum Sub2APIError: Error, LocalizedError, Equatable, Sendable {
     }
 }
 
-public struct Sub2APIEnvelope<Value: Decodable & Sendable>: Decodable, Sendable {
+public struct TokenRouterEnvelope<Value: Decodable & Sendable>: Decodable, Sendable {
     public let code: Int
     public let message: String
     public let data: Value?
 
     public func value() throws -> Value {
         guard code == 0 else {
-            throw Sub2APIError.api(code: code, message: message)
+            throw TokenRouterError.api(code: code, message: message)
         }
         guard let data else {
-            throw Sub2APIError.missingData
+            throw TokenRouterError.missingData
         }
         return data
     }
@@ -608,57 +608,47 @@ public struct TrendDataPoint: Decodable, Identifiable, Equatable, Sendable {
     }
 }
 
-public struct DashboardTrendResponse: Decodable, Equatable, Sendable {
+public struct TokenRouterDashboardSnapshot: Decodable, Equatable, Sendable {
+    public let generatedAt: String?
     public let startDate: String?
     public let endDate: String?
     public let granularity: String?
     public let trend: [TrendDataPoint]
+    public let models: [ModelUsageSummary]
 
-    public init(startDate: String? = nil, endDate: String? = nil, granularity: String? = nil, trend: [TrendDataPoint] = []) {
+    public init(
+        generatedAt: String? = nil,
+        startDate: String? = nil,
+        endDate: String? = nil,
+        granularity: String? = nil,
+        trend: [TrendDataPoint] = [],
+        models: [ModelUsageSummary] = []
+    ) {
+        self.generatedAt = generatedAt
         self.startDate = startDate
         self.endDate = endDate
         self.granularity = granularity
         self.trend = trend
-    }
-}
-
-public struct DashboardModelsResponse: Decodable, Equatable, Sendable {
-    public let startDate: String?
-    public let endDate: String?
-    public let models: [ModelUsageSummary]
-
-    public init(startDate: String? = nil, endDate: String? = nil, models: [ModelUsageSummary] = []) {
-        self.startDate = startDate
-        self.endDate = endDate
         self.models = models
     }
-}
-
-public struct DashboardSnapshot: Decodable, Equatable, Sendable {
-    public let generatedAt: String?
-    public let stats: DashboardStats?
-    public let trend: [TrendDataPoint]?
-    public let modelDistribution: [ModelUsageSummary]?
 
     private enum CodingKeys: String, CodingKey {
         case generatedAt
-        case stats
+        case startDate
+        case endDate
+        case granularity
         case trend
-        case modelDistribution
-        case modelStats
-        case modelUsage
         case models
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
-        stats = try container.decodeIfPresent(DashboardStats.self, forKey: .stats)
-        trend = try container.decodeIfPresent([TrendDataPoint].self, forKey: .trend)
-        modelDistribution = try container.decodeIfPresent([ModelUsageSummary].self, forKey: .modelDistribution)
-            ?? container.decodeIfPresent([ModelUsageSummary].self, forKey: .modelStats)
-            ?? container.decodeIfPresent([ModelUsageSummary].self, forKey: .modelUsage)
-            ?? container.decodeIfPresent([ModelUsageSummary].self, forKey: .models)
+        startDate = try container.decodeIfPresent(String.self, forKey: .startDate)
+        endDate = try container.decodeIfPresent(String.self, forKey: .endDate)
+        granularity = try container.decodeIfPresent(String.self, forKey: .granularity)
+        trend = try container.decodeIfPresent([TrendDataPoint].self, forKey: .trend) ?? []
+        models = try container.decodeIfPresent([ModelUsageSummary].self, forKey: .models) ?? []
     }
 }
 
@@ -786,6 +776,8 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
     public let accountID: Int64?
     public let requestID: String?
     public let model: String
+    public let upstreamModel: String?
+    public let modelMappingChain: String?
     public let serviceTier: String?
     public let reasoningEffort: String?
     public let inboundEndpoint: String?
@@ -813,6 +805,8 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         accountID: Int64? = nil,
         requestID: String? = nil,
         model: String = "",
+        upstreamModel: String? = nil,
+        modelMappingChain: String? = nil,
         serviceTier: String? = nil,
         reasoningEffort: String? = nil,
         inboundEndpoint: String? = nil,
@@ -839,6 +833,8 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         self.accountID = accountID
         self.requestID = requestID
         self.model = model
+        self.upstreamModel = upstreamModel
+        self.modelMappingChain = modelMappingChain
         self.serviceTier = serviceTier
         self.reasoningEffort = reasoningEffort
         self.inboundEndpoint = inboundEndpoint
@@ -867,6 +863,8 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         case accountID = "accountId"
         case requestID = "requestId"
         case model
+        case upstreamModel
+        case modelMappingChain
         case serviceTier
         case reasoningEffort
         case inboundEndpoint
@@ -896,6 +894,8 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         accountID = try container.decodeIfPresent(Int64.self, forKey: .accountID)
         requestID = try container.decodeIfPresent(String.self, forKey: .requestID)
         model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
+        upstreamModel = try container.decodeIfPresent(String.self, forKey: .upstreamModel)
+        modelMappingChain = try container.decodeIfPresent(String.self, forKey: .modelMappingChain)
         serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
         reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
         inboundEndpoint = try container.decodeIfPresent(String.self, forKey: .inboundEndpoint)
@@ -1824,59 +1824,21 @@ public struct MonitorSnapshot: Equatable, Sendable {
     }
 
     public func menuBarTooltip(statusText: String, config: AppConfig) -> String {
-        let title = "Sub2API \(statusText)"
+        let title = "TokenRouter \(statusText)"
 
-        let rows = menuBarValueLabelRows(config: config)
+        let cells = menuBarCells(config: config, compact: true)
+        let rows = valueLabelRows(cells: cells)
         guard !rows.top.isEmpty else {
             return title
         }
 
-        return "\(title)\n\(rows.top)\n\(rows.bottom)"
-    }
-
-    private static func compactReasoningEffort(_ effort: String) -> String {
-        switch normalizedReasoningEffort(effort) {
-        case "", "none", "minimal":
-            return "no"
-        case "low":
-            return "lo"
-        case "medium":
-            return "med"
-        case "high":
-            return "hi"
-        case "xhigh":
-            return "xh"
-        default:
-            return effort
+        var lines = [title, rows.top, rows.bottom]
+        if let model = Self.nonEmpty(latestUsage?.model),
+           cells.contains(where: { $0.label == menuBarCellLabel(for: .model) }),
+           StatusFormatters.menuBarModelName(model) != model {
+            lines.append("Model: \(model)")
         }
-    }
-
-    private static func menuBarModelName(_ model: String) -> String {
-        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed.lowercased()
-        if normalized == "codex" || normalized.hasPrefix("codex-") {
-            return "Codex"
-        }
-        if normalized.hasPrefix("gpt-") {
-            return "GPT-" + trimmed.dropFirst(4)
-        }
-        return trimmed
-    }
-
-    private static func menuBarReasoningEffort(_ effort: String?) -> String {
-        guard let effort = nonEmpty(effort) else {
-            return "no"
-        }
-        return effort
-    }
-
-    private static func normalizedReasoningEffort(_ effort: String) -> String {
-        effort
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "-", with: "")
-            .replacingOccurrences(of: " ", with: "")
+        return lines.joined(separator: "\n")
     }
 
     private func menuBarCells(config: AppConfig, compact: Bool) -> [MenuBarStatusCell] {
@@ -1927,10 +1889,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
             guard let model = Self.nonEmpty(latestUsage?.model) else {
                 return "No model"
             }
-            return compact ? Self.menuBarModelName(model) : model
+            return compact ? StatusFormatters.menuBarModelName(model) : model
         case .reasoningEffort:
-            let effort = Self.menuBarReasoningEffort(latestUsage?.reasoningEffort)
-            return compact ? Self.compactReasoningEffort(effort) : effort
+            let presentation = StatusFormatters.reasoningEffortPresentation(latestUsage?.reasoningEffort)
+            return compact ? presentation.compactName : presentation.displayName
         case .contextLength:
             guard let latestUsage else {
                 return "0c"
@@ -1978,9 +1940,9 @@ public struct MonitorSnapshot: Equatable, Sendable {
         case .totalRequests:
             return 36
         case .model:
-            return 56
+            return 70
         case .reasoningEffort:
-            return 26
+            return 32
         case .contextLength:
             return 50
         case .fast:

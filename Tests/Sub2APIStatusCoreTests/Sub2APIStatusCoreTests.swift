@@ -6509,22 +6509,24 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
         outputCost: 0.006,
         actualCost: 0.00725
     )
-    let activities = (1...33).map { index in
-        CodexTaskActivity(
+    var activities: [CodexTaskActivity] = []
+    for index in 1 ... 33 {
+        let isRunning = index >= 32
+        activities.append(CodexTaskActivity(
             nodeID: "node-\(index)",
             sessionID: "session-\(index)",
             turnID: "turn-\(index)",
             badge: "A\(index)",
             cwd: nil,
             model: "gpt-5",
-            status: index >= 32 ? .running : .done,
-            phase: index >= 32 ? .tooling : .completed,
+            status: isRunning ? .running : .done,
+            phase: isRunning ? .tooling : .completed,
             toolName: nil,
             startedAt: Date(timeIntervalSince1970: Double(100 + index)),
             updatedAt: Date(timeIntervalSince1970: Double(200 + index)),
-            completedAt: index >= 32 ? nil : Date(timeIntervalSince1970: Double(200 + index)),
+            completedAt: isRunning ? nil : Date(timeIntervalSince1970: Double(200 + index)),
             timeline: []
-        )
+        ))
     }
     let snapshot = MonitorSnapshot(
         mode: .admin,
@@ -6566,7 +6568,7 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
         presentation.bottomRow,
         "Cost | Req | Model | Eff | Ctx | Fast | In | Out | Conc | Acct | T33R2Q0D0E0"
     )
-    XCTAssertEqual(presentation.cells.map(\.width), [58, 36, 70, 32, 50, 24, 54, 54, 36, 36, 88])
+    XCTAssertEqual(presentation.cells.map { $0.width }, [58, 36, 70, 32, 50, 24, 54, 54, 36, 36, 88])
     XCTAssertFalse(presentation.topRow.contains("i$"))
     XCTAssertFalse(presentation.topRow.contains("o$"))
 }
@@ -6992,22 +6994,24 @@ func testMonitorSnapshotCodexTaskPresentationUsesLatestTaskBadgeAndPersistentCou
 }
 
 func testMonitorSnapshotCodexTaskPresentationUsesWiderFixedTaskCellForManyTasks() {
-    let activities = (1...5).map { index in
-        CodexTaskActivity(
+    var activities: [CodexTaskActivity] = []
+    for index in 1 ... 5 {
+        let isRunning = index == 5
+        activities.append(CodexTaskActivity(
             nodeID: "node-\(index)",
             sessionID: "session-\(index)",
             turnID: "turn-\(index)",
             badge: "A\(index)",
             cwd: nil,
             model: "gpt-5",
-            status: index == 5 ? .running : .done,
-            phase: index == 5 ? .tooling : .completed,
+            status: isRunning ? .running : .done,
+            phase: isRunning ? .tooling : .completed,
             toolName: nil,
             startedAt: Date(timeIntervalSince1970: Double(100 + index)),
             updatedAt: Date(timeIntervalSince1970: Double(200 + index)),
-            completedAt: index == 5 ? nil : Date(timeIntervalSince1970: Double(200 + index)),
+            completedAt: isRunning ? nil : Date(timeIntervalSince1970: Double(200 + index)),
             timeline: []
-        )
+        ))
     }
     let snapshot = MonitorSnapshot(
         mode: .user,

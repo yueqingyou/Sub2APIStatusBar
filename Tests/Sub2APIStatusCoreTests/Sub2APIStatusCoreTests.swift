@@ -17,8 +17,9 @@ final class MemoryTokenStore: TokenStore, @unchecked Sendable {
     }
 }
 
-final class StaticTokenStore: TokenStore, @unchecked Sendable {
+final class MemoryLegacyTokenStore: LegacyTokenStore, @unchecked Sendable {
     var tokens: StoredAuthTokens
+    var deleteCallCount = 0
 
     init(tokens: StoredAuthTokens) {
         self.tokens = tokens
@@ -28,8 +29,9 @@ final class StaticTokenStore: TokenStore, @unchecked Sendable {
         tokens
     }
 
-    func saveTokens(_ tokens: StoredAuthTokens) throws {
-        self.tokens = tokens
+    func deleteTokens() {
+        tokens = StoredAuthTokens()
+        deleteCallCount += 1
     }
 }
 
@@ -458,13 +460,17 @@ func testAppConfigNormalizesBaseURLAndRefreshInterval() {
 }
 
 func testTokenRouterRefreshPolicySeparatesAutomaticAndManualSlowRefreshes() {
-    let policy = TokenRouterRefreshPolicy(slowRefreshInterval: 60)
+    let policy = TokenRouterRefreshPolicy(slowRefreshInterval: 60, accountUsageRefreshInterval: 600)
     let now = Date(timeIntervalSince1970: 1_000)
 
     XCTAssertTrue(policy.shouldRefreshSlowData(lastAttemptAt: nil, now: now, isManualRefresh: false))
     XCTAssertFalse(policy.shouldRefreshSlowData(lastAttemptAt: now.addingTimeInterval(-59), now: now, isManualRefresh: false))
     XCTAssertTrue(policy.shouldRefreshSlowData(lastAttemptAt: now.addingTimeInterval(-60), now: now, isManualRefresh: false))
     XCTAssertTrue(policy.shouldRefreshSlowData(lastAttemptAt: now, now: now, isManualRefresh: true))
+    XCTAssertTrue(policy.shouldRefreshAccountUsage(lastAttemptAt: nil, now: now, isManualRefresh: false))
+    XCTAssertFalse(policy.shouldRefreshAccountUsage(lastAttemptAt: now.addingTimeInterval(-599), now: now, isManualRefresh: false))
+    XCTAssertTrue(policy.shouldRefreshAccountUsage(lastAttemptAt: now.addingTimeInterval(-600), now: now, isManualRefresh: false))
+    XCTAssertTrue(policy.shouldRefreshAccountUsage(lastAttemptAt: now, now: now, isManualRefresh: true))
 }
 
 func testAppConfigNormalizesCodexTaskTimelineEventLimit() {
@@ -4736,11 +4742,25 @@ func testLocalCredentialsTokenStorePersistsTokensInPrivateFile() throws {
     XCTAssertEqual(permissions.intValue & 0o777, 0o600)
 }
 
+func testLocalCredentialsTokenStoreMigratesThenDeletesLegacyTokens() throws {
+    let credentialsURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString)
+        .appendingPathComponent("credentials.json")
+    let legacyTokens = StoredAuthTokens(authToken: "legacy-access", refreshToken: "legacy-refresh")
+    let legacyStore = MemoryLegacyTokenStore(tokens: legacyTokens)
+    let store = LocalCredentialsTokenStore(credentialsURL: credentialsURL, legacyTokenStore: legacyStore)
+
+    XCTAssertEqual(store.loadTokens(), legacyTokens)
+    XCTAssertEqual(legacyStore.deleteCallCount, 1)
+    XCTAssertEqual(legacyStore.tokens, StoredAuthTokens())
+    XCTAssertEqual(store.loadTokens(), legacyTokens)
+}
+
 func testLocalCredentialsTokenStorePersistsEmptyCredentialsToPreventLegacyRemigration() throws {
     let credentialsURL = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent(UUID().uuidString)
         .appendingPathComponent("credentials.json")
-    let legacyStore = StaticTokenStore(tokens: StoredAuthTokens(authToken: "legacy-access", refreshToken: "legacy-refresh"))
+    let legacyStore = MemoryLegacyTokenStore(tokens: StoredAuthTokens(authToken: "legacy-access", refreshToken: "legacy-refresh"))
     let store = LocalCredentialsTokenStore(credentialsURL: credentialsURL, legacyTokenStore: legacyStore)
 
     try store.saveTokens(StoredAuthTokens(authToken: "access-token", refreshToken: "refresh-token"))
@@ -5337,45 +5357,6 @@ func testTokenRouterClientFetchesAllAdminUsersAcrossPages() async throws {
     ])
 }
 
-func testTokenRouterClientFetchesNormalAccountCountFromAccountFilterTotal() async throws {
-    StubURLProtocol.responses = [
-        "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true": Data("""
-        {
-          "items": [
-            {
-              "account": {
-                "id": 41,
-                "name": "normal",
-                "platform": "openai",
-                "type": "oauth",
-                "status": "active",
-                "schedulable": true,
-                "error_message": ""
-              },
-              "current_concurrency": 0
-            }
-          ],
-          "total": 4,
-          "page": 1,
-          "page_size": 1,
-          "pages": 4
-        }
-        """.utf8),
-    ]
-    StubURLProtocol.requestedPaths = []
-    let configuration = URLSessionConfiguration.ephemeral
-    configuration.protocolClasses = [StubURLProtocol.self]
-    let session = URLSession(configuration: configuration)
-    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
-
-    let count = try await client.adminNormalAccountCount()
-
-    XCTAssert(count == 4)
-    XCTAssert(StubURLProtocol.requestedPaths == [
-        "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true",
-    ])
-}
-
 func testNormalAccountCompositionSummarizesTypesPlatformsAndPlans() throws {
     let accounts = [
         AccountSummary(
@@ -5465,7 +5446,7 @@ func testNormalAccountCompositionSummarizesTypesPlatformsAndPlans() throws {
         ),
     ]
 
-    let composition = NormalAccountComposition(total: 5, accounts: accounts)
+    let composition = NormalAccountComposition(accounts: accounts)
 
     XCTAssertEqual(composition.typeLine(language: .zhHans), "API 1 · OAuth 4")
     XCTAssertEqual(composition.detailLine(language: .zhHans), "Pro 2 · Plus 1 · Team 1")
@@ -5534,9 +5515,24 @@ func testTokenRouterClientFetchesNormalAccountCompositionFromFlatAccountList() a
               "schedulable": true,
               "error_message": "",
               "current_concurrency": 0
+            },
+            {
+              "id": 44,
+              "name": "openai-spark",
+              "platform": "openai",
+              "type": "oauth",
+              "credentials": {
+                "plan_type": "pro"
+              },
+              "status": "active",
+              "schedulable": true,
+              "parent_account_id": 41,
+              "quota_dimension": "spark",
+              "error_message": "",
+              "current_concurrency": 0
             }
           ],
-          "total": 3,
+          "total": 4,
           "page": 1,
           "page_size": 1000,
           "pages": 1
@@ -5560,36 +5556,9 @@ func testTokenRouterClientFetchesNormalAccountCompositionFromFlatAccountList() a
     ])
 }
 
-func testTokenRouterClientRequiresNormalAccountCountTotal() async throws {
+func testTokenRouterClientFetchesOnlyRootOpenAIOAuthQuota() async throws {
     StubURLProtocol.responses = [
-        "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true": Data("""
-        {
-          "items": [],
-          "page": 1,
-          "page_size": 1,
-          "pages": 1
-        }
-        """.utf8),
-    ]
-    StubURLProtocol.requestedPaths = []
-    let configuration = URLSessionConfiguration.ephemeral
-    configuration.protocolClasses = [StubURLProtocol.self]
-    let session = URLSession(configuration: configuration)
-    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
-
-    do {
-        _ = try await client.adminNormalAccountCount()
-        XCTFail("Missing total must not fall back to item count.")
-    } catch {
-        XCTAssert(StubURLProtocol.requestedPaths == [
-            "/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true",
-        ])
-    }
-}
-
-func testTokenRouterClientRequiresNormalAccountCompositionTotal() async throws {
-    StubURLProtocol.responses = [
-        "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true": Data("""
+        "/api/v1/admin/accounts?page=1&page_size=1000&platform=openai&type=oauth&lite=true": Data("""
         {
           "items": [
             {
@@ -5598,33 +5567,267 @@ func testTokenRouterClientRequiresNormalAccountCompositionTotal() async throws {
               "platform": "openai",
               "type": "oauth",
               "credentials": {
-                "plan_type": "pro"
+                "email":"pro@example.com",
+                "plan_type":"pro",
+                "subscription_expires_at":"2026-07-27T15:03:00+00:00"
               },
+              "extra": {"privacy_mode":"training_off"},
+              "status": "active",
+              "schedulable": true,
+              "quota_dimension": "global",
+              "error_message": ""
+            },
+            {
+              "id": 42,
+              "name": "openai-spark",
+              "platform": "openai",
+              "type": "oauth",
+              "credentials": {"plan_type":"pro"},
+              "status": "active",
+              "schedulable": true,
+              "parent_account_id": 41,
+              "quota_dimension": "spark",
+              "error_message": ""
+            },
+            {
+              "id": 43,
+              "name": "anthropic-oauth",
+              "platform": "anthropic",
+              "type": "oauth",
+              "status": "active",
+              "schedulable": true,
+              "error_message": ""
+            },
+            {
+              "id": 44,
+              "name": "openai-api",
+              "platform": "openai",
+              "type": "apikey",
               "status": "active",
               "schedulable": true,
               "error_message": ""
             }
           ],
+          "total": 4,
           "page": 1,
           "page_size": 1000,
           "pages": 1
         }
         """.utf8),
+        "/api/v1/admin/accounts/41/usage": Data("""
+        {
+          "source": "passive",
+          "updated_at": "2026-07-11T08:00:00Z",
+          "five_hour": {
+            "utilization": 29,
+            "resets_at": "2026-07-11T12:00:00Z",
+            "remaining_seconds": 14400,
+            "window_stats": {
+              "requests": 365,
+              "tokens": 55900000,
+              "cost": 101.2,
+              "standard_cost": 92.589,
+              "user_cost": 110.3
+            }
+          },
+          "seven_day": {
+            "utilization": 11,
+            "resets_at": "2026-07-18T08:00:00Z",
+            "remaining_seconds": 604800,
+            "window_stats": {
+              "requests": 1208,
+              "tokens": 229600000,
+              "cost": 280.1,
+              "standard_cost": 262.104,
+              "user_cost": 300.2
+            }
+          },
+          "quota_auto_paused": false
+        }
+        """.utf8),
     ]
-    StubURLProtocol.requestedPaths = []
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [StubURLProtocol.self]
-    let session = URLSession(configuration: configuration)
-    let client = TokenRouterClient(config: AppConfig(baseURL: "https://example.test", authToken: "token"), session: session)
+    let client = TokenRouterClient(
+        config: AppConfig(baseURL: "https://example.test", authToken: "token"),
+        session: URLSession(configuration: configuration)
+    )
 
-    do {
-        _ = try await client.adminNormalAccountComposition()
-        XCTFail("Missing total must not fall back to item count.")
-    } catch {
-        XCTAssertEqual(StubURLProtocol.requestedPaths, [
-            "/api/v1/admin/accounts?page=1&page_size=1000&status=active&lite=true",
-        ])
-    }
+    let quotas = try await client.adminOpenAIOAuthAccountQuotas()
+
+    XCTAssertEqual(quotas.map(\.id), [41])
+    XCTAssertEqual(quotas.first?.account.email, "pro@example.com")
+    XCTAssertEqual(quotas.first?.planLabel, "Pro")
+    XCTAssertEqual(quotas.first?.account.privacyMode, "training_off")
+    XCTAssertEqual(quotas.first?.account.isPrivate, true)
+    XCTAssertNotNil(quotas.first?.account.subscriptionExpiresAt)
+    XCTAssertEqual(quotas.first?.usage.fiveHour?.utilization, 29)
+    XCTAssertEqual(quotas.first?.usage.fiveHour?.windowStats?.standardCost, 92.589)
+    XCTAssertEqual(StubURLProtocol.requestedPaths, [
+        "/api/v1/admin/accounts?page=1&page_size=1000&platform=openai&type=oauth&lite=true",
+        "/api/v1/admin/accounts/41/usage",
+    ])
+}
+
+func testOpenAIQuotaHistoryDeduplicatesPrunesAndPersistsPrivateFields() throws {
+    let storageURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("openai-quota-history-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: storageURL) }
+    let persistence = OpenAIQuotaHistoryPersistence(storageURL: storageURL)
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+    var history = OpenAIQuotaHistory()
+    let oldQuota = makeOpenAIQuota(
+        utilization: 10,
+        resetAt: "2033-05-19T08:00:00Z",
+        updatedAt: "2033-05-18T06:00:00Z"
+    )
+    history.record(accounts: [oldQuota], capturedAt: now.addingTimeInterval(-31 * 24 * 60 * 60))
+
+    let currentQuota = makeOpenAIQuota(
+        utilization: 30,
+        resetAt: "2033-05-19T12:00:00Z",
+        updatedAt: "2033-05-18T08:00:00Z"
+    )
+    XCTAssertTrue(history.record(accounts: [currentQuota], capturedAt: now))
+    XCTAssertFalse(history.record(accounts: [currentQuota], capturedAt: now.addingTimeInterval(60)))
+    XCTAssertEqual(history.samples.count, 1)
+
+    try persistence.save(history)
+    let loaded = try persistence.load(now: now)
+    XCTAssertEqual(loaded, history)
+
+    let raw = try String(contentsOf: storageURL, encoding: .utf8)
+    XCTAssertFalse(raw.contains("pro@example.com"))
+    XCTAssertFalse(raw.contains("Primary Pro"))
+    let permissions = try FileManager.default.attributesOfItem(atPath: storageURL.path)[.posixPermissions] as? NSNumber
+    XCTAssertEqual(permissions?.intValue, 0o600)
+}
+
+func testOpenAIQuotaForecastUsesCurrentResetCycleOnly() throws {
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    let resetAt = "2033-05-18T07:33:20Z"
+    var history = OpenAIQuotaHistory()
+    history.record(
+        accounts: [makeOpenAIQuota(utilization: 99, resetAt: "2033-05-18T02:00:00Z", updatedAt: "old")],
+        capturedAt: now.addingTimeInterval(-60 * 60)
+    )
+    history.record(
+        accounts: [makeOpenAIQuota(utilization: 10, resetAt: resetAt, updatedAt: "one")],
+        capturedAt: now.addingTimeInterval(-40 * 60)
+    )
+    history.record(
+        accounts: [makeOpenAIQuota(utilization: 20, resetAt: resetAt, updatedAt: "two")],
+        capturedAt: now.addingTimeInterval(-20 * 60)
+    )
+    let current = makeOpenAIQuota(utilization: 30, resetAt: resetAt, updatedAt: "three")
+    history.record(accounts: [current], capturedAt: now)
+
+    let forecast = OpenAIQuotaForecaster.forecast(
+        accountID: current.id,
+        window: .fiveHour,
+        current: try XCTUnwrap(current.usage.fiveHour),
+        history: history,
+        now: now
+    )
+
+    XCTAssertEqual(forecast.trend, .rising)
+    XCTAssertEqual(forecast.confidence, .low)
+    XCTAssertEqual(forecast.thresholds.map(\.threshold), [70, 85, 95, 100])
+    XCTAssertNotNil(forecast.estimatedAt(85))
+    XCTAssertNotNil(forecast.estimatedAt(100))
+}
+
+func testOpenAIQuotaForecastRequiresCurrentResetBoundary() throws {
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    var history = OpenAIQuotaHistory()
+    history.record(
+        accounts: [makeOpenAIQuota(utilization: 10, resetAt: nil, updatedAt: "one")],
+        capturedAt: now.addingTimeInterval(-40 * 60)
+    )
+    history.record(
+        accounts: [makeOpenAIQuota(utilization: 20, resetAt: nil, updatedAt: "two")],
+        capturedAt: now.addingTimeInterval(-20 * 60)
+    )
+    let current = makeOpenAIQuota(utilization: 30, resetAt: nil, updatedAt: "three")
+    history.record(accounts: [current], capturedAt: now)
+
+    let forecast = OpenAIQuotaForecaster.forecast(
+        accountID: current.id,
+        window: .fiveHour,
+        current: try XCTUnwrap(current.usage.fiveHour),
+        history: history,
+        now: now
+    )
+
+    XCTAssertEqual(forecast.confidence, .insufficient)
+    XCTAssertEqual(forecast.trend, .insufficient)
+    XCTAssertNil(forecast.predictedUtilizationAtReset)
+    XCTAssertTrue(forecast.thresholds.isEmpty)
+}
+
+func testOpenAIQuotaPoolSummaryGroupsCapacityByPlanAndExcludesUnavailableAccounts() {
+    let accounts = [
+        makeOpenAIQuota(id: 1, plan: "pro", utilization: 20, resetAt: "2033-05-19T12:00:00Z", updatedAt: "one"),
+        makeOpenAIQuota(id: 2, plan: "pro", utilization: 90, resetAt: "2033-05-19T12:00:00Z", updatedAt: "two"),
+        makeOpenAIQuota(id: 3, plan: "plus", status: "disabled", schedulable: false, utilization: 0, resetAt: "2033-05-19T12:00:00Z", updatedAt: "three"),
+    ]
+
+    let summary = OpenAIQuotaPoolSummary(accounts: accounts)
+
+    XCTAssertEqual(summary.accountCount, 3)
+    XCTAssertEqual(summary.schedulableCount, 2)
+    XCTAssertEqual(summary.riskCount, 1)
+    XCTAssertEqual(summary.capacities.map(\.plan), ["Pro"])
+    XCTAssertEqual(summary.capacities.first?.fiveHourRemaining ?? 0, 0.9, accuracy: 0.001)
+}
+
+private func makeOpenAIQuota(
+    id: Int64 = 41,
+    plan: String = "pro",
+    status: String = "active",
+    schedulable: Bool = true,
+    utilization: Double,
+    resetAt: String?,
+    updatedAt: String
+) -> OpenAIAccountQuota {
+    let account = AccountSummary(
+        id: id,
+        name: "Primary Pro",
+        platform: "openai",
+        type: "oauth",
+        status: status,
+        schedulable: schedulable,
+        credentials: ["email": "pro@example.com", "plan_type": plan],
+        quotaLimit: nil,
+        quotaUsed: nil,
+        quotaDailyLimit: nil,
+        quotaDailyUsed: nil,
+        quotaWeeklyLimit: nil,
+        quotaWeeklyUsed: nil,
+        errorMessage: "",
+        rateLimitResetAt: nil
+    )
+    let stats = AccountUsageWindowStats(
+        requests: 10,
+        tokens: 1_000,
+        standardCost: 1.5
+    )
+    let progress = UsageProgress(
+        utilization: utilization,
+        resetsAt: resetAt,
+        remainingSeconds: 14_400,
+        windowStats: stats
+    )
+    return OpenAIAccountQuota(
+        account: account,
+        usage: AccountUsageInfo(
+            updatedAt: updatedAt,
+            fiveHour: progress,
+            sevenDay: progress,
+            quotaAutoPaused: false
+        )
+    )
 }
 
 func testTokenRouterClientUsesAdminFilteredEndpointsForSelectedUserMetrics() async throws {
@@ -5736,7 +5939,7 @@ func testTokenRouterClientFetchesTokenRouterDashboardSnapshots() async throws {
     """.utf8)
     StubURLProtocol.responses = [
         "/api/v1/usage/dashboard/snapshot-v2?start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_trend=true&include_model_stats=true&include_group_stats=false": response,
-        "/api/v1/admin/dashboard/snapshot-v2?user_id=2&start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_stats=false&include_trend=true&include_model_stats=true&include_group_stats=false&timezone=Asia/Shanghai": response,
+        "/api/v1/admin/dashboard/snapshot-v2?user_id=2&start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_stats=false&include_trend=false&include_model_stats=true&include_group_stats=false&timezone=Asia/Shanghai": response,
     ]
     StubURLProtocol.requestedPaths = []
     let configuration = URLSessionConfiguration.ephemeral
@@ -5758,10 +5961,10 @@ func testTokenRouterClientFetchesTokenRouterDashboardSnapshots() async throws {
     )
 
     XCTAssertEqual(userSnapshot.models.first?.model, "gpt-5.6-sol")
-    XCTAssertEqual(adminSnapshot.trend.first?.requests, 2)
+    XCTAssertEqual(adminSnapshot.models.first?.model, "gpt-5.6-sol")
     XCTAssertEqual(StubURLProtocol.requestedPaths, [
         "/api/v1/usage/dashboard/snapshot-v2?start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_trend=true&include_model_stats=true&include_group_stats=false",
-        "/api/v1/admin/dashboard/snapshot-v2?user_id=2&start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_stats=false&include_trend=true&include_model_stats=true&include_group_stats=false&timezone=Asia/Shanghai",
+        "/api/v1/admin/dashboard/snapshot-v2?user_id=2&start_date=2026-07-03&end_date=2026-07-10&granularity=day&include_stats=false&include_trend=false&include_model_stats=true&include_group_stats=false&timezone=Asia/Shanghai",
     ])
 }
 

@@ -4,6 +4,8 @@ import Sub2APIStatusCore
 struct CodexNodeConfigurationView: View {
     @ObservedObject var model: MonitorViewModel
     let strings: AppStrings
+    var showsPageHeader = true
+    @State private var isFormPresented = false
 
     var body: some View {
         ScrollView {
@@ -11,7 +13,9 @@ struct CodexNodeConfigurationView: View {
                 summaryHeader
                 nodeListCard
                 installPreviewCard
-                formCard
+                if isFormPresented {
+                    formCard
+                }
             }
             .padding(16)
         }
@@ -19,20 +23,24 @@ struct CodexNodeConfigurationView: View {
 
     private var summaryHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
-            PanelPageHeader(
-                title: strings.phrase("节点", "Nodes"),
-                subtitle: strings.phrase("本机与远端 Codex hooks", "Local and remote Codex hooks")
-            )
+            if showsPageHeader {
+                PanelPageHeader(
+                    title: strings.phrase("节点", "Nodes"),
+                    subtitle: strings.phrase("本机与远端 Codex hooks", "Local and remote Codex hooks")
+                )
+            }
             HStack(spacing: 8) {
                 receiverBadge
                 Spacer()
                 Button {
                     model.resetCodexNodeForm(kind: .local)
+                    isFormPresented = true
                 } label: {
                     Label(strings.phrase("本机", "Local"), systemImage: "plus")
                 }
                 Button {
                     model.resetCodexNodeForm(kind: .remote)
+                    isFormPresented = true
                 } label: {
                     Label(strings.phrase("远端", "Remote"), systemImage: "plus")
                 }
@@ -57,10 +65,7 @@ struct CodexNodeConfigurationView: View {
                 Label(strings.phrase("已登记节点", "Registered Nodes"), systemImage: "server.rack")
                     .font(.headline)
                 if model.codexNodes.isEmpty {
-                    Text(strings.phrase(
-                        "尚未登记节点。保存下方表单后，接收端会按节点端口启动。",
-                        "No node has been registered. After saving the form below, receivers will start for the node ports."
-                    ))
+                    Text(strings.phrase("暂无节点", "No nodes"))
                     .font(.callout)
                     .foregroundStyle(ClaudeTheme.secondaryText)
                 } else {
@@ -90,6 +95,7 @@ struct CodexNodeConfigurationView: View {
                 Spacer()
                 Button(strings.phrase("编辑", "Edit")) {
                     model.editCodexNode(id: node.id)
+                    isFormPresented = true
                 }
                 Button(role: .destructive) {
                     model.removeCodexNode(id: node.id)
@@ -255,7 +261,9 @@ struct CodexNodeConfigurationView: View {
 
                 HStack {
                     Button {
-                        model.saveCodexNodeForm()
+                        if model.saveCodexNodeForm() {
+                            isFormPresented = false
+                        }
                     } label: {
                         Label(strings.phrase("保存节点", "Save Node"), systemImage: "checkmark.circle.fill")
                     }
@@ -267,10 +275,13 @@ struct CodexNodeConfigurationView: View {
                         Label(strings.phrase("重置表单", "Reset Form"), systemImage: "arrow.counterclockwise")
                     }
 
+                    Button(role: .cancel) {
+                        isFormPresented = false
+                    } label: {
+                        Label(strings.phrase("取消", "Cancel"), systemImage: "xmark")
+                    }
+
                     Spacer()
-                    Text(strings.phrase("保存节点后可在节点卡片中安装 hooks。", "After saving a node, install hooks from its node card."))
-                        .font(.caption)
-                        .foregroundStyle(ClaudeTheme.secondaryText)
                 }
                 .buttonStyle(.borderless)
             }

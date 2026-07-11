@@ -28,10 +28,10 @@ struct PanelFooter: View {
     }
 }
 
-enum PanelPage: String, CaseIterable, Identifiable, Equatable {
+enum PanelPage: String, Identifiable, Equatable {
     case overview
-    case codexNodes
-    case codexTasks
+    case accounts
+    case tasks
     case settings
 
     var id: String { rawValue }
@@ -40,13 +40,17 @@ enum PanelPage: String, CaseIterable, Identifiable, Equatable {
         switch self {
         case .overview:
             return strings.phrase("概览", "Overview")
-        case .codexTasks:
+        case .accounts:
+            return strings.phrase("账号", "Accounts")
+        case .tasks:
             return strings.phrase("任务", "Tasks")
-        case .codexNodes:
-            return strings.phrase("节点", "Nodes")
         case .settings:
             return strings.phrase("设置", "Settings")
         }
+    }
+
+    static func availablePages(isAdmin: Bool) -> [PanelPage] {
+        isAdmin ? [.overview, .accounts, .tasks, .settings] : [.overview, .tasks, .settings]
     }
 }
 
@@ -175,11 +179,12 @@ struct RefreshIntervalControl: View {
 
 struct PanelPageTabs: View {
     @Binding var selection: PanelPage
+    let pages: [PanelPage]
     let strings: AppStrings
 
     var body: some View {
         HStack(spacing: 3) {
-            ForEach(PanelPage.allCases) { page in
+            ForEach(pages) { page in
                 Button {
                     selection = page
                 } label: {

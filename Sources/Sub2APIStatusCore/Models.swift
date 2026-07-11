@@ -983,6 +983,8 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
     public let quotaWeeklyUsed: Double?
     public let errorMessage: String
     public let rateLimitResetAt: String?
+    public let parentAccountID: Int64?
+    public let privacyMode: String?
 
     public init(
         id: Int64,
@@ -999,7 +1001,9 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         quotaWeeklyLimit: Double?,
         quotaWeeklyUsed: Double?,
         errorMessage: String,
-        rateLimitResetAt: String?
+        rateLimitResetAt: String?,
+        parentAccountID: Int64? = nil,
+        privacyMode: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -1016,6 +1020,8 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         self.quotaWeeklyUsed = quotaWeeklyUsed
         self.errorMessage = errorMessage
         self.rateLimitResetAt = rateLimitResetAt
+        self.parentAccountID = parentAccountID
+        self.privacyMode = privacyMode
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1034,12 +1040,14 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         case quotaWeeklyUsed
         case errorMessage
         case rateLimitResetAt
+        case parentAccountID = "parentAccountId"
+        case extra
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(Int64.self, forKey: .id) ?? 0
-        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Account"
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
         platform = try container.decodeIfPresent(String.self, forKey: .platform) ?? ""
         type = try container.decodeIfPresent(String.self, forKey: .type) ?? ""
         status = try container.decodeIfPresent(String.self, forKey: .status) ?? ""
@@ -1054,6 +1062,62 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         quotaWeeklyUsed = try container.decodeIfPresent(Double.self, forKey: .quotaWeeklyUsed)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage) ?? ""
         rateLimitResetAt = try container.decodeIfPresent(String.self, forKey: .rateLimitResetAt)
+        parentAccountID = try container.decodeIfPresent(Int64.self, forKey: .parentAccountID)
+        privacyMode = try container.decodeIfPresent(AccountPublicExtra.self, forKey: .extra)?.privacyMode
+    }
+
+    public var isOpenAIOAuthAccount: Bool {
+        platform == "openai"
+            && type == "oauth"
+            && parentAccountID == nil
+    }
+
+    public var displayName: String {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            return trimmedName
+        }
+        return email ?? "OpenAI OAuth"
+    }
+
+    public var email: String? {
+        nonEmptyCredential("email")
+    }
+
+    public var subscriptionExpiresAt: Date? {
+        guard let value = nonEmptyCredential("subscription_expires_at", "subscriptionExpiresAt") else {
+            return nil
+        }
+        return SharedISO8601DateParser.date(from: value)
+    }
+
+    public var isPrivate: Bool {
+        privacyMode == "training_off"
+    }
+
+    public var planLabel: String? {
+        guard type.caseInsensitiveCompare("oauth") == .orderedSame,
+              let rawPlan = nonEmptyCredential("plan_type", "planType", "tier_id", "tierId") else {
+            return nil
+        }
+        let token = rawPlan
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        switch token {
+        case "pro", "chatgpt-pro", "google-ai-pro", "g1-pro-tier":
+            return "Pro"
+        case "plus", "chatgpt-plus":
+            return "Plus"
+        case "team", "chatgpt-team":
+            return "Team"
+        case "free", "chatgpt-free", "google-one-free", "aistudio-free", "free-tier":
+            return "Free"
+        case "ultra", "google-ai-ultra", "g1-ultra-tier":
+            return "Ultra"
+        default:
+            return rawPlan
+        }
     }
 
     public var highestQuotaRatio: Double? {
@@ -1070,6 +1134,20 @@ public struct AccountSummary: Decodable, Identifiable, Equatable, Sendable {
         }
         return used / limit
     }
+
+    private func nonEmptyCredential(_ keys: String...) -> String? {
+        for key in keys {
+            if let value = credentials[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+}
+
+private struct AccountPublicExtra: Decodable {
+    let privacyMode: String?
 }
 
 private struct PublicCredentialStrings: Decodable {
@@ -1116,8 +1194,8 @@ public struct NormalAccountComposition: Equatable, Sendable {
     public let platformCounts: [String: Int]
     public let planCounts: [String: Int]
 
-    public init(total: Int, accounts: [AccountSummary]) {
-        self.total = total
+    public init(accounts: [AccountSummary]) {
+        total = accounts.count
         typeCounts = Self.count(accounts.map { Self.typeLabel($0.type) })
         platformCounts = Self.count(accounts.map { Self.platformLabel($0.platform) })
         planCounts = Self.count(accounts.compactMap(Self.planLabel))
@@ -1228,48 +1306,7 @@ public struct NormalAccountComposition: Equatable, Sendable {
     }
 
     private static func planLabel(_ account: AccountSummary) -> String? {
-        guard normalizedToken(account.type) == "oauth" else {
-            return nil
-        }
-        if let plan = nonEmptyCredential(account, "plan_type", "planType") {
-            return visiblePlanLabel(plan)
-        }
-        if let tier = nonEmptyCredential(account, "tier_id", "tierId") {
-            return visiblePlanLabel(tier)
-        }
-        return nil
-    }
-
-    private static func nonEmptyCredential(_ account: AccountSummary, _ keys: String...) -> String? {
-        for key in keys {
-            if let value = account.credentials[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !value.isEmpty {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private static func visiblePlanLabel(_ raw: String) -> String {
-        let token = normalizedToken(raw)
-        switch token {
-        case "pro", "chatgpt-pro", "google-ai-pro", "google_ai_pro", "g1-pro-tier":
-            return "Pro"
-        case "plus", "chatgpt-plus":
-            return "Plus"
-        case "team", "chatgpt-team":
-            return "Team"
-        case "free", "chatgpt-free", "google-one-free", "google_one_free", "aistudio-free", "aistudio_free", "free-tier":
-            return "Free"
-        case "ultra", "google-ai-ultra", "google_ai_ultra", "g1-ultra-tier":
-            return "Ultra"
-        default:
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
-                return ""
-            }
-            return trimmed
-        }
+        account.planLabel
     }
 
     private static func normalizedToken(_ raw: String) -> String {
@@ -1521,39 +1558,28 @@ public struct SubscriptionSummaryItem: Decodable, Identifiable, Equatable, Senda
     }
 }
 
+public struct AccountUsageWindowStats: Decodable, Equatable, Sendable {
+    public let requests: Int64
+    public let tokens: Int64
+    public let standardCost: Double
+}
+
 public struct UsageProgress: Decodable, Equatable, Sendable {
-    public let used: Double?
-    public let limit: Double?
-    public let percentage: Double?
-    public let utilization: Double?
+    public let utilization: Double
     public let resetsAt: String?
-    public let resetInSeconds: Double?
+    public let remainingSeconds: Int
+    public let windowStats: AccountUsageWindowStats?
 
     public var normalizedPercentage: Double {
-        if let percentage {
-            return percentage > 1 ? percentage / 100 : percentage
-        }
-        if let utilization {
-            return utilization > 1 ? utilization / 100 : utilization
-        }
-        guard let used, let limit, limit > 0 else {
-            return 0
-        }
-        return used / limit
+        min(max(utilization / 100, 0), 1)
     }
 }
 
 public struct AccountUsageInfo: Decodable, Equatable, Sendable {
-    public let source: String?
     public let updatedAt: String?
     public let fiveHour: UsageProgress?
     public let sevenDay: UsageProgress?
-    public let sevenDaySonnet: UsageProgress?
-    public let error: String?
-    public let errorCode: String?
-    public let needsReauth: Bool?
-    public let needsVerify: Bool?
-    public let isBanned: Bool?
+    public let quotaAutoPaused: Bool
 }
 
 public enum MonitorSeverity: String, Equatable, Sendable {
@@ -1617,6 +1643,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
     public let realtimeConcurrency: UserRealtimeConcurrency?
     public let adminNormalAccountCount: Int?
     public let adminNormalAccountComposition: NormalAccountComposition?
+    public let openAIQuota: OpenAIAccountQuotaSnapshot?
+    public let openAIQuotaError: String?
     public let accountHealth: AccountHealthSummary?
     public let subscriptionSummary: SubscriptionSummary?
     public let codexTaskActivities: [CodexTaskActivity]
@@ -1638,6 +1666,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
         realtimeConcurrency: UserRealtimeConcurrency? = nil,
         adminNormalAccountCount: Int? = nil,
         adminNormalAccountComposition: NormalAccountComposition? = nil,
+        openAIQuota: OpenAIAccountQuotaSnapshot? = nil,
+        openAIQuotaError: String? = nil,
         accountHealth: AccountHealthSummary?,
         subscriptionSummary: SubscriptionSummary?,
         codexTaskActivities: [CodexTaskActivity] = [],
@@ -1658,6 +1688,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
         self.realtimeConcurrency = realtimeConcurrency
         self.adminNormalAccountCount = adminNormalAccountCount
         self.adminNormalAccountComposition = adminNormalAccountComposition
+        self.openAIQuota = openAIQuota
+        self.openAIQuotaError = openAIQuotaError
         self.accountHealth = accountHealth
         self.subscriptionSummary = subscriptionSummary
         self.codexTaskActivities = codexTaskActivities
@@ -1696,6 +1728,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
             realtimeConcurrency: realtimeConcurrency,
             adminNormalAccountCount: adminNormalAccountCount,
             adminNormalAccountComposition: adminNormalAccountComposition,
+            openAIQuota: openAIQuota,
+            openAIQuotaError: openAIQuotaError,
             accountHealth: accountHealth,
             subscriptionSummary: subscriptionSummary,
             codexTaskActivities: codexTaskActivities,
@@ -1720,6 +1754,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
             realtimeConcurrency: realtimeConcurrency,
             adminNormalAccountCount: adminNormalAccountCount,
             adminNormalAccountComposition: adminNormalAccountComposition,
+            openAIQuota: openAIQuota,
+            openAIQuotaError: openAIQuotaError,
             accountHealth: accountHealth,
             subscriptionSummary: subscriptionSummary,
             codexTaskActivities: activities,

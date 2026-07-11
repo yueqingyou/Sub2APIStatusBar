@@ -7,9 +7,10 @@ TokenRouter Monitor is a macOS menu bar companion for [TokenFlux/TokenRouter](ht
 - Native macOS menu bar app with a compact SwiftUI popover
 - User dashboard cards for balance, API keys, requests, spend, token totals, RPM/TPM, and response time
 - Admin accounts can monitor a selected user's realtime occupied concurrency and normal account count in supported views and menu bar fields
+- Administrator-only OpenAI OAuth account view with five-hour and seven-day quota, standard value, local history, and forecast signals
 - Codex task monitoring through local and remote hooks, keyed by `node_id`, `session_id`, and `turn_id`
 - Subscription quota card with separate daily, weekly, and monthly progress bars
-- Seven-day token trend and model distribution through TokenRouter's combined snapshot endpoint
+- Single-metric seven-day token trend and model distribution through TokenRouter's combined snapshot endpoint
 - Split fast and slow refresh paths so live usage stays current without repeatedly fetching expensive aggregate data
 - Optional fixed-cell two-row menu bar text summary with value labels, including `T` / `F` Fast state and task status counts
 - First-run login and optional manual Bearer token setup
@@ -42,18 +43,23 @@ Requests send `Authorization: Bearer <token>` after login or manual token setup.
 
 When the logged-in TokenRouter account has the `admin` role, the app uses that same token to enable administrator-only monitoring. Settings shows an **Admin Monitoring** section where the admin can choose which user to monitor. Normal user accounts keep the standard user dashboard and do not see administrator-only menu bar items.
 
+Normal users see **Overview**, **Tasks**, and **Settings**. Administrators additionally see **Accounts** between Overview and Tasks. Task activity and node management share the Tasks page and keep independent view state.
+
 Administrator-only metrics use these real TokenRouter admin endpoints:
 
 - `GET /api/v1/admin/users`
 - `GET /api/v1/admin/users/{id}`
 - `GET /api/v1/admin/ops/user-concurrency`
-- `GET /api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true`
+- `GET /api/v1/admin/accounts`
+- `GET /api/v1/admin/accounts/{id}/usage`
 - `GET /api/v1/admin/usage`
 - `GET /api/v1/admin/usage/stats`
 - `GET /api/v1/admin/dashboard/snapshot-v2`
 - `GET /api/v1/admin/users/{id}/subscriptions`
 
-Realtime concurrency means the selected user's occupied concurrency slots from `/api/v1/admin/ops/user-concurrency`. Normal account count comes from the `total` field of `/api/v1/admin/accounts?page=1&page_size=1&status=active&lite=true`, matching the admin account list's **Normal** filter and excluding rate-limited or temporarily unschedulable accounts. Selected-user usage, latest request metadata, trend, model distribution, balance, and subscriptions are read through administrator endpoints filtered by the monitored user ID, not from the administrator account's own `/usage/*` endpoints. The admin snapshot request uses `include_stats=false`; selected-user totals come from `/api/v1/admin/usage/stats`, which has an explicit user filter.
+Realtime concurrency means the selected user's occupied concurrency slots from `/api/v1/admin/ops/user-concurrency`. Normal account count traverses all active account pages and excludes rows whose `parent_account_id` is non-null instead of trusting the unfiltered pagination total. Selected-user usage, latest request metadata, model distribution, balance, and subscriptions are read through administrator endpoints filtered by the monitored user ID, not from the administrator account's own `/usage/*` endpoints. The admin snapshot request uses `include_stats=false` and `include_trend=false`; selected-user totals come from `/api/v1/admin/usage/stats`, which has an explicit user filter.
+
+The administrator account page includes only root OpenAI OAuth accounts (`platform=openai`, `type=oauth`, and no `parent_account_id`). Spark shadow accounts and all other account types are excluded from display, counts, history, quota, and value aggregation. Official five-hour and seven-day percentages and reset times come from TokenRouter's account usage endpoint. The page also shows subscription expiry and privacy mode when TokenRouter provides them. Window value uses `standard_cost`; the app does not infer an absolute monetary quota from percentage data. Sanitized samples are retained for 30 days in a private Application Support file so resets and forecast confidence can be evaluated across app restarts.
 
 Realtime concurrency can be enabled as an administrator-only menu bar field. It is a gateway occupied-slot signal, not a Codex task identity source; menu bar task status remains hook-only so it can stay precise to `session_id` and `turn_id`.
 
@@ -61,7 +67,7 @@ Realtime concurrency can be enabled as an administrator-only menu bar field. It 
 
 The app can monitor Codex task state without acting as a Codex client and without controlling Codex. It runs a local `127.0.0.1:<local_port>` HTTP receiver for hook events. Local Codex hooks post directly to that receiver. Remote nodes post to their remote loopback port, and SSH remote forwarding sends those events back to the local receiver.
 
-Node setup is available from the Codex nodes page in the popover. Local and remote nodes are registered independently by node ID: you can keep only a local node, only one or more remote nodes, or a local node plus multiple remote nodes. The app can prepare and install hook sender files, node config, and managed user-level Codex `config.toml` hooks. Remote node forms only ask for SSH connection settings and can be filled manually or prefilled from the local user's `~/.ssh/config` Host entries; node ID, name, local receiver, remote forwarding port, and secret are generated and saved by the app. For Codex home resolution, local nodes prefer the current process `CODEX_HOME`; remote nodes read both remote `CODEX_HOME` and `HOME` through SSH, use `CODEX_HOME` when set, and otherwise fall back to the remote user's `HOME/.codex`. Before writing hooks, the app shows a diff preview and requires confirmation.
+Node setup is available from **Tasks > Nodes** in the popover. Local and remote nodes are registered independently by node ID: you can keep only a local node, only one or more remote nodes, or a local node plus multiple remote nodes. The app can prepare and install hook sender files, node config, and managed user-level Codex `config.toml` hooks. Remote node forms only ask for SSH connection settings and can be filled manually or prefilled from the local user's `~/.ssh/config` Host entries; node ID, name, local receiver, remote forwarding port, and secret are generated and saved by the app. For Codex home resolution, local nodes prefer the current process `CODEX_HOME`; remote nodes read both remote `CODEX_HOME` and `HOME` through SSH, use `CODEX_HOME` when set, and otherwise fall back to the remote user's `HOME/.codex`. Before writing hooks, the app shows a diff preview and requires confirmation.
 
 The task console shows hook-reported `node_id`, `session_id`, `turn_id`, and current status. Every active task is retained. Completed, failed, and stale tasks are kept for seven days, capped at the newest 200 tasks, and each task retains at most 20 structured timeline events. Raw JSON is available only for the newest three in-memory events and is never written to disk. Task state is persisted asynchronously under the app's Application Support directory using the version 2 archive format; older mixed-session archives are migrated into precise turns on first load. Gateway usage data remains supplementary for request, cost, token, User-Agent, and load details; it is not used to infer Codex session or turn identity.
 
@@ -112,7 +118,7 @@ The `SUB2API_*` environment variable names remain stable for upgrade compatibili
 
 The default appearance follows the current macOS Light/Dark Mode setting. Settings lets users override it to Light or Dark.
 
-Automatic refreshes update live status, selected-user usage, concurrency, and the newest request at the configured interval, with a five-second minimum. Aggregate trend, model, subscription, user-list, and account-composition data refresh at most once per minute. Manual refresh updates both paths immediately.
+Automatic refreshes update live status, selected-user usage, concurrency, and the newest request at the configured interval, with a five-second minimum. Aggregate token trend, model, subscription, user-list, and account-composition data refresh at most once per minute. OpenAI OAuth account usage is sampled every ten minutes while an administrator is signed in. Manual refresh updates all applicable paths immediately.
 
 When menu bar text is enabled, the status item uses a fixed-cell two-row layout: each enabled item owns a stable cell, adjacent cells are separated by the same vertical divider, the top row shows selected values, and the bottom row shows short labels or compact task counts. The default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, fast status, input price, output price, realtime RPM for normal users, task status, and administrator-only realtime concurrency and normal account count. Enabled fields remain present in the two-row status item; unavailable numeric values use explicit zero, reasoning effort uses `no` when absent or reported as `-`, and model uses explicit "No ..." text rather than placeholder dashes. Long model identifiers use readable short names in the status item instead of showing only an ellipsis. Input and output price values do not repeat `i` / `o` prefixes because the lower row already labels them as `In` and `Out`. Codex task counts use a compact persistent `T/R/Q/D/E` row such as `T2R1Q1D0E0`. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
 
@@ -121,7 +127,7 @@ Admin accounts can additionally enable realtime concurrency and normal account c
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.24 ./scripts/build-app.sh
+VERSION=v0.1.25 ./scripts/build-app.sh
 ```
 
 Output:
@@ -138,28 +144,28 @@ Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.24 \
+VERSION=v0.1.25 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.24 ./scripts/package-release.sh
+VERSION=v0.1.25 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.24-macOS.zip
-dist/Sub2APIStatusBar-0.1.24-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.25-macOS.zip
+dist/Sub2APIStatusBar-0.1.25-macOS.zip.sha256
 ```
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.24 \
+VERSION=v0.1.25 \
 ./scripts/package-release.sh
 ```
 
@@ -174,7 +180,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.24 \
+VERSION=v0.1.25 \
 ./scripts/notarize-release.sh
 ```
 
@@ -206,7 +212,7 @@ swift run Sub2APIStatusBar
 
 ## Privacy
 
-TokenRouter Monitor stores the server URL, display preferences, and refresh interval in the local Application Support config file. Auth and refresh tokens are stored in a separate private local credentials file with current-user read/write permissions; older Keychain credentials are imported only without showing an authorization prompt. It does not send data anywhere except the configured TokenRouter server and the loopback hook receiver configured for Codex task monitoring.
+TokenRouter Monitor stores the server URL, display preferences, refresh interval, and sanitized OpenAI quota history in the local Application Support directory. Quota history contains account IDs, plan labels, timestamps, reset boundaries, percentages, request and token totals, and standard value; it does not contain account names, email addresses, credentials, or raw API responses. Auth and refresh tokens are stored in a separate private local credentials file with current-user read/write permissions; older Keychain credentials are imported only without showing an authorization prompt. It does not send data anywhere except the configured TokenRouter server and the loopback hook receiver configured for Codex task monitoring.
 
 ## Acknowledgements
 Thanks to the [LinuxDo](https://linux.do/) community for the discussions, sharing, and feedback.

@@ -16,6 +16,7 @@ struct CodexTaskConsoleView: View {
     let realtimeConcurrency: UserRealtimeConcurrency?
     let timelineEventLimit: Int
     let strings: AppStrings
+    var showsPageHeader = true
     @State private var expandedTaskIDs: Set<String> = []
     @State private var isGatewayExpanded = false
 
@@ -74,10 +75,12 @@ struct CodexTaskConsoleView: View {
 
     private func consoleHeader(activeCount: Int, recentCount: Int) -> some View {
         HStack(spacing: 12) {
-            PanelPageHeader(
-                title: strings.phrase("任务", "Tasks"),
-                subtitle: strings.phrase("Codex hooks 实时状态", "Live Codex hook status")
-            )
+            if showsPageHeader {
+                PanelPageHeader(
+                    title: strings.phrase("任务", "Tasks"),
+                    subtitle: strings.phrase("Codex hooks 实时状态", "Live Codex hook status")
+                )
+            }
             Spacer()
             HStack(spacing: 6) {
                 summaryBadge(value: activeCount, label: strings.phrase("活动", "active"), tint: ClaudeTheme.success)

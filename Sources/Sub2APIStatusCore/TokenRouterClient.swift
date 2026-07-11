@@ -113,35 +113,25 @@ public struct TokenRouterClient: Sendable {
         try await get("/admin/ops/user-concurrency")
     }
 
-    public func adminNormalAccountCount() async throws -> Int {
-        let page: AdminAccountFilterTotal = try await get("/admin/accounts", query: [
-            URLQueryItem(name: "page", value: "1"),
-            URLQueryItem(name: "page_size", value: "1"),
-            URLQueryItem(name: "status", value: "active"),
-            URLQueryItem(name: "lite", value: "true"),
-        ])
-        return page.total
+    public func adminNormalAccountComposition(pageSize: Int = 1000) async throws -> NormalAccountComposition {
+        let accounts = try await adminAccounts(pageSize: pageSize, status: "active")
+            .filter { $0.parentAccountID == nil }
+        return NormalAccountComposition(accounts: accounts)
     }
 
-    public func adminNormalAccountComposition(pageSize: Int = 1000) async throws -> NormalAccountComposition {
-        var page = 1
-        var accounts: [AccountSummary] = []
-        var total = 0
+    public func adminOpenAIOAuthAccountQuotas(pageSize: Int = 1000) async throws -> [OpenAIAccountQuota] {
+        let accounts = try await adminAccounts(
+            pageSize: pageSize,
+            platform: "openai",
+            type: "oauth"
+        ).filter(\.isOpenAIOAuthAccount)
 
-        while true {
-            let response: AdminNormalAccountsPage = try await get("/admin/accounts", query: [
-                URLQueryItem(name: "page", value: String(page)),
-                URLQueryItem(name: "page_size", value: String(pageSize)),
-                URLQueryItem(name: "status", value: "active"),
-                URLQueryItem(name: "lite", value: "true"),
-            ])
-            total = response.total
-            accounts.append(contentsOf: response.items)
-            guard page < response.pages, !response.items.isEmpty else {
-                return NormalAccountComposition(total: total, accounts: accounts)
-            }
-            page += 1
+        var quotas: [OpenAIAccountQuota] = []
+        for account in accounts {
+            let usage: AccountUsageInfo = try await get("/admin/accounts/\(account.id)/usage")
+            quotas.append(OpenAIAccountQuota(account: account, usage: usage))
         }
+        return quotas
     }
 
     public func adminUsageStats(
@@ -203,7 +193,7 @@ public struct TokenRouterClient: Sendable {
             URLQueryItem(name: "end_date", value: endDate),
             URLQueryItem(name: "granularity", value: granularity),
             URLQueryItem(name: "include_stats", value: "false"),
-            URLQueryItem(name: "include_trend", value: "true"),
+            URLQueryItem(name: "include_trend", value: "false"),
             URLQueryItem(name: "include_model_stats", value: "true"),
             URLQueryItem(name: "include_group_stats", value: "false"),
         ]
@@ -222,6 +212,39 @@ public struct TokenRouterClient: Sendable {
             let refreshToken: String
         }
         return try await post("/auth/refresh", body: RefreshRequest(refreshToken: refreshToken))
+    }
+
+    private func adminAccounts(
+        pageSize: Int,
+        platform: String? = nil,
+        type: String? = nil,
+        status: String? = nil
+    ) async throws -> [AccountSummary] {
+        var page = 1
+        var accounts: [AccountSummary] = []
+        while true {
+            var query = [
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "page_size", value: String(pageSize)),
+            ]
+            if let platform {
+                query.append(URLQueryItem(name: "platform", value: platform))
+            }
+            if let type {
+                query.append(URLQueryItem(name: "type", value: type))
+            }
+            if let status {
+                query.append(URLQueryItem(name: "status", value: status))
+            }
+            query.append(URLQueryItem(name: "lite", value: "true"))
+
+            let response: AdminAccountsPage = try await get("/admin/accounts", query: query)
+            accounts.append(contentsOf: response.items)
+            guard page < response.pages, !response.items.isEmpty else {
+                return accounts
+            }
+            page += 1
+        }
     }
 
     public func get<Value: Decodable & Sendable>(_ path: String, query: [URLQueryItem] = []) async throws -> Value {
@@ -290,20 +313,14 @@ public struct TokenRouterClient: Sendable {
     }
 }
 
-private struct AdminAccountFilterTotal: Decodable, Sendable {
-    let total: Int
-}
-
-private struct AdminNormalAccountsPage: Decodable, Sendable {
+private struct AdminAccountsPage: Decodable, Sendable {
     let items: [AccountSummary]
-    let total: Int
     let page: Int
     let pageSize: Int
     let pages: Int
 
     private enum CodingKeys: String, CodingKey {
         case items
-        case total
         case page
         case pageSize
         case pages

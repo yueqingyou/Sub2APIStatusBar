@@ -38,6 +38,7 @@ final class MonitorViewModel: ObservableObject {
     private let updateInstaller = AppUpdateInstaller()
     private let codexNodeStore = CodexNodeStore()
     private let codexTaskActivityPersistence = CodexTaskActivityStorePersistence()
+    private let openAIQuotaHistoryPersistence = OpenAIQuotaHistoryPersistence()
     private let codexHookInstallService = CodexHookInstallService()
     private let codexRemoteTestEventService = CodexHookRemoteTestEventService()
     private let sshTunnelManager = SSHTunnelManager()
@@ -45,6 +46,7 @@ final class MonitorViewModel: ObservableObject {
     private let transientRefreshRetryPolicy = HTTPRetryPolicy.default
     private let tokenRouterRefreshPolicy = TokenRouterRefreshPolicy()
     private let codexTaskPersistenceQueue = DispatchQueue(label: "sub2api-statusbar.codex-task-persistence", qos: .utility)
+    private let openAIQuotaPersistenceQueue = DispatchQueue(label: "sub2api-statusbar.openai-quota-persistence", qos: .utility)
     private var codexTaskActivityStore = CodexTaskActivityStore()
     private var lastPersistedCodexTaskActivities: [CodexTaskActivity] = []
     private var pendingPersistedCodexTaskActivities: [CodexTaskActivity]?
@@ -66,6 +68,8 @@ final class MonitorViewModel: ObservableObject {
     private var cachedAuthenticationBaseURL = ""
     private var cachedAuthenticationToken = ""
     private var lastSlowRefreshAttemptAt: Date?
+    private var lastAccountUsageRefreshAttemptAt: Date?
+    private var openAIQuotaHistory = OpenAIQuotaHistory()
     private let codexRuntimeStateRefresher = CodexRuntimeStateRefresher(
         taskStaleAfterSeconds: 30 * 60,
         nodeStaleAfterSeconds: 30 * 60
@@ -91,6 +95,11 @@ final class MonitorViewModel: ObservableObject {
         config = loaded
         settingsDraft = loaded
         snapshot = .idle(mode: loaded.monitorMode)
+        do {
+            openAIQuotaHistory = try openAIQuotaHistoryPersistence.load()
+        } catch {
+            settingsError = error.localizedDescription
+        }
         loadCodexNodeRegistry()
     }
 
@@ -132,17 +141,38 @@ final class MonitorViewModel: ObservableObject {
             now: now,
             isManualRefresh: forceSlowRefresh
         )
+        let shouldRefreshAccountUsage = tokenRouterRefreshPolicy.shouldRefreshAccountUsage(
+            lastAttemptAt: lastAccountUsageRefreshAttemptAt,
+            now: now,
+            isManualRefresh: forceSlowRefresh
+        )
         do {
-            publish(try await userSnapshot(client: client, refreshSlowData: shouldRefreshSlowData))
+            let next = try await userSnapshot(
+                client: client,
+                refreshSlowData: shouldRefreshSlowData,
+                refreshAccountUsage: shouldRefreshAccountUsage
+            )
+            publish(next)
             if shouldRefreshSlowData {
                 lastSlowRefreshAttemptAt = now
+            }
+            if next.mode == .admin, shouldRefreshAccountUsage {
+                lastAccountUsageRefreshAttemptAt = now
             }
         } catch {
             if await refreshAuthTokenIfNeeded(after: error) {
                 do {
                     resetTokenRouterRefreshState(clearIdentity: true)
-                    publish(try await userSnapshot(client: TokenRouterClient(config: config), refreshSlowData: true))
+                    let next = try await userSnapshot(
+                        client: TokenRouterClient(config: config),
+                        refreshSlowData: true,
+                        refreshAccountUsage: true
+                    )
+                    publish(next)
                     lastSlowRefreshAttemptAt = now
+                    if next.mode == .admin {
+                        lastAccountUsageRefreshAttemptAt = now
+                    }
                     return
                 } catch {
                     publishDisconnected(error)
@@ -153,11 +183,20 @@ final class MonitorViewModel: ObservableObject {
         }
     }
 
-    private func userSnapshot(client: TokenRouterClient, refreshSlowData: Bool) async throws -> MonitorSnapshot {
+    private func userSnapshot(
+        client: TokenRouterClient,
+        refreshSlowData: Bool,
+        refreshAccountUsage: Bool
+    ) async throws -> MonitorSnapshot {
         let currentUser = try await authenticatedUser(client: client)
         applyCapabilityPolicyForCurrentUser(currentUser)
         if currentUser.isAdmin {
-            return try await adminSnapshot(currentUser: currentUser, client: client, refreshSlowData: refreshSlowData)
+            return try await adminSnapshot(
+                currentUser: currentUser,
+                client: client,
+                refreshSlowData: refreshSlowData,
+                refreshAccountUsage: refreshAccountUsage
+            )
         }
 
         let timezone = TimeZone.current.identifier
@@ -214,7 +253,8 @@ final class MonitorViewModel: ObservableObject {
     private func adminSnapshot(
         currentUser: CurrentUser,
         client: TokenRouterClient,
-        refreshSlowData: Bool
+        refreshSlowData: Bool,
+        refreshAccountUsage: Bool
     ) async throws -> MonitorSnapshot {
         let timezone = TimeZone.current.identifier
         let selectedUserID = config.adminMonitoredUserID ?? currentUser.id
@@ -235,10 +275,11 @@ final class MonitorViewModel: ObservableObject {
         async let latestUsageTask = try? client.adminUsageLogs(userID: selectedUserID, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: timezone)
 
         var stats = canReuseAdminSnapshot ? snapshot.stats : nil
-        var trend = canReuseAdminSnapshot ? snapshot.trend : nil
         var modelDistribution = canReuseAdminSnapshot ? snapshot.modelDistribution : nil
         var normalAccountComposition = canReuseAdminSnapshot ? snapshot.adminNormalAccountComposition : nil
         var subscriptionSummary = canReuseAdminSnapshot ? snapshot.subscriptionSummary : nil
+        var openAIQuota = canReuseAdminSnapshot ? snapshot.openAIQuota : nil
+        var openAIQuotaError = canReuseAdminSnapshot ? snapshot.openAIQuotaError : nil
 
         if refreshSlowData {
             let today = Self.todayString()
@@ -259,11 +300,27 @@ final class MonitorViewModel: ObservableObject {
                 stats = DashboardStats(monitoredUsageStats: dayStats)
             }
             if let dashboardSnapshot = await dashboardSnapshotTask {
-                trend = dashboardSnapshot.trend
                 modelDistribution = dashboardSnapshot.models
             }
             if let subscriptions = await subscriptionsTask {
                 subscriptionSummary = SubscriptionSummary(adminSubscriptions: subscriptions)
+            }
+        }
+
+        if refreshAccountUsage {
+            do {
+                let accounts = try await client.adminOpenAIOAuthAccountQuotas()
+                let capturedAt = Date()
+                if openAIQuotaHistory.record(accounts: accounts, capturedAt: capturedAt) {
+                    persistOpenAIQuotaHistory(openAIQuotaHistory)
+                }
+                openAIQuota = OpenAIAccountQuotaSnapshot(
+                    accounts: accounts,
+                    history: openAIQuotaHistory
+                )
+                openAIQuotaError = nil
+            } catch {
+                openAIQuotaError = error.localizedDescription
             }
         }
 
@@ -284,13 +341,15 @@ final class MonitorViewModel: ObservableObject {
             stats: stats,
             menuBarUsageStats: menuBarStats,
             latestUsage: latestUsage,
-            trend: trend,
+            trend: nil,
             modelDistribution: modelDistribution,
             realtime: nil,
             monitoredUser: target,
             realtimeConcurrency: concurrency,
             adminNormalAccountCount: normalAccountComposition?.total,
             adminNormalAccountComposition: normalAccountComposition,
+            openAIQuota: openAIQuota,
+            openAIQuotaError: openAIQuotaError,
             accountHealth: nil,
             subscriptionSummary: subscriptionSummary,
             codexTaskActivities: codexActivities,
@@ -315,10 +374,24 @@ final class MonitorViewModel: ObservableObject {
 
     private func resetTokenRouterRefreshState(clearIdentity: Bool) {
         lastSlowRefreshAttemptAt = nil
+        lastAccountUsageRefreshAttemptAt = nil
         if clearIdentity {
             cachedAuthenticatedUser = nil
             cachedAuthenticationBaseURL = ""
             cachedAuthenticationToken = ""
+        }
+    }
+
+    private func persistOpenAIQuotaHistory(_ history: OpenAIQuotaHistory) {
+        let persistence = openAIQuotaHistoryPersistence
+        openAIQuotaPersistenceQueue.async { [weak self] in
+            do {
+                try persistence.save(history)
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.settingsError = error.localizedDescription
+                }
+            }
         }
     }
 
@@ -412,7 +485,8 @@ final class MonitorViewModel: ObservableObject {
         scheduleCodexHookInstallStatusRefresh()
     }
 
-    func saveCodexNodeForm() {
+    @discardableResult
+    func saveCodexNodeForm() -> Bool {
         codexNodeError = nil
         do {
             codexNodeForm = preparedCodexNodeFormForSave(codexNodeForm)
@@ -424,7 +498,7 @@ final class MonitorViewModel: ObservableObject {
                     "节点 ID 已存在：\(nodeID)。请更换 ID，或点击该节点的编辑后再保存。",
                     "Node ID already exists: \(nodeID). Use a different ID, or edit that node before saving."
                 )
-                return
+                return false
             }
             let replacementIDs = Set([nodeID, replacingNodeID].compactMap { value -> String? in
                 let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -446,8 +520,10 @@ final class MonitorViewModel: ObservableObject {
                 "Node saved: \(registeredNode.node.name) (\(nodeID)). \(nextRegistry.nodes.count) nodes registered; waiting for hook installation."
             )
             codexNodeForm = CodexNodeFormState(registeredNode: registeredNode)
+            return true
         } catch {
             codexNodeError = codexNodeErrorMessage(error)
+            return false
         }
     }
 
@@ -1721,6 +1797,10 @@ final class MonitorViewModel: ObservableObject {
             settingsDraft = next
             let authenticationChanged = previousConfig.baseURL != next.baseURL || previousConfig.authToken != next.authToken
             let monitoredUserChanged = previousConfig.adminMonitoredUserID != next.adminMonitoredUserID
+            if previousConfig.baseURL != next.baseURL {
+                openAIQuotaHistory = OpenAIQuotaHistory()
+                persistOpenAIQuotaHistory(openAIQuotaHistory)
+            }
             if authenticationChanged || monitoredUserChanged {
                 resetTokenRouterRefreshState(clearIdentity: authenticationChanged)
             }

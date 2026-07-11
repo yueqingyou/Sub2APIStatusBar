@@ -25,6 +25,11 @@ struct MonitorPanel: View {
         .background(PanelBackground())
         .environment(\.appLanguage, model.config.language)
         .appAppearance(activeAppearance)
+        .onChange(of: isAdminAccount) { _ in
+            if !availablePages.contains(selectedPage) {
+                selectedPage = .overview
+            }
+        }
     }
 
     private var header: some View {
@@ -58,7 +63,7 @@ struct MonitorPanel: View {
             }
             .buttonStyle(.borderless)
 
-            PanelPageTabs(selection: $selectedPage, strings: strings)
+            PanelPageTabs(selection: $selectedPage, pages: availablePages, strings: strings)
         }
         .padding(.horizontal, 14)
         .padding(.top, 12)
@@ -71,16 +76,10 @@ struct MonitorPanel: View {
         switch selectedPage {
         case .overview:
             overviewContent
-        case .codexTasks:
-            CodexTaskConsoleView(
-                activities: model.snapshot.codexTaskActivities,
-                latestUsage: model.snapshot.latestUsage,
-                realtimeConcurrency: model.snapshot.realtimeConcurrency,
-                timelineEventLimit: model.config.codexTaskTimelineEventLimit,
-                strings: strings
-            )
-        case .codexNodes:
-            CodexNodeConfigurationView(model: model, strings: strings)
+        case .accounts:
+            OpenAIAccountsView(model: model, strings: strings)
+        case .tasks:
+            CodexWorkspaceView(model: model, strings: strings)
         case .settings:
             SettingsView(model: model)
         }
@@ -173,7 +172,22 @@ struct MonitorPanel: View {
                 ModelDistributionView(models: models)
             }
 
-            if let trend = model.snapshot.trend, trend.count > 1 {
+            if model.snapshot.mode == .admin {
+                if let quota = model.snapshot.openAIQuota {
+                    if quota.accounts.isEmpty {
+                        Text(strings.phrase("暂无 OpenAI OAuth 账号", "No OpenAI OAuth accounts"))
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                            .frame(maxWidth: .infinity, minHeight: 90)
+                            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    } else {
+                        OpenAIQuotaOverviewView(snapshot: quota, strings: strings)
+                    }
+                }
+                if let error = model.snapshot.openAIQuotaError {
+                    MessageRow(message: error)
+                }
+            } else if let trend = model.snapshot.trend, trend.count > 1 {
                 SectionBlock(title: strings.phrase("Token 趋势", "Token Trend")) {
                     TokenTrendView(points: trend)
                         .frame(height: 150)
@@ -371,5 +385,13 @@ struct MonitorPanel: View {
 
     private var activeAppearance: AppAppearance {
         model.config.authToken.isEmpty ? model.settingsDraft.appearance : model.config.appearance
+    }
+
+    private var isAdminAccount: Bool {
+        model.snapshot.currentUser?.isAdmin == true
+    }
+
+    private var availablePages: [PanelPage] {
+        PanelPage.availablePages(isAdmin: isAdminAccount)
     }
 }

@@ -459,67 +459,161 @@ struct ModelDistributionView: View {
 }
 
 struct TokenTrendView: View {
+    private enum Metric: String, CaseIterable, Identifiable {
+        case total
+        case input
+        case output
+        case cacheCreation
+        case cacheRead
+
+        var id: String { rawValue }
+    }
+
     @Environment(\.appLanguage) private var language
 
     let points: [TrendDataPoint]
+    @State private var metric: Metric = .total
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            GeometryReader { proxy in
-                ZStack {
-                    trendPath(values: points.map { Double($0.cacheReadTokens) }, in: proxy.size)
-                        .fill(ClaudeTheme.sand.opacity(0.24))
-                    trendPath(values: points.map { Double($0.cacheReadTokens) }, in: proxy.size)
-                        .stroke(ClaudeTheme.sand, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                    trendPath(values: points.map { Double($0.inputTokens) }, in: proxy.size)
-                        .stroke(ClaudeTheme.slate, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    trendPath(values: points.map { Double($0.outputTokens) }, in: proxy.size)
-                        .stroke(ClaudeTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            HStack {
+                Picker("", selection: $metric) {
+                    ForEach(Metric.allCases) { metric in
+                        Text(metricTitle(metric)).tag(metric)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(maxWidth: 150)
+            }
+
+            HStack(spacing: 6) {
+                VStack(alignment: .trailing) {
+                    Text(StatusFormatters.compactNumber(Int64(maximum)))
+                    Spacer()
+                    Text(StatusFormatters.compactNumber(Int64(maximum / 2)))
+                    Spacer()
+                    Text("0")
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(ClaudeTheme.secondaryText)
+                .frame(width: 42, alignment: .trailing)
+
+                GeometryReader { proxy in
+                    ZStack {
+                        grid(in: proxy.size)
+                            .stroke(ClaudeTheme.border, lineWidth: 1)
+                        trendPath(in: proxy.size)
+                            .stroke(metricColor, style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
+                    }
                 }
             }
 
-            HStack(spacing: 12) {
-                LegendDot(color: ClaudeTheme.slate, label: strings.phrase("输入", "Input"))
-                LegendDot(color: ClaudeTheme.accent, label: strings.phrase("输出", "Output"))
-                LegendDot(color: ClaudeTheme.sand, label: strings.phrase("缓存读取", "Cache Read"))
+            HStack {
+                Text(parsedPoints.first?.label ?? "")
                 Spacer()
-                Text(points.last?.date ?? "")
-                    .foregroundStyle(.secondary)
+                Text(parsedPoints.last?.label ?? "")
             }
             .font(.caption2)
+            .foregroundStyle(ClaudeTheme.secondaryText)
+            .padding(.leading, 48)
         }
     }
 
-    private func trendPath(values: [Double], in size: CGSize) -> Path {
-        let maximum = max(values.max() ?? 0, 1)
-        var path = Path()
-        for index in values.indices {
-            let x = size.width * CGFloat(index) / CGFloat(max(values.count - 1, 1))
-            let y = size.height - (size.height * CGFloat(values[index] / maximum))
-            if index == values.startIndex {
-                path.move(to: CGPoint(x: x, y: y))
-            } else {
-                path.addLine(to: CGPoint(x: x, y: y))
+    private var values: [Double] {
+        points.map { point in
+            switch metric {
+            case .total:
+                return Double(point.totalTokens)
+            case .input:
+                return Double(point.inputTokens)
+            case .output:
+                return Double(point.outputTokens)
+            case .cacheCreation:
+                return Double(point.cacheCreationTokens)
+            case .cacheRead:
+                return Double(point.cacheReadTokens)
             }
+        }
+    }
+
+    private var maximum: Double {
+        max(values.max() ?? 0, 1)
+    }
+
+    private func grid(in size: CGSize) -> Path {
+        var path = Path()
+        for ratio in [0.0, 0.5, 1.0] {
+            let y = size.height * CGFloat(ratio)
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width, y: y))
         }
         return path
     }
 
+    private func trendPath(in size: CGSize) -> Path {
+        let datedPoints = parsedPoints
+        guard let firstDate = datedPoints.first?.date,
+              let lastDate = datedPoints.last?.date else {
+            return Path()
+        }
+        let duration = max(lastDate.timeIntervalSince(firstDate), 1)
+        var path = Path()
+        var previousDate: Date?
+        for point in datedPoints {
+            let x = size.width * CGFloat(point.date.timeIntervalSince(firstDate) / duration)
+            let y = size.height - size.height * CGFloat(point.value / maximum)
+            if let previousDate, point.date.timeIntervalSince(previousDate) <= 36 * 60 * 60 {
+                path.addLine(to: CGPoint(x: x, y: y))
+            } else {
+                path.move(to: CGPoint(x: x, y: y))
+            }
+            previousDate = point.date
+        }
+        return path
+    }
+
+    private var parsedPoints: [(date: Date, value: Double, label: String)] {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return zip(points, values).compactMap { point, value in
+            formatter.date(from: point.date).map { ($0, value, point.date) }
+        }.sorted { $0.date < $1.date }
+    }
+
+    private var metricColor: Color {
+        switch metric {
+        case .total:
+            return ClaudeTheme.accent
+        case .input:
+            return ClaudeTheme.slate
+        case .output:
+            return ClaudeTheme.warm
+        case .cacheCreation:
+            return ClaudeTheme.gold
+        case .cacheRead:
+            return ClaudeTheme.sand
+        }
+    }
+
+    private func metricTitle(_ metric: Metric) -> String {
+        switch metric {
+        case .total:
+            return strings.phrase("总量", "Total")
+        case .input:
+            return strings.phrase("输入", "Input")
+        case .output:
+            return strings.phrase("输出", "Output")
+        case .cacheCreation:
+            return strings.phrase("缓存写入", "Cache Write")
+        case .cacheRead:
+            return strings.phrase("缓存读取", "Cache Read")
+        }
+    }
+
     private var strings: AppStrings {
         AppStrings(language)
-    }
-}
-
-struct LegendDot: View {
-    let color: Color
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(label)
-        }
     }
 }

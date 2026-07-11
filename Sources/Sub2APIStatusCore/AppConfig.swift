@@ -444,13 +444,18 @@ public protocol TokenStore: Sendable {
     func saveTokens(_ tokens: StoredAuthTokens) throws
 }
 
+public protocol LegacyTokenStore: Sendable {
+    func loadTokens() -> StoredAuthTokens
+    func deleteTokens()
+}
+
 public final class LocalCredentialsTokenStore: TokenStore, Sendable {
     private let credentialsURL: URL
-    private let legacyTokenStore: (any TokenStore)?
+    private let legacyTokenStore: (any LegacyTokenStore)?
 
     public init(
         credentialsURL: URL? = nil,
-        legacyTokenStore: (any TokenStore)? = KeychainTokenStore(),
+        legacyTokenStore: (any LegacyTokenStore)? = KeychainTokenStore(),
         fileManager: FileManager = .default
     ) {
         self.legacyTokenStore = legacyTokenStore
@@ -477,14 +482,17 @@ public final class LocalCredentialsTokenStore: TokenStore, Sendable {
             return StoredAuthTokens()
         }
 
-        try? saveTokens(legacyTokens)
+        guard (try? saveLocalTokens(legacyTokens)) != nil else {
+            return legacyTokens
+        }
+        legacyTokenStore?.deleteTokens()
         return legacyTokens
     }
 
     public func saveTokens(_ tokens: StoredAuthTokens) throws {
         if tokens.isEmpty {
             try saveLocalTokens(tokens)
-            try legacyTokenStore?.saveTokens(tokens)
+            legacyTokenStore?.deleteTokens()
             return
         }
 

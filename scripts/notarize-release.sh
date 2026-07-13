@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sub2APIStatusBar"
-VERSION="${VERSION:-v0.1.26}"
+VERSION="${VERSION:-v0.1.27}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
@@ -48,8 +48,8 @@ rm -f "$ZIP_PATH" "$CHECKSUM_PATH"
 (
   cd "$DIST_DIR"
   COPYFILE_DISABLE=1 /usr/bin/zip -qry "$ZIP_PATH" "$APP_NAME.app"
+  LC_ALL=C shasum -a 256 "$(basename "$ZIP_PATH")" > "$(basename "$CHECKSUM_PATH")"
 )
-LC_ALL=C shasum -a 256 "$ZIP_PATH" > "$CHECKSUM_PATH"
 
 echo "$ZIP_PATH"
 echo "$CHECKSUM_PATH"

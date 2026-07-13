@@ -39,7 +39,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             VERSION="$GITHUB_REF_NAME"
           else
-            VERSION="v0.1.29"
+            VERSION="v0.1.30"
           fi
           for ARCHITECTURE in x86_64 arm64 universal; do
             VERSION="$VERSION" ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
@@ -104,25 +104,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          EXPECTED_FIRST_ZIP="Sub2APIStatusBar-$VERSION-compat-macOS.zip"
+          COMPATIBILITY_ARCHIVE="Sub2APIStatusBar-$VERSION-compat-macOS.zip"
+          UNIVERSAL_ARCHIVE="Sub2APIStatusBar-$VERSION-macOS-universal.zip"
           RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
             --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")"
           [[ -n "$RELEASE_ID" ]]
-          FIRST_ZIP="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
-            --jq '[.assets[] | select(.name | endswith(".zip"))][0].name')"
-          ZIP_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
-            --jq '[.assets[] | select(.name | endswith(".zip"))] | length')"
-          ASSET_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
-            --jq '.assets | length')"
-          COMPATIBILITY_DIGEST="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
-            --jq ".assets[] | select(.name == \"Sub2APIStatusBar-$VERSION-compat-macOS.zip\") | .digest")"
-          UNIVERSAL_DIGEST="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
-            --jq ".assets[] | select(.name == \"Sub2APIStatusBar-$VERSION-macOS-universal.zip\") | .digest")"
-          [[ "$FIRST_ZIP" == "$EXPECTED_FIRST_ZIP" ]]
-          [[ "$ZIP_COUNT" == "4" ]]
-          [[ "$ASSET_COUNT" == "8" ]]
-          [[ -n "$COMPATIBILITY_DIGEST" ]]
-          [[ "$COMPATIBILITY_DIGEST" == "$UNIVERSAL_DIGEST" ]]
+          VERIFIED=false
+          for ATTEMPT in {1..12}; do
+            RELEASE_JSON="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")"
+            FIRST_ZIP="$(jq -r '[.assets[] | select(.name | endswith(".zip"))][0].name // ""' <<<"$RELEASE_JSON")"
+            ZIP_COUNT="$(jq -r '[.assets[] | select(.name | endswith(".zip"))] | length' <<<"$RELEASE_JSON")"
+            ASSET_COUNT="$(jq -r '.assets | length' <<<"$RELEASE_JSON")"
+            COMPATIBILITY_DIGEST="$(jq -r --arg name "$COMPATIBILITY_ARCHIVE" \
+              '[.assets[] | select(.name == $name)][0].digest // ""' <<<"$RELEASE_JSON")"
+            UNIVERSAL_DIGEST="$(jq -r --arg name "$UNIVERSAL_ARCHIVE" \
+              '[.assets[] | select(.name == $name)][0].digest // ""' <<<"$RELEASE_JSON")"
+            if [[ "$FIRST_ZIP" == "$COMPATIBILITY_ARCHIVE" \
+              && "$ZIP_COUNT" == "4" \
+              && "$ASSET_COUNT" == "8" \
+              && -n "$COMPATIBILITY_DIGEST" \
+              && "$COMPATIBILITY_DIGEST" == "$UNIVERSAL_DIGEST" ]]; then
+              VERIFIED=true
+              break
+            fi
+            printf 'Release assets not ready (attempt %d/12): first=%s zips=%s assets=%s compat=%s universal=%s\n' \
+              "$ATTEMPT" "$FIRST_ZIP" "$ZIP_COUNT" "$ASSET_COUNT" \
+              "$COMPATIBILITY_DIGEST" "$UNIVERSAL_DIGEST"
+            if [[ "$ATTEMPT" != "12" ]]; then
+              sleep 5
+            fi
+          done
+          [[ "$VERIFIED" == "true" ]]
 
       - name: Publish GitHub Release
         env:

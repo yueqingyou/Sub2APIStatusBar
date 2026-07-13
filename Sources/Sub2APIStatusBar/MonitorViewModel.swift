@@ -200,35 +200,37 @@ final class MonitorViewModel: ObservableObject {
         }
 
         let timezone = TimeZone.current.identifier
-        async let menuBarStatsTask = menuBarUsageStats(client: client, timezone: timezone)
-        async let latestUsageTask = try? client.usageLogs(page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc")
-
         let canReuseUserSnapshot = snapshot.mode == .user && snapshot.currentUser?.id == currentUser.id
         var stats = canReuseUserSnapshot ? snapshot.stats : nil
         var summary = canReuseUserSnapshot ? snapshot.subscriptionSummary : nil
         var trend = canReuseUserSnapshot ? snapshot.trend : nil
         var modelDistribution = canReuseUserSnapshot ? snapshot.modelDistribution : nil
+        let menuBarStats = try await menuBarUsageStats(client: client, timezone: timezone)
+        let latestUsagePage = try? await client.usageLogs(
+            page: 1,
+            pageSize: 1,
+            sortBy: "created_at",
+            sortOrder: "desc"
+        )
 
         if refreshSlowData {
             let range = Self.lastSevenDayRange()
-            async let summaryTask = try? client.subscriptionSummary()
-            async let statsTask = try? client.usageDashboardStats()
-            async let dashboardSnapshotTask = try? client.usageDashboardSnapshot(startDate: range.start, endDate: range.end)
-
-            if let refreshedSummary = await summaryTask {
+            if let refreshedSummary = try? await client.subscriptionSummary() {
                 summary = refreshedSummary
             }
-            if let refreshedStats = await statsTask {
+            if let refreshedStats = try? await client.usageDashboardStats() {
                 stats = refreshedStats
             }
-            if let dashboardSnapshot = await dashboardSnapshotTask {
+            if let dashboardSnapshot = try? await client.usageDashboardSnapshot(
+                startDate: range.start,
+                endDate: range.end
+            ) {
                 trend = dashboardSnapshot.trend
                 modelDistribution = dashboardSnapshot.models
             }
         }
 
-        let menuBarStats = try await menuBarStatsTask
-        let latestUsage = await latestUsageTask?.items.first ?? (canReuseUserSnapshot ? snapshot.latestUsage : nil)
+        let latestUsage = latestUsagePage?.items.first ?? (canReuseUserSnapshot ? snapshot.latestUsage : nil)
         let codexActivities = refreshCodexRuntimeState()
         return MonitorSnapshot(
             mode: .user,
@@ -270,39 +272,53 @@ final class MonitorViewModel: ObservableObject {
             throw TokenRouterError.missingData
         }
 
-        async let concurrencyTask = try? client.adminUserConcurrencyStats()
-        async let menuBarStatsTask = adminMenuBarUsageStats(client: client, userID: selectedUserID, timezone: timezone)
-        async let latestUsageTask = try? client.adminUsageLogs(userID: selectedUserID, page: 1, pageSize: 1, sortBy: "created_at", sortOrder: "desc", timezone: timezone)
-
         var stats = canReuseAdminSnapshot ? snapshot.stats : nil
         var modelDistribution = canReuseAdminSnapshot ? snapshot.modelDistribution : nil
         var normalAccountComposition = canReuseAdminSnapshot ? snapshot.adminNormalAccountComposition : nil
         var subscriptionSummary = canReuseAdminSnapshot ? snapshot.subscriptionSummary : nil
         var openAIQuota = canReuseAdminSnapshot ? snapshot.openAIQuota : nil
         var openAIQuotaError = canReuseAdminSnapshot ? snapshot.openAIQuotaError : nil
+        let menuBarStats = try await adminMenuBarUsageStats(
+            client: client,
+            userID: selectedUserID,
+            timezone: timezone
+        )
+        let latestUsagePage = try? await client.adminUsageLogs(
+            userID: selectedUserID,
+            page: 1,
+            pageSize: 1,
+            sortBy: "created_at",
+            sortOrder: "desc",
+            timezone: timezone
+        )
+        let concurrencyStats = try? await client.adminUserConcurrencyStats()
 
         if refreshSlowData {
             let today = Self.todayString()
             let range = Self.lastSevenDayRange()
-            async let usersTask = try? client.allAdminUsers()
-            async let normalAccountCompositionTask = try? client.adminNormalAccountComposition()
-            async let dayStatsTask = try? client.adminUsageStats(userID: selectedUserID, startDate: today, endDate: today, timezone: timezone)
-            async let dashboardSnapshotTask = try? client.adminDashboardSnapshot(userID: selectedUserID, startDate: range.start, endDate: range.end, timezone: timezone)
-            async let subscriptionsTask = try? client.adminUserSubscriptions(userID: selectedUserID)
-
-            if let users = await usersTask {
+            if let users = try? await client.allAdminUsers() {
                 adminUsers = users
             }
-            if let composition = await normalAccountCompositionTask {
+            if let composition = try? await client.adminNormalAccountComposition() {
                 normalAccountComposition = composition
             }
-            if let dayStats = await dayStatsTask {
+            if let dayStats = try? await client.adminUsageStats(
+                userID: selectedUserID,
+                startDate: today,
+                endDate: today,
+                timezone: timezone
+            ) {
                 stats = DashboardStats(monitoredUsageStats: dayStats)
             }
-            if let dashboardSnapshot = await dashboardSnapshotTask {
+            if let dashboardSnapshot = try? await client.adminDashboardSnapshot(
+                userID: selectedUserID,
+                startDate: range.start,
+                endDate: range.end,
+                timezone: timezone
+            ) {
                 modelDistribution = dashboardSnapshot.models
             }
-            if let subscriptions = await subscriptionsTask {
+            if let subscriptions = try? await client.adminUserSubscriptions(userID: selectedUserID) {
                 subscriptionSummary = SubscriptionSummary(adminSubscriptions: subscriptions)
             }
         }
@@ -324,9 +340,7 @@ final class MonitorViewModel: ObservableObject {
             }
         }
 
-        let menuBarStats = try await menuBarStatsTask
-        let latestUsage = await latestUsageTask?.items.first ?? (canReuseAdminSnapshot ? snapshot.latestUsage : nil)
-        let concurrencyStats = await concurrencyTask
+        let latestUsage = latestUsagePage?.items.first ?? (canReuseAdminSnapshot ? snapshot.latestUsage : nil)
         let concurrency = concurrencyStats?.concurrency(
                 forUserID: target.id,
                 userEmail: target.email,

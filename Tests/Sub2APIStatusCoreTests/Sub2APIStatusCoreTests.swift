@@ -5148,7 +5148,7 @@ func testGitHubReleaseSelectsCompatibleArchitectureBeforeUniversalAndLegacyAsset
         releaseURL: URL(string: "https://example.com/v0.1.27")!,
         draft: false,
         prerelease: false,
-        assets: [arm, universal, legacy, x86]
+        assets: [universal, x86, arm, legacy]
     )
 
     XCTAssertEqual(release.installArchiveAsset(architecture: .x86_64), x86)

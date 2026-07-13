@@ -39,12 +39,20 @@ jobs:
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             VERSION="$GITHUB_REF_NAME"
           else
-            VERSION="v0.1.28"
+            VERSION="v0.1.29"
           fi
           for ARCHITECTURE in x86_64 arm64 universal; do
             VERSION="$VERSION" ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
             VERSION="$VERSION" ARCHITECTURE="$ARCHITECTURE" ./scripts/verify-release.sh
           done
+          VERSION_NUMBER="${VERSION#v}"
+          UNIVERSAL_ARCHIVE="Sub2APIStatusBar-$VERSION_NUMBER-macOS-universal.zip"
+          COMPATIBILITY_ARCHIVE="Sub2APIStatusBar-$VERSION_NUMBER-compat-macOS.zip"
+          cp "dist/$UNIVERSAL_ARCHIVE" "dist/$COMPATIBILITY_ARCHIVE"
+          (
+            cd dist
+            LC_ALL=C shasum -a 256 "$COMPATIBILITY_ARCHIVE" > "$COMPATIBILITY_ARCHIVE.sha256"
+          )
 
       - name: Upload App Archive
         uses: actions/upload-artifact@v7
@@ -77,49 +85,44 @@ jobs:
             sha256sum -c "$CHECKSUM"
           done
 
-      - name: Create Draft Release With Universal Asset
+      - name: Create Draft GitHub Release
         working-directory: release-assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" \
-            "Sub2APIStatusBar-$VERSION-macOS-universal.zip" \
-            "Sub2APIStatusBar-$VERSION-macOS-universal.zip.sha256" \
+            ./*.zip \
+            ./*.sha256 \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
             --draft \
             --title "TokenRouter Monitor $GITHUB_REF_NAME"
 
-      - name: Upload Architecture-Specific Assets
-        working-directory: release-assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          gh release upload "$GITHUB_REF_NAME" \
-            "Sub2APIStatusBar-$VERSION-macOS-x86_64.zip" \
-            "Sub2APIStatusBar-$VERSION-macOS-x86_64.zip.sha256" \
-            "Sub2APIStatusBar-$VERSION-macOS-arm64.zip" \
-            "Sub2APIStatusBar-$VERSION-macOS-arm64.zip.sha256" \
-            --repo "$GITHUB_REPOSITORY"
-
       - name: Verify Release Asset Order
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          EXPECTED_FIRST_ZIP="Sub2APIStatusBar-$VERSION-macOS-universal.zip"
-          FIRST_ZIP="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+          EXPECTED_FIRST_ZIP="Sub2APIStatusBar-$VERSION-compat-macOS.zip"
+          RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")"
+          [[ -n "$RELEASE_ID" ]]
+          FIRST_ZIP="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             --jq '[.assets[] | select(.name | endswith(".zip"))][0].name')"
-          ZIP_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+          ZIP_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             --jq '[.assets[] | select(.name | endswith(".zip"))] | length')"
-          ASSET_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" \
+          ASSET_COUNT="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             --jq '.assets | length')"
+          COMPATIBILITY_DIGEST="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            --jq ".assets[] | select(.name == \"Sub2APIStatusBar-$VERSION-compat-macOS.zip\") | .digest")"
+          UNIVERSAL_DIGEST="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            --jq ".assets[] | select(.name == \"Sub2APIStatusBar-$VERSION-macOS-universal.zip\") | .digest")"
           [[ "$FIRST_ZIP" == "$EXPECTED_FIRST_ZIP" ]]
-          [[ "$ZIP_COUNT" == "3" ]]
-          [[ "$ASSET_COUNT" == "6" ]]
+          [[ "$ZIP_COUNT" == "4" ]]
+          [[ "$ASSET_COUNT" == "8" ]]
+          [[ -n "$COMPATIBILITY_DIGEST" ]]
+          [[ "$COMPATIBILITY_DIGEST" == "$UNIVERSAL_DIGEST" ]]
 
       - name: Publish GitHub Release
         env:

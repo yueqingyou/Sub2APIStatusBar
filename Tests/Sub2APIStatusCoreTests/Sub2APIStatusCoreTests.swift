@@ -5142,13 +5142,14 @@ func testGitHubReleaseSelectsCompatibleArchitectureBeforeUniversalAndLegacyAsset
     let arm = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-macOS-arm64.zip")
     let universal = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-macOS-universal.zip")
     let legacy = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-macOS.zip")
+    let legacyCompatibility = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-compat-macOS.zip")
     let release = GitHubRelease(
         tagName: "v0.1.27",
         name: "TokenRouter Monitor v0.1.27",
         releaseURL: URL(string: "https://example.com/v0.1.27")!,
         draft: false,
         prerelease: false,
-        assets: [universal, x86, arm, legacy]
+        assets: [legacyCompatibility, arm, universal, legacy, x86]
     )
 
     XCTAssertEqual(release.installArchiveAsset(architecture: .x86_64), x86)
@@ -5174,6 +5175,16 @@ func testGitHubReleaseSelectsCompatibleArchitectureBeforeUniversalAndLegacyAsset
         assets: [x86]
     )
     XCTAssertNil(incompatible.installArchiveAsset(architecture: .arm64))
+
+    let compatibilityFallback = GitHubRelease(
+        tagName: "v0.1.27",
+        name: "TokenRouter Monitor v0.1.27",
+        releaseURL: URL(string: "https://example.com/v0.1.27")!,
+        draft: false,
+        prerelease: false,
+        assets: [legacyCompatibility, arm]
+    )
+    XCTAssertEqual(compatibilityFallback.installArchiveAsset(architecture: .x86_64), legacyCompatibility)
 }
 
 func testAppUpdateInstallerValidatesExtractedAppBundleMetadata() throws {

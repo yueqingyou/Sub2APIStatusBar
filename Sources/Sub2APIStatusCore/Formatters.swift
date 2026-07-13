@@ -78,10 +78,12 @@ public enum StatusFormatters {
             let descriptor = String(trimmed.dropFirst(4))
             let parts = descriptor.split(separator: "-", omittingEmptySubsequences: true).map(String.init)
             let version = parts.first ?? descriptor
-            let qualifiers = parts.dropFirst().joined(separator: "-")
-            let displayName = qualifiers.isEmpty ? "GPT-\(version)" : "GPT-\(version) \(qualifiers)"
-            let fullCompactName = "GPT-\(descriptor)"
-            let compactName = fullCompactName.count <= 8 ? fullCompactName : descriptor
+            let qualifiers = parts.dropFirst().filter { token in
+                !(token.count == 8 && token.allSatisfy(\.isNumber))
+            }
+            let readableQualifiers = qualifiers.map(Self.titleCasedToken)
+            let displayName = (["GPT-\(version)"] + readableQualifiers).joined(separator: " ")
+            let compactName = (["GPT-\(version)"] + readableQualifiers).joined(separator: "-")
             return ModelPresentation(
                 rawValue: trimmed,
                 displayName: displayName,
@@ -110,18 +112,25 @@ public enum StatusFormatters {
         case "minimal":
             return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Minimal", compactName: "min", isLossy: false, isProvided: true)
         case "low":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Low", compactName: "lo", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Low", compactName: "low", isLossy: false, isProvided: true)
         case "medium":
             return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Medium", compactName: "med", isLossy: false, isProvided: true)
         case "high":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "High", compactName: "hi", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "High", compactName: "high", isLossy: false, isProvided: true)
         case "xhigh", "extrahigh":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Extra High", compactName: "xh", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Extra High", compactName: "xhigh", isLossy: false, isProvided: true)
         case "max":
             return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Max", compactName: "max", isLossy: false, isProvided: true)
         default:
             let value = rawValue ?? ""
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: value, compactName: value, isLossy: false, isProvided: true)
+            let compactName = String(normalized.prefix(5))
+            return ReasoningEffortPresentation(
+                rawValue: rawValue,
+                displayName: value,
+                compactName: compactName,
+                isLossy: compactName != value,
+                isProvided: true
+            )
         }
     }
 
@@ -201,6 +210,21 @@ public enum StatusFormatters {
         String(format: "%.0f%%", min(max(value, 0), 1) * 100)
     }
 
+    public static func openAIQuotaRemaining(
+        _ capacities: [OpenAIQuotaPlanCapacity],
+        window: OpenAIQuotaWindow
+    ) -> String {
+        guard !capacities.isEmpty else {
+            return "0%"
+        }
+        return capacities.map { capacity in
+            let value = window == .fiveHour ? capacity.fiveHourRemaining : capacity.sevenDayRemaining
+            return capacities.count == 1
+                ? String(format: "%.0f%%", value * 100)
+                : String(format: "%@ %.0f%%", capacity.plan, value * 100)
+        }.joined(separator: " · ")
+    }
+
     public static func duration(seconds: Double) -> String {
         let seconds = Int(seconds)
         if seconds >= 86_400 {
@@ -272,6 +296,10 @@ public enum StatusFormatters {
                 return value.prefix(1).uppercased() + value.dropFirst().lowercased()
             }
             .joined(separator: " ")
+    }
+
+    private static func titleCasedToken(_ token: String) -> String {
+        token.prefix(1).uppercased() + token.dropFirst().lowercased()
     }
 
     private static func canonicalModelTokens(_ value: String) -> [String] {

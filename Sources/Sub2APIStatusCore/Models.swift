@@ -925,6 +925,23 @@ public struct UsageLog: Decodable, Identifiable, Equatable, Sendable {
         Self.normalizedServiceTier(serviceTier) == "priority"
     }
 
+    public var menuBarServiceTierName: String {
+        switch Self.normalizedServiceTier(serviceTier) {
+        case "priority":
+            return "Fast"
+        case "flex":
+            return "Flex"
+        case "auto":
+            return "Auto"
+        case "scale":
+            return "Scale"
+        case .none, "standard":
+            return "Std"
+        case let value?:
+            return String(value.prefix(5)).capitalized
+        }
+    }
+
     public var inputPricePerMillion: Double? {
         Self.pricePerMillion(cost: inputCost, tokens: inputTokens)
     }
@@ -1622,6 +1639,18 @@ public struct MenuBarStatusCell: Equatable, Sendable {
         self.width = width
         self.valueTone = valueTone
     }
+
+    public func fittedWidth(
+        contentWidth: Double,
+        horizontalPadding: Double = 8,
+        step: Double = 4,
+        minimumWidth: Double = 24
+    ) -> Double {
+        let safeStep = max(step, 1)
+        let requiredWidth = max(contentWidth, 0) + max(horizontalPadding, 0)
+        let steppedWidth = ceil(requiredWidth / safeStep) * safeStep
+        return min(width, max(minimumWidth, steppedWidth))
+    }
 }
 
 public enum MenuBarStatusCellTone: String, Equatable, Sendable {
@@ -1874,6 +1903,18 @@ public struct MonitorSnapshot: Equatable, Sendable {
            StatusFormatters.menuBarModelName(model) != model {
             lines.append("Model: \(model)")
         }
+        if let rawEffort = Self.nonEmpty(latestUsage?.reasoningEffort),
+           cells.contains(where: { $0.label == menuBarCellLabel(for: .reasoningEffort) }) {
+            let effort = StatusFormatters.reasoningEffortPresentation(rawEffort)
+            if effort.isLossy {
+                lines.append("Reasoning Effort: \(rawEffort)")
+            }
+        }
+        if let rawTier = Self.nonEmpty(latestUsage?.serviceTier),
+           cells.contains(where: { $0.label == menuBarCellLabel(for: .fast) }),
+           latestUsage?.menuBarServiceTierName != rawTier {
+            lines.append("Service Tier: \(rawTier)")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -1936,7 +1977,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
             let context = StatusFormatters.contextLength(latestUsage.contextLengthTokens)
             return compact ? context.replacingOccurrences(of: " ctx", with: "c") : context
         case .fast:
-            return latestUsage?.isFastEnabled == true ? "T" : "F"
+            guard let latestUsage else {
+                return "no"
+            }
+            return latestUsage.menuBarServiceTierName
         case .inputPrice:
             guard let price = latestUsage?.inputPricePerMillion else {
                 return "$0/M"
@@ -1964,6 +2008,16 @@ public struct MonitorSnapshot: Equatable, Sendable {
                 return "0N"
             }
             return compact ? "\(StatusFormatters.menuBarCount(Int64(normalAccounts)))N" : "\(StatusFormatters.menuBarCount(Int64(normalAccounts))) normal"
+        case .fiveHourRemaining:
+            return StatusFormatters.openAIQuotaRemaining(
+                openAIQuota?.summary.capacities ?? [],
+                window: .fiveHour
+            )
+        case .sevenDayRemaining:
+            return StatusFormatters.openAIQuotaRemaining(
+                openAIQuota?.summary.capacities ?? [],
+                window: .sevenDay
+            )
         case .codexTasks:
             return CodexMenuBarTaskSummary.make(activities: codexTaskActivities, maxTasks: compact ? 1 : 3).topRow
         }
@@ -1976,13 +2030,13 @@ public struct MonitorSnapshot: Equatable, Sendable {
         case .totalRequests:
             return 36
         case .model:
-            return 70
+            return 100
         case .reasoningEffort:
-            return 32
+            return 40
         case .contextLength:
             return 50
         case .fast:
-            return 24
+            return 40
         case .inputPrice, .outputPrice:
             return 54
         case .rpm:
@@ -1991,14 +2045,18 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return 36
         case .normalAccounts:
             return 36
+        case .fiveHourRemaining, .sevenDayRemaining:
+            return 64
         case .codexTasks:
-            return 88
+            return 96
         }
     }
 
     private func menuBarCellValueTone(for item: MenuBarDisplayItem, value: String) -> MenuBarStatusCellTone {
         switch item {
         case .model where value == "No model":
+            return .secondary
+        case .fast where value == "no":
             return .secondary
         case .realtimeConcurrency where value == "0C" || value == "0 concurrent":
             return .secondary
@@ -2027,7 +2085,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
         case .contextLength:
             return "Ctx"
         case .fast:
-            return "Fast"
+            return "Tier"
         case .inputPrice:
             return "In"
         case .outputPrice:
@@ -2038,6 +2096,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return "Conc"
         case .normalAccounts:
             return "Acct"
+        case .fiveHourRemaining:
+            return "5h Left"
+        case .sevenDayRemaining:
+            return "7d Left"
         case .codexTasks:
             return "Task"
         }

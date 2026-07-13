@@ -182,6 +182,8 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
     case rpm
     case realtimeConcurrency
     case normalAccounts
+    case fiveHourRemaining
+    case sevenDayRemaining
     case codexTasks
 
     public var id: String { rawValue }
@@ -199,7 +201,7 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
         case .contextLength:
             return "Context Length"
         case .fast:
-            return "Fast Enabled"
+            return "Service Tier"
         case .inputPrice:
             return "Input Price"
         case .outputPrice:
@@ -210,6 +212,10 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
             return "Realtime Concurrency"
         case .normalAccounts:
             return "Normal Accounts"
+        case .fiveHourRemaining:
+            return "5-hour Remaining"
+        case .sevenDayRemaining:
+            return "7-day Remaining"
         case .codexTasks:
             return "Tasks"
         }
@@ -217,7 +223,7 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
 
     public var isAdminOnly: Bool {
         switch self {
-        case .realtimeConcurrency, .normalAccounts:
+        case .realtimeConcurrency, .normalAccounts, .fiveHourRemaining, .sevenDayRemaining:
             return true
         default:
             return false

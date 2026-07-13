@@ -9,7 +9,7 @@ final class MenuBarStatusView: NSView {
     private var cellViews: [MenuBarStatusCellView] = []
     private let fallbackCellView = MenuBarStatusCellView()
     private let separatorColor = NSColor(name: nil) { appearance in
-        appearance.menuBarControlTextColor(alpha: 0.7)
+        appearance.menuBarControlTextColor(alpha: 0.5)
     }
 
     override init(frame frameRect: NSRect) {
@@ -23,7 +23,10 @@ final class MenuBarStatusView: NSView {
     }
 
     func update(presentation: MenuBarStatusPresentation, fallbackTitle: String) {
-        let nextLayout = MenuBarStatusLayout.make(presentation: presentation, fallbackTitle: fallbackTitle)
+        let nextLayout = MenuBarStatusLayout.make(
+            presentation: presentation.fittedForMenuBar(),
+            fallbackTitle: fallbackTitle
+        )
         guard nextLayout != currentLayout else {
             return
         }
@@ -155,8 +158,8 @@ private final class MenuBarStatusCellView: NSView {
         bottomLabel.alignment = .center
         topLabel.lineBreakMode = .byTruncatingTail
         bottomLabel.lineBreakMode = .byTruncatingTail
-        topLabel.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
-        bottomLabel.font = NSFont.systemFont(ofSize: 7)
+        topLabel.font = MenuBarStatusMetrics.topFont
+        bottomLabel.font = MenuBarStatusMetrics.bottomFont
         topLabel.textColor = primaryTextColor
         bottomLabel.textColor = secondaryTextColor
         topLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -169,8 +172,36 @@ private final class MenuBarStatusCellView: NSView {
         super.layout()
         let topHeight = CGFloat(MenuBarStatusLayout.topRowHeight)
         let bottomHeight = CGFloat(MenuBarStatusLayout.bottomRowHeight)
-        topLabel.frame = NSRect(x: 0, y: bounds.height - topHeight + 1, width: bounds.width, height: topHeight)
+        topLabel.frame = NSRect(x: 0, y: bounds.height - topHeight, width: bounds.width, height: topHeight)
         bottomLabel.frame = NSRect(x: 0, y: 0, width: bounds.width, height: bottomHeight)
+    }
+}
+
+private enum MenuBarStatusMetrics {
+    static let topFont = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+    static let bottomFont = NSFont.systemFont(ofSize: 7)
+
+    static func fittedCell(_ cell: MenuBarStatusCell) -> MenuBarStatusCell {
+        let topWidth = (cell.value as NSString).size(withAttributes: [.font: topFont]).width
+        let bottomWidth = (cell.label as NSString).size(withAttributes: [.font: bottomFont]).width
+        return MenuBarStatusCell(
+            value: cell.value,
+            label: cell.label,
+            width: cell.fittedWidth(contentWidth: Double(max(topWidth, bottomWidth))),
+            valueTone: cell.valueTone
+        )
+    }
+}
+
+private extension MenuBarStatusPresentation {
+    func fittedForMenuBar() -> MenuBarStatusPresentation {
+        MenuBarStatusPresentation(
+            title: title,
+            cells: cells.map(MenuBarStatusMetrics.fittedCell),
+            topRow: topRow,
+            bottomRow: bottomRow,
+            hidesHealthyStatusImage: hidesHealthyStatusImage
+        )
     }
 }
 

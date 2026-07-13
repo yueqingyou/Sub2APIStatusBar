@@ -3660,7 +3660,16 @@ func testMenuBarStatusLayoutUsesFixedCellWidthsForEnabledItems() {
     let layout = MenuBarStatusLayout.make(presentation: presentation, fallbackTitle: "OK")
 
     XCTAssertEqual(layout.cells.count, 2)
-    XCTAssertEqual(layout.width, 58 + 88 + 1 + 2 + 2)
+    XCTAssertEqual(layout.width, 58 + 88 + 1 + 3 + 3)
+    XCTAssertEqual(MenuBarStatusLayout.separatorHeight, 14)
+}
+
+func testMenuBarStatusCellUsesBoundedSteppedAdaptiveWidth() {
+    let cell = MenuBarStatusCell(value: "Auto Review", label: "Model", width: 100)
+
+    XCTAssertEqual(cell.fittedWidth(contentWidth: 20), 28)
+    XCTAssertEqual(cell.fittedWidth(contentWidth: 69), 80)
+    XCTAssertEqual(cell.fittedWidth(contentWidth: 200), 100)
 }
 
 func testCodexTaskConsoleRowsExposeIdentityAndSortByRecentUpdate() {
@@ -4791,7 +4800,7 @@ func testUserModeNormalizationRemovesAdminOnlyMenuItems() {
     let config = AppConfig(
         baseURL: "http://127.0.0.1:8080",
         monitorMode: .user,
-        menuBarDisplayItems: [.totalCost, .realtimeConcurrency, .normalAccounts],
+        menuBarDisplayItems: [.totalCost, .realtimeConcurrency, .normalAccounts, .fiveHourRemaining, .sevenDayRemaining],
         adminMonitoredUserID: 42
     )
 
@@ -4861,13 +4870,19 @@ func testMenuBarDisplayItemsExposeAdminRealtimeConcurrencyItem() {
     XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.realtimeConcurrency) == false)
     XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.normalAccounts) == false)
     XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.realtimeConcurrency) == false)
+    XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.fiveHourRemaining) == false)
+    XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.sevenDayRemaining) == false)
     XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.normalAccounts) == true)
     XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.realtimeConcurrency) == true)
+    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.fiveHourRemaining) == true)
+    XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.sevenDayRemaining) == true)
     XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.rpm) == false)
     XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.codexTasks) == true)
     XCTAssert(MenuBarDisplayItem.adminVisibleCases.contains(.codexTasks) == true)
     XCTAssertEqual(MenuBarDisplayItem.codexTasks.displayName, "Tasks")
     XCTAssertEqual(MenuBarDisplayItem.realtimeConcurrency.displayName, "Realtime Concurrency")
+    XCTAssertEqual(MenuBarDisplayItem.fiveHourRemaining.displayName, "5-hour Remaining")
+    XCTAssertEqual(MenuBarDisplayItem.sevenDayRemaining.displayName, "7-day Remaining")
 }
 
 func testCapabilityPolicyFiltersUserAndAdminOnlyFeatures() {
@@ -4881,6 +4896,8 @@ func testCapabilityPolicyFiltersUserAndAdminOnlyFeatures() {
     XCTAssertFalse(userPolicy.allows(.adminSelectedUserMonitoring))
     XCTAssertFalse(userPolicy.visibleMenuBarDisplayItems.contains(.normalAccounts))
     XCTAssertFalse(userPolicy.visibleMenuBarDisplayItems.contains(.realtimeConcurrency))
+    XCTAssertFalse(userPolicy.visibleMenuBarDisplayItems.contains(.fiveHourRemaining))
+    XCTAssertFalse(userPolicy.visibleMenuBarDisplayItems.contains(.sevenDayRemaining))
     XCTAssertTrue(userPolicy.visibleMenuBarDisplayItems.contains(.rpm))
 
     XCTAssertTrue(adminPolicy.allows(.adminNormalAccounts))
@@ -4888,6 +4905,8 @@ func testCapabilityPolicyFiltersUserAndAdminOnlyFeatures() {
     XCTAssertTrue(adminPolicy.allows(.adminSelectedUserMonitoring))
     XCTAssertTrue(adminPolicy.visibleMenuBarDisplayItems.contains(.normalAccounts))
     XCTAssertTrue(adminPolicy.visibleMenuBarDisplayItems.contains(.realtimeConcurrency))
+    XCTAssertTrue(adminPolicy.visibleMenuBarDisplayItems.contains(.fiveHourRemaining))
+    XCTAssertTrue(adminPolicy.visibleMenuBarDisplayItems.contains(.sevenDayRemaining))
     XCTAssertFalse(adminPolicy.visibleMenuBarDisplayItems.contains(.rpm))
 }
 
@@ -4927,6 +4946,60 @@ func testMenuBarPresentationIncludesAdminConcurrencyAndNormalAccountsWhenSelecte
         MenuBarStatusCell(value: "12C", label: "Conc", width: 36),
         MenuBarStatusCell(value: "12N", label: "Acct", width: 36),
     ])
+}
+
+func testMenuBarPresentationIncludesAccountPageQuotaRemainingWhenSelected() {
+    let quota = OpenAIAccountQuotaSnapshot(
+        accounts: [
+            makeOpenAIQuota(id: 1, plan: "pro", utilization: 20, sevenDayUtilization: 40, resetAt: "2033-05-19T12:00:00Z", updatedAt: "one"),
+            makeOpenAIQuota(id: 2, plan: "pro", utilization: 90, sevenDayUtilization: 50, resetAt: "2033-05-19T12:00:00Z", updatedAt: "two"),
+            makeOpenAIQuota(id: 3, plan: "plus", utilization: 25, sevenDayUtilization: 75, resetAt: "2033-05-19T12:00:00Z", updatedAt: "three"),
+        ],
+        history: OpenAIQuotaHistory()
+    )
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: nil,
+        realtime: nil,
+        openAIQuota: quota,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.fiveHourRemaining, .sevenDayRemaining]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "Plus 75% · Pro 90% | Plus 25% · Pro 110%")
+    XCTAssertEqual(presentation.bottomRow, "5h Left | 7d Left")
+    XCTAssertEqual(presentation.cells.map(\.width), [64, 64])
+    XCTAssertTrue(snapshot.menuBarTooltip(statusText: "OK", config: config).contains("Plus 25% · Pro 110%"))
+}
+
+func testOpenAIQuotaRemainingFormatterHandlesEmptyLargeAndMultiplePlanValues() {
+    XCTAssertEqual(StatusFormatters.openAIQuotaRemaining([], window: .fiveHour), "0%")
+
+    let singlePlan = [
+        OpenAIQuotaPlanCapacity(plan: "Pro", fiveHourRemaining: 0, sevenDayRemaining: 12.34),
+    ]
+    XCTAssertEqual(StatusFormatters.openAIQuotaRemaining(singlePlan, window: .fiveHour), "0%")
+    XCTAssertEqual(StatusFormatters.openAIQuotaRemaining(singlePlan, window: .sevenDay), "1234%")
+
+    let multiplePlans = [
+        OpenAIQuotaPlanCapacity(plan: "Plus", fiveHourRemaining: 0.75, sevenDayRemaining: 0.25),
+        OpenAIQuotaPlanCapacity(plan: "Team", fiveHourRemaining: 1.9, sevenDayRemaining: 1.1),
+    ]
+    XCTAssertEqual(
+        StatusFormatters.openAIQuotaRemaining(multiplePlans, window: .fiveHour),
+        "Plus 75% · Team 190%"
+    )
 }
 
 func testAppConfigClearsAuthTokens() {
@@ -5788,6 +5861,7 @@ private func makeOpenAIQuota(
     status: String = "active",
     schedulable: Bool = true,
     utilization: Double,
+    sevenDayUtilization: Double? = nil,
     resetAt: String?,
     updatedAt: String
 ) -> OpenAIAccountQuota {
@@ -5813,8 +5887,14 @@ private func makeOpenAIQuota(
         tokens: 1_000,
         standardCost: 1.5
     )
-    let progress = UsageProgress(
+    let fiveHourProgress = UsageProgress(
         utilization: utilization,
+        resetsAt: resetAt,
+        remainingSeconds: 14_400,
+        windowStats: stats
+    )
+    let sevenDayProgress = UsageProgress(
+        utilization: sevenDayUtilization ?? utilization,
         resetsAt: resetAt,
         remainingSeconds: 14_400,
         windowStats: stats
@@ -5823,8 +5903,8 @@ private func makeOpenAIQuota(
         account: account,
         usage: AccountUsageInfo(
             updatedAt: updatedAt,
-            fiveHour: progress,
-            sevenDay: progress,
+            fiveHour: fiveHourProgress,
+            sevenDay: sevenDayProgress,
             quotaAutoPaused: false
         )
     )
@@ -6086,6 +6166,7 @@ func testUsageLogDecodesLatestMetadataAndDerivedValues() throws {
     XCTAssert(usage.requestID == "req-user-133605")
     XCTAssert(usage.reasoningEffort == "xhigh")
     XCTAssert(usage.isFastEnabled == true)
+    XCTAssertEqual(usage.menuBarServiceTierName, "Fast")
     XCTAssert(usage.inboundEndpoint == "/openai/v1/responses")
     XCTAssert(usage.upstreamEndpoint == "/v1/responses")
     XCTAssert(usage.contextLengthTokens == 88_378)
@@ -6115,6 +6196,16 @@ func testUsageLogRecognizesUpdatedFastModeServiceTierAlias() throws {
     let usage = try JSONDecoder.tokenRouter.decode(UsageLog.self, from: json)
 
     XCTAssert(usage.isFastEnabled == true)
+    XCTAssertEqual(usage.menuBarServiceTierName, "Fast")
+}
+
+func testUsageLogBuildsReadableMenuBarServiceTierNames() {
+    XCTAssertEqual(UsageLog(serviceTier: nil).menuBarServiceTierName, "Std")
+    XCTAssertEqual(UsageLog(serviceTier: "standard").menuBarServiceTierName, "Std")
+    XCTAssertEqual(UsageLog(serviceTier: "priority").menuBarServiceTierName, "Fast")
+    XCTAssertEqual(UsageLog(serviceTier: "flex").menuBarServiceTierName, "Flex")
+    XCTAssertEqual(UsageLog(serviceTier: "auto").menuBarServiceTierName, "Auto")
+    XCTAssertEqual(UsageLog(serviceTier: "scale").menuBarServiceTierName, "Scale")
 }
 
 func testUsagePeriodStatsDecodesPartialStatsPayload() throws {
@@ -6358,13 +6449,13 @@ func testMonitorSnapshotBuildsMenuBarPresentationFromDashboardStats() {
         showsMenuBarText: true,
         menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice]
     )
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).topRow, "$12.35 | GPT-5.5 | xh | 88.4Kc | T | 3rpm")
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).bottomRow, "Cost | Model | Eff | Ctx | Fast | RPM")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).topRow, "$12.35 | GPT-5.5 | xhigh | 88.4Kc | Fast | 3rpm")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).bottomRow, "Cost | Model | Eff | Ctx | Tier | RPM")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).topRow, "2048r | $10/M | $60/M")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).bottomRow, "Req | In | Out")
 }
 
-func testMonitorSnapshotShowsFalseFastTextWhenFastIsEnabledButLatestUsageIsNotFast() {
+func testMonitorSnapshotShowsStandardTierWhenLatestUsageIsNotFast() {
     let latestUsage = UsageLog(
         id: 133605,
         model: "gpt-5.5",
@@ -6396,8 +6487,8 @@ func testMonitorSnapshotShowsFalseFastTextWhenFastIsEnabledButLatestUsageIsNotFa
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "")
 
     let visibleConfig = AppConfig(baseURL: "http://127.0.0.1:8080", showsMenuBarText: true)
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).topRow, "$12.35 | GPT-5.5 | xh | 88.4Kc | F | 3rpm")
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).bottomRow, "Cost | Model | Eff | Ctx | Fast | RPM")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).topRow, "$12.35 | GPT-5.5 | xhigh | 88.4Kc | Std | 3rpm")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).bottomRow, "Cost | Model | Eff | Ctx | Tier | RPM")
 }
 
 func testMonitorSnapshotMenuBarPresentationHidesHealthyImageWhenTextIsShown() {
@@ -6506,15 +6597,19 @@ func testStatusFormattersUseReadableClaudeModelNames() {
 func testStatusFormattersBuildFutureProofModelPresentations() {
     let gpt = StatusFormatters.modelPresentation("gpt-5.6-sol")
     XCTAssertEqual(gpt.rawValue, "gpt-5.6-sol")
-    XCTAssertEqual(gpt.displayName, "GPT-5.6 sol")
-    XCTAssertEqual(gpt.compactName, "5.6-sol")
+    XCTAssertEqual(gpt.displayName, "GPT-5.6 Sol")
+    XCTAssertEqual(gpt.compactName, "GPT-5.6-Sol")
     XCTAssertFalse(gpt.isLossy)
+
+    XCTAssertEqual(StatusFormatters.menuBarModelName("gpt-5.6-terra"), "GPT-5.6-Terra")
+    XCTAssertEqual(StatusFormatters.menuBarModelName("gpt-5.6-luna"), "GPT-5.6-Luna")
 
     let codex = StatusFormatters.modelPresentation("codex-auto-review")
     XCTAssertEqual(codex.rawValue, "codex-auto-review")
     XCTAssertEqual(codex.displayName, "Codex Auto Review")
     XCTAssertEqual(codex.compactName, "Auto Review")
     XCTAssertFalse(codex.isLossy)
+    XCTAssertEqual(StatusFormatters.menuBarModelName("codex-auto-review"), "Auto Review")
 
     let unknown = StatusFormatters.modelPresentation("vendor/new-model_ultra")
     XCTAssertEqual(unknown.rawValue, "vendor/new-model_ultra")
@@ -6535,9 +6630,13 @@ func testStatusFormattersBuildReasoningEffortPresentationsWithoutRejectingNewVal
     XCTAssertEqual(minimal.compactName, "min")
     XCTAssertTrue(minimal.isProvided)
 
+    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("low").compactName, "low")
+    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("medium").compactName, "med")
+    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("high").compactName, "high")
+
     let extraHigh = StatusFormatters.reasoningEffortPresentation("x-high")
     XCTAssertEqual(extraHigh.displayName, "Extra High")
-    XCTAssertEqual(extraHigh.compactName, "xh")
+    XCTAssertEqual(extraHigh.compactName, "xhigh")
     XCTAssertTrue(extraHigh.isProvided)
 
     let maximum = StatusFormatters.reasoningEffortPresentation("max")
@@ -6548,7 +6647,8 @@ func testStatusFormattersBuildReasoningEffortPresentationsWithoutRejectingNewVal
     let unknown = StatusFormatters.reasoningEffortPresentation("ultracode")
     XCTAssertEqual(unknown.rawValue, "ultracode")
     XCTAssertEqual(unknown.displayName, "ultracode")
-    XCTAssertEqual(unknown.compactName, "ultracode")
+    XCTAssertEqual(unknown.compactName, "ultra")
+    XCTAssertTrue(unknown.isLossy)
     XCTAssertTrue(unknown.isProvided)
 }
 
@@ -6580,6 +6680,57 @@ func testMonitorSnapshotMenuBarTooltipKeepsFullClaudeModelName() {
         Model: claude-opus-4-1-20250805
         """
     )
+}
+
+func testMonitorSnapshotMenuBarTooltipKeepsUnknownReasoningEffortRawValue() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: UsageLog(model: "gpt-5.6-terra", reasoningEffort: "ultracode"),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model, .reasoningEffort]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+    let tooltip = snapshot.menuBarTooltip(statusText: "OK", config: config)
+
+    XCTAssertEqual(presentation.topRow, "GPT-5.6-Terra | ultra")
+    XCTAssertTrue(tooltip.contains("Model: gpt-5.6-terra"))
+    XCTAssertTrue(tooltip.contains("Reasoning Effort: ultracode"))
+}
+
+func testMonitorSnapshotMenuBarTooltipKeepsTransformedServiceTierRawValue() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: UsageLog(model: "gpt-5.6-luna", serviceTier: "burst-experimental"),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.fast]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+    let tooltip = snapshot.menuBarTooltip(statusText: "OK", config: config)
+
+    XCTAssertEqual(presentation.topRow, "Burst")
+    XCTAssertTrue(tooltip.contains("Service Tier: burst-experimental"))
 }
 
 func testMonitorSnapshotMenuBarPresentationUsesValueAndLabelRowsForSelectedItems() {
@@ -6616,9 +6767,9 @@ func testMonitorSnapshotMenuBarPresentationUsesValueAndLabelRowsForSelectedItems
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.title, " $0.22 | 239r | GPT-5.5 | xh | T | 4N")
-    XCTAssertEqual(presentation.topRow, "$0.22 | 239r | GPT-5.5 | xh | T | 4N")
-    XCTAssertEqual(presentation.bottomRow, "Cost | Req | Model | Eff | Fast | Acct")
+    XCTAssertEqual(presentation.title, " $0.22 | 239r | GPT-5.5 | xhigh | Fast | 4N")
+    XCTAssertEqual(presentation.topRow, "$0.22 | 239r | GPT-5.5 | xhigh | Fast | 4N")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Req | Model | Eff | Tier | Acct")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
 }
 
@@ -6656,8 +6807,8 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllSelectedItemsInRows() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "$2.86K | GPT-5.5 | xh | T | 4N")
-    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Fast | Acct")
+    XCTAssertEqual(presentation.topRow, "$2.86K | GPT-5.5 | xhigh | Fast | 4N")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Tier | Acct")
 }
 
 func testMonitorSnapshotMenuBarPresentationUsesReadableCellWidthsForCommonStatusValues() {
@@ -6691,11 +6842,11 @@ func testMonitorSnapshotMenuBarPresentationUsesReadableCellWidthsForCommonStatus
 
     XCTAssertEqual(presentation.cells, [
         MenuBarStatusCell(value: "$597.00", label: "Cost", width: 58),
-        MenuBarStatusCell(value: "GPT-5.5", label: "Model", width: 70),
-        MenuBarStatusCell(value: "no", label: "Eff", width: 32),
-        MenuBarStatusCell(value: "F", label: "Fast", width: 24),
+        MenuBarStatusCell(value: "GPT-5.5", label: "Model", width: 100),
+        MenuBarStatusCell(value: "no", label: "Eff", width: 40),
+        MenuBarStatusCell(value: "Std", label: "Tier", width: 40),
         MenuBarStatusCell(value: "1N", label: "Acct", width: 36),
-        MenuBarStatusCell(value: "0", label: "T0R0Q0D0E0", width: 88, valueTone: .secondary),
+        MenuBarStatusCell(value: "0", label: "T0R0Q0D0E0", width: 96, valueTone: .secondary),
     ])
 }
 
@@ -6765,13 +6916,13 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
 
     XCTAssertEqual(
         presentation.topRow,
-        "$53.24 | 223r | Mini Latest | xh | 86.4Kc | T | $1.25/M | $6/M | 2C | 2N | A33R +32"
+        "$53.24 | 223r | Mini Latest | xhigh | 86.4Kc | Fast | $1.25/M | $6/M | 2C | 2N | 0% | 0% | A33R +32"
     )
     XCTAssertEqual(
         presentation.bottomRow,
-        "Cost | Req | Model | Eff | Ctx | Fast | In | Out | Conc | Acct | T33R2Q0D0E0"
+        "Cost | Req | Model | Eff | Ctx | Tier | In | Out | Conc | Acct | 5h Left | 7d Left | T33R2Q0D0E0"
     )
-    XCTAssertEqual(presentation.cells.map { $0.width }, [58, 36, 70, 32, 50, 24, 54, 54, 36, 36, 88])
+    XCTAssertEqual(presentation.cells.map { $0.width }, [58, 36, 100, 40, 50, 40, 54, 54, 36, 36, 64, 64, 96])
     XCTAssertFalse(presentation.topRow.contains("i$"))
     XCTAssertFalse(presentation.topRow.contains("o$"))
 }
@@ -6804,7 +6955,7 @@ func testMonitorSnapshotMenuBarPresentationTreatsNoneReasoningEffortAsNo() {
     XCTAssertEqual(presentation.topRow, "no")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "no", label: "Eff", width: 32)
+        MenuBarStatusCell(value: "no", label: "Eff", width: 40)
     ])
 }
 
@@ -6833,9 +6984,9 @@ func testMonitorSnapshotMenuBarPresentationFitsGPT56SolAndMaxReasoning() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "5.6-sol | max")
+    XCTAssertEqual(presentation.topRow, "GPT-5.6-Sol | max")
     XCTAssertEqual(presentation.bottomRow, "Model | Eff")
-    XCTAssertEqual(presentation.cells.map(\.width), [70, 32])
+    XCTAssertEqual(presentation.cells.map(\.width), [100, 40])
     XCTAssertTrue(snapshot.menuBarTooltip(statusText: "OK", config: config).contains("Model: gpt-5.6-sol"))
 }
 
@@ -6888,7 +7039,7 @@ func testMonitorSnapshotMenuBarPresentationShowsDashReasoningEffortAsNo() {
     XCTAssertEqual(presentation.topRow, "no")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "no", label: "Eff", width: 32)
+        MenuBarStatusCell(value: "no", label: "Eff", width: 40)
     ])
 }
 
@@ -6927,7 +7078,7 @@ func testMonitorSnapshotMenuBarPresentationCompressesPricesAndRates() {
     XCTAssertEqual(presentation.bottomRow, "Req | In | Out | RPM")
 }
 
-func testMonitorSnapshotMenuBarPresentationShowsFalseWhenOnlyFastIsSelected() {
+func testMonitorSnapshotMenuBarPresentationShowsStandardWhenOnlyFastIsSelected() {
     let latestUsage = UsageLog(id: 133605, model: "gpt-5.5", serviceTier: "standard")
     let snapshot = MonitorSnapshot(
         mode: .user,
@@ -6948,9 +7099,9 @@ func testMonitorSnapshotMenuBarPresentationShowsFalseWhenOnlyFastIsSelected() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssert(presentation.title == " F")
-    XCTAssertEqual(presentation.topRow, "F")
-    XCTAssertEqual(presentation.bottomRow, "Fast")
+    XCTAssert(presentation.title == " Std")
+    XCTAssertEqual(presentation.topRow, "Std")
+    XCTAssertEqual(presentation.bottomRow, "Tier")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
 }
 
@@ -6974,9 +7125,10 @@ func testMonitorSnapshotMenuBarPresentationUsesPersistentValueAndLabelRowsForEna
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "$0.00 | No model | no | 0c | F | 0rpm")
-    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Ctx | Fast | RPM")
+    XCTAssertEqual(presentation.topRow, "$0.00 | No model | no | 0c | no | 0rpm")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Ctx | Tier | RPM")
     XCTAssertEqual(presentation.cells.first { $0.label == "Model" }?.valueTone, .secondary)
+    XCTAssertEqual(presentation.cells.first { $0.label == "Tier" }?.valueTone, .secondary)
     XCTAssertFalse(presentation.topRow.contains("--"))
     XCTAssertFalse(presentation.bottomRow.contains("--"))
 }
@@ -7002,14 +7154,14 @@ func testMonitorSnapshotMenuBarPresentationKeepsEnabledItemsWhenDisconnected() {
     let presentation = snapshot.menuBarStatusPresentation(config: config)
     let tooltip = snapshot.menuBarTooltip(statusText: "Disconnected", config: config)
 
-    XCTAssertEqual(presentation.topRow, "$0.00 | No model | F | 0rpm")
-    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Fast | RPM")
+    XCTAssertEqual(presentation.topRow, "$0.00 | No model | no | 0rpm")
+    XCTAssertEqual(presentation.bottomRow, "Cost | Model | Tier | RPM")
     XCTAssertEqual(
         tooltip,
         """
         TokenRouter Disconnected
-        $0.00 | No model | F | 0rpm
-        Cost | Model | Fast | RPM
+        $0.00 | No model | no | 0rpm
+        Cost | Model | Tier | RPM
         """
     )
     XCTAssertFalse(presentation.topRow.contains("--"))
@@ -7040,8 +7192,8 @@ func testMonitorSnapshotMenuBarTooltipUsesSamePersistentValueAndLabelRows() {
         tooltip,
         """
         TokenRouter OK
-        $0.00 | No model | no | 0c | F | 0rpm
-        Cost | Model | Eff | Ctx | Fast | RPM
+        $0.00 | No model | no | 0c | no | 0rpm
+        Cost | Model | Eff | Ctx | Tier | RPM
         """
     )
     XCTAssertFalse(tooltip.contains("--"))
@@ -7130,7 +7282,7 @@ func testMonitorSnapshotIncludesCodexTaskPresentationWhenSelected() {
     XCTAssertEqual(presentation.topRow, "A1R")
     XCTAssertEqual(presentation.bottomRow, "T1R1Q0D0E0")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "A1R", label: "T1R1Q0D0E0", width: 88),
+        MenuBarStatusCell(value: "A1R", label: "T1R1Q0D0E0", width: 96),
     ])
 }
 
@@ -7190,13 +7342,13 @@ func testMonitorSnapshotCodexTaskPresentationUsesLatestTaskBadgeAndPersistentCou
     XCTAssertEqual(presentation.topRow, "A2Q +1")
     XCTAssertEqual(presentation.bottomRow, "T2R1Q1D0E0")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "A2Q +1", label: "T2R1Q1D0E0", width: 88),
+        MenuBarStatusCell(value: "A2Q +1", label: "T2R1Q1D0E0", width: 96),
     ])
     XCTAssertFalse(presentation.topRow.contains("--"))
     XCTAssertFalse(presentation.bottomRow.contains("--"))
 }
 
-func testMonitorSnapshotCodexTaskPresentationUsesWiderFixedTaskCellForManyTasks() {
+func testMonitorSnapshotCodexTaskPresentationUsesBoundedTaskCellForManyTasks() {
     var activities: [CodexTaskActivity] = []
     for index in 1 ... 5 {
         let isRunning = index == 5
@@ -7239,7 +7391,7 @@ func testMonitorSnapshotCodexTaskPresentationUsesWiderFixedTaskCellForManyTasks(
     XCTAssertEqual(presentation.topRow, "A5R +4")
     XCTAssertEqual(presentation.bottomRow, "T5R1Q0D0E0")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "A5R +4", label: "T5R1Q0D0E0", width: 88),
+        MenuBarStatusCell(value: "A5R +4", label: "T5R1Q0D0E0", width: 96),
     ])
 }
 

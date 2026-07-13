@@ -68,13 +68,13 @@ struct OpenAIAccountsView: View {
             ),
             MetricItem(
                 title: strings.phrase("五小时剩余", "5-hour Remaining"),
-                value: capacityText(summary.capacities, window: .fiveHour),
+                value: StatusFormatters.openAIQuotaRemaining(summary.capacities, window: .fiveHour),
                 systemImage: "timer",
                 tint: ClaudeTheme.success
             ),
             MetricItem(
                 title: strings.phrase("七天剩余", "7-day Remaining"),
-                value: capacityText(summary.capacities, window: .sevenDay),
+                value: StatusFormatters.openAIQuotaRemaining(summary.capacities, window: .sevenDay),
                 systemImage: "calendar",
                 tint: ClaudeTheme.success
             ),
@@ -154,20 +154,6 @@ struct OpenAIAccountsView: View {
         return model.snapshot.openAIQuota?.accounts.first { $0.id == selectedAccountID }
     }
 
-    private func capacityText(
-        _ capacities: [OpenAIQuotaPlanCapacity],
-        window: OpenAIQuotaWindow
-    ) -> String {
-        guard !capacities.isEmpty else {
-            return "0%"
-        }
-        return capacities.map { capacity in
-            let value = window == .fiveHour ? capacity.fiveHourRemaining : capacity.sevenDayRemaining
-            return capacities.count == 1
-                ? String(format: "%.0f%%", value * 100)
-                : String(format: "%@ %.0f%%", capacity.plan, value * 100)
-        }.joined(separator: " · ")
-    }
 }
 
 private struct OpenAIAccountDetailView: View {

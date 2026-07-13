@@ -31,6 +31,8 @@ public struct CapabilityPolicy: Sendable, Equatable {
                 return allows(.adminNormalAccounts)
             case .realtimeConcurrency:
                 return allows(.adminRealtimeConcurrency)
+            case .fiveHourRemaining, .sevenDayRemaining:
+                return isAdminAccount
             case .rpm:
                 return !isAdminAccount
             default:

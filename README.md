@@ -12,7 +12,7 @@ TokenRouter Monitor is a macOS menu bar companion for [TokenFlux/TokenRouter](ht
 - Subscription quota card with separate daily, weekly, and monthly progress bars
 - Single-metric seven-day token trend and model distribution through TokenRouter's combined snapshot endpoint
 - Split fast and slow refresh paths so live usage stays current without repeatedly fetching expensive aggregate data
-- Optional fixed-cell two-row menu bar text summary with value labels, including `T` / `F` Fast state and task status counts
+- Optional bounded adaptive-width two-row menu bar summary with readable model, reasoning-effort, service-tier, quota, and task-status labels
 - First-run login and optional manual Bearer token setup
 - Optional Open at Login setting for starting the menu bar app automatically after signing in
 - Light, dark, and system-matching appearance modes
@@ -120,14 +120,14 @@ The default appearance follows the current macOS Light/Dark Mode setting. Settin
 
 Automatic refreshes update live status, selected-user usage, concurrency, and the newest request at the configured interval, with a five-second minimum. Aggregate token trend, model, subscription, user-list, and account-composition data refresh at most once per minute. OpenAI OAuth account usage is sampled every ten minutes while an administrator is signed in. Manual refresh updates all applicable paths immediately.
 
-When menu bar text is enabled, the status item uses a fixed-cell two-row layout: each enabled item owns a stable cell, adjacent cells are separated by the same vertical divider, the top row shows selected values, and the bottom row shows short labels or compact task counts. The default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, fast status, input price, output price, realtime RPM for normal users, task status, and administrator-only realtime concurrency and normal account count. Enabled fields remain present in the two-row status item; unavailable numeric values use explicit zero, reasoning effort uses `no` when absent or reported as `-`, and model uses explicit "No ..." text rather than placeholder dashes. Long model identifiers use readable short names in the status item instead of showing only an ellipsis. Input and output price values do not repeat `i` / `o` prefixes because the lower row already labels them as `In` and `Out`. Codex task counts use a compact persistent `T/R/Q/D/E` row such as `T2R1Q1D0E0`. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
+When menu bar text is enabled, the status item uses a bounded adaptive-cell two-row layout: each enabled item owns a stable-height cell, adjacent cells are separated by the same vertical divider, and widths are measured from the current value and label then rounded to four-point steps within per-item caps. The top row shows selected values, and the bottom row shows short labels or compact task counts. The default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, service tier, input price, output price, realtime RPM for normal users, task status, and administrator-only realtime concurrency, normal account count, five-hour remaining capacity, and seven-day remaining capacity. Enabled fields remain present in the two-row status item; unavailable numeric values use explicit zero, reasoning effort uses `no` when absent or reported as `-`, service tier uses `no` until a latest usage record exists, and model uses explicit "No ..." text rather than placeholder dashes. Known reasoning values use `min`, `low`, `med`, `high`, `xhigh`, and `max`; known service tiers use `Fast`, `Std`, `Flex`, `Auto`, or `Scale`. Readable model names retain identifiers such as `GPT-5.6-Sol` and `Auto Review`, while lossy compact values keep their raw source in the tooltip. Input and output price values do not repeat `i` / `o` prefixes because the lower row already labels them as `In` and `Out`. Codex task counts use a compact persistent `T/R/Q/D/E` row such as `T2R1Q1D0E0`. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
 
-Admin accounts can additionally enable realtime concurrency and normal account count in the menu bar text. Administrator-only menu bar items are hidden for normal user accounts. Realtime RPM remains a normal-user item because the current administrator usage endpoints do not provide a selected-user realtime RPM contract.
+Admin accounts can additionally enable realtime concurrency, normal account count, five-hour remaining capacity, and seven-day remaining capacity in the menu bar text. The quota items reuse the Accounts page's schedulable OpenAI OAuth capacity totals, including per-plan values when multiple plans are present. Their bounded adaptive-width cells handle values from zero through multi-account percentages above 100%; longer per-plan text is truncated only in the status item and remains complete in its tooltip. Administrator-only menu bar items are hidden for normal user accounts. Realtime RPM remains a normal-user item because the current administrator usage endpoints do not provide a selected-user realtime RPM contract.
 
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.25 ./scripts/build-app.sh
+VERSION=v0.1.26 ./scripts/build-app.sh
 ```
 
 Output:
@@ -144,28 +144,28 @@ Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.25 \
+VERSION=v0.1.26 \
 ./scripts/build-app.sh
 ```
 
 ## Package A Release
 
 ```bash
-VERSION=v0.1.25 ./scripts/package-release.sh
+VERSION=v0.1.26 ./scripts/package-release.sh
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.25-macOS.zip
-dist/Sub2APIStatusBar-0.1.25-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.26-macOS.zip
+dist/Sub2APIStatusBar-0.1.26-macOS.zip.sha256
 ```
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.25 \
+VERSION=v0.1.26 \
 ./scripts/package-release.sh
 ```
 
@@ -180,7 +180,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.25 \
+VERSION=v0.1.26 \
 ./scripts/notarize-release.sh
 ```
 

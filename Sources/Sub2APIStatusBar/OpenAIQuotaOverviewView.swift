@@ -85,16 +85,7 @@ struct OpenAIQuotaOverviewView: View {
     }
 
     private var capacityText: String {
-        let capacities = snapshot.summary.capacities
-        guard !capacities.isEmpty else {
-            return "0%"
-        }
-        return capacities.map { capacity in
-            let value = window == .fiveHour ? capacity.fiveHourRemaining : capacity.sevenDayRemaining
-            return capacities.count == 1
-                ? String(format: "%.0f%%", value * 100)
-                : String(format: "%@ %.0f%%", capacity.plan, value * 100)
-        }.joined(separator: " · ")
+        StatusFormatters.openAIQuotaRemaining(snapshot.summary.capacities, window: window)
     }
 
     private var focusAccount: OpenAIAccountQuota? {

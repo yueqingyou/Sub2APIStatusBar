@@ -6,8 +6,8 @@ public struct MenuBarStatusLayout: Sendable, Equatable {
     public static let topRowHeight: Double = 13
     public static let bottomRowHeight: Double = 9
     public static let separatorWidth: Double = 1
-    public static let separatorSpacing: Double = 2
-    public static let separatorHeight: Double = 16
+    public static let separatorSpacing: Double = 3
+    public static let separatorHeight: Double = 14
 
     public let cells: [MenuBarStatusCell]
     public let topRow: String

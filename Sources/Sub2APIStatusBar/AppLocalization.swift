@@ -85,7 +85,7 @@ struct AppStrings {
         case .contextLength:
             return phrase("上下文长度", "Context Length")
         case .fast:
-            return phrase("Fast 状态", "Fast Enabled")
+            return phrase("服务等级", "Service Tier")
         case .inputPrice:
             return phrase("输入价格", "Input Price")
         case .outputPrice:
@@ -96,6 +96,10 @@ struct AppStrings {
             return phrase("实时并发", "Realtime Concurrency")
         case .normalAccounts:
             return phrase("正常账号数", "Normal Accounts")
+        case .fiveHourRemaining:
+            return phrase("五小时剩余", "5-hour Remaining")
+        case .sevenDayRemaining:
+            return phrase("七天剩余", "7-day Remaining")
         case .codexTasks:
             return phrase("任务", "Tasks")
         }

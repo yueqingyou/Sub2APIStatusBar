@@ -52,6 +52,8 @@
 
 - 当前 GitHub 分发默认使用 ad-hoc 签名，且本机无稳定 Developer ID 签名身份；不得再把默认 token 存储设计依赖 macOS Keychain ACL 的“始终允许”，因为 ad-hoc `cdhash` 每次重新打包都会变化并导致重复授权提示。
 - 默认 token 存储应使用 Application Support 下当前用户私有凭据文件；旧 Keychain 项只允许无 UI 读取迁移，不得触发系统密码框作为常规读取路径。
+- 正式版本标签必须由 GitHub Actions 自动构建、校验并发布 `x86_64`、`arm64` 和 Universal 2 三类资产；本地手动创建 GitHub Release 只作为 CI 故障恢复手段，不得作为默认发布路径。
+- App 自动更新必须优先选择与当前进程架构一致的资产，其次选择 Universal 2，再兼容旧版无架构资产；不得回退安装另一种不兼容的单架构资产，并且替换前必须校验下载 App 的真实 Mach-O 架构。
 
 ## 约束维护
 

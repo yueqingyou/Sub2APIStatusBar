@@ -5137,6 +5137,45 @@ func testGitHubReleaseSelectsMacOSZipAssetOverOtherAssets() {
     XCTAssert(release.installArchiveAsset(repositoryName: "Sub2APIStatusBar") == app)
 }
 
+func testGitHubReleaseSelectsCompatibleArchitectureBeforeUniversalAndLegacyAssets() {
+    let x86 = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-macOS-x86_64.zip")
+    let arm = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-macOS-arm64.zip")
+    let universal = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-macOS-universal.zip")
+    let legacy = makeReleaseAsset(name: "Sub2APIStatusBar-0.1.27-macOS.zip")
+    let release = GitHubRelease(
+        tagName: "v0.1.27",
+        name: "TokenRouter Monitor v0.1.27",
+        releaseURL: URL(string: "https://example.com/v0.1.27")!,
+        draft: false,
+        prerelease: false,
+        assets: [arm, universal, legacy, x86]
+    )
+
+    XCTAssertEqual(release.installArchiveAsset(architecture: .x86_64), x86)
+    XCTAssertEqual(release.installArchiveAsset(architecture: .arm64), arm)
+    XCTAssertEqual(release.installArchiveAsset(architecture: .unknown), universal)
+
+    let universalFallback = GitHubRelease(
+        tagName: "v0.1.27",
+        name: "TokenRouter Monitor v0.1.27",
+        releaseURL: URL(string: "https://example.com/v0.1.27")!,
+        draft: false,
+        prerelease: false,
+        assets: [x86, universal]
+    )
+    XCTAssertEqual(universalFallback.installArchiveAsset(architecture: .arm64), universal)
+
+    let incompatible = GitHubRelease(
+        tagName: "v0.1.27",
+        name: "TokenRouter Monitor v0.1.27",
+        releaseURL: URL(string: "https://example.com/v0.1.27")!,
+        draft: false,
+        prerelease: false,
+        assets: [x86]
+    )
+    XCTAssertNil(incompatible.installArchiveAsset(architecture: .arm64))
+}
+
 func testAppUpdateInstallerValidatesExtractedAppBundleMetadata() throws {
     let appURL = try makeTemporaryAppBundle(bundleIdentifier: "com.geekywizkid.sub2api-statusbar", version: "0.1.9")
     let installer = AppUpdateInstaller()
@@ -5160,7 +5199,45 @@ func testAppUpdateInstallerRejectsUnexpectedBundleIdentifier() throws {
         if case AppUpdateInstallerError.unexpectedBundleIdentifier = error {
             return
         }
-        XCTFail("Expected unexpectedBundleIdentifier, got \\(error)")
+        XCTFail("Expected unexpectedBundleIdentifier, got \(error)")
+    }
+}
+
+func testAppUpdateInstallerValidatesExecutableArchitecture() throws {
+    let currentArchitecture = MacHardwareArchitecture.current
+    guard currentArchitecture == .x86_64 || currentArchitecture == .arm64 else {
+        throw XCTSkip("Architecture validation requires an x86_64 or arm64 test host")
+    }
+    let executableURL = try makeThinExecutableFixture(
+        from: XCTUnwrap(Bundle.main.executableURL).resolvingSymlinksInPath(),
+        architecture: currentArchitecture
+    )
+    let appURL = try makeTemporaryAppBundle(
+        bundleIdentifier: "com.geekywizkid.sub2api-statusbar",
+        version: "0.1.27",
+        executableSourceURL: executableURL
+    )
+    let installer = AppUpdateInstaller()
+
+    XCTAssertNoThrow(try installer.validateExtractedApp(
+        at: appURL,
+        expectedVersion: AppVersion("0.1.27"),
+        bundleIdentifier: "com.geekywizkid.sub2api-statusbar",
+        requiredArchitecture: .current
+    ))
+
+    let incompatibleArchitecture: MacHardwareArchitecture = currentArchitecture == .arm64 ? .x86_64 : .arm64
+    XCTAssertThrowsError(try installer.validateExtractedApp(
+        at: appURL,
+        expectedVersion: AppVersion("0.1.27"),
+        bundleIdentifier: "com.geekywizkid.sub2api-statusbar",
+        requiredArchitecture: incompatibleArchitecture
+    )) { error in
+        guard case let AppUpdateInstallerError.incompatibleArchitecture(required, found) = error else {
+            return XCTFail("Expected incompatibleArchitecture, got \(error)")
+        }
+        XCTAssertEqual(required, incompatibleArchitecture)
+        XCTAssertFalse(found.contains(incompatibleArchitecture.rawValue))
     }
 }
 
@@ -7511,7 +7588,42 @@ func testLoginFormStateRequiresURLAccountAndPassword() {
     XCTAssert(LoginFormState(baseURL: "http://127.0.0.1:8080", email: "a@example.com", password: "secret").canSubmit == true)
 }
 
-private func makeTemporaryAppBundle(bundleIdentifier: String, version: String) throws -> URL {
+private func makeReleaseAsset(name: String) -> GitHubReleaseAsset {
+    GitHubReleaseAsset(
+        name: name,
+        downloadURL: URL(string: "https://example.com/\(name)")!,
+        contentType: "application/zip",
+        size: 4096
+    )
+}
+
+private func makeThinExecutableFixture(
+    from sourceURL: URL,
+    architecture: MacHardwareArchitecture
+) throws -> URL {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let outputURL = root.appendingPathComponent("Sub2APIStatusBar")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/lipo")
+    process.arguments = ["-thin", architecture.rawValue, sourceURL.path, "-output", outputURL.path]
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw NSError(
+            domain: "Sub2APIStatusCoreTests.ArchitectureFixture",
+            code: Int(process.terminationStatus),
+            userInfo: [NSLocalizedDescriptionKey: "lipo could not create a \(architecture.rawValue) test fixture"]
+        )
+    }
+    return outputURL
+}
+
+private func makeTemporaryAppBundle(
+    bundleIdentifier: String,
+    version: String,
+    executableSourceURL: URL? = nil
+) throws -> URL {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     let appURL = root.appendingPathComponent("Sub2APIStatusBar.app", isDirectory: true)
     let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
@@ -7521,9 +7633,16 @@ private func makeTemporaryAppBundle(bundleIdentifier: String, version: String) t
         "CFBundleIdentifier": bundleIdentifier,
         "CFBundleShortVersionString": version,
         "CFBundleExecutable": "Sub2APIStatusBar",
+        "CFBundlePackageType": "APPL",
     ]
     let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     try data.write(to: contentsURL.appendingPathComponent("Info.plist"))
+    if let executableSourceURL {
+        try FileManager.default.copyItem(
+            at: executableSourceURL,
+            to: macOSURL.appendingPathComponent("Sub2APIStatusBar")
+        )
+    }
     return appURL
 }
 

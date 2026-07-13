@@ -22,6 +22,9 @@ public enum AppUpdateInstallerError: Error, Equatable, LocalizedError, Sendable 
     case unexpectedBundleIdentifier(String?)
     case missingVersion
     case versionMismatch(found: AppVersion, expected: AppVersion)
+    case missingExecutable
+    case architectureInspectionFailed(String)
+    case incompatibleArchitecture(required: MacHardwareArchitecture, found: [String])
     case targetIsNotAppBundle(URL)
     case helperLaunchFailed(String)
 
@@ -45,6 +48,12 @@ public enum AppUpdateInstallerError: Error, Equatable, LocalizedError, Sendable 
             return "The downloaded update is missing a version."
         case let .versionMismatch(found, expected):
             return "The downloaded update version is \(found), expected \(expected)."
+        case .missingExecutable:
+            return "The downloaded update is missing its app executable."
+        case let .architectureInspectionFailed(message):
+            return "Could not inspect the downloaded update architecture: \(message)"
+        case let .incompatibleArchitecture(required, found):
+            return "The downloaded update does not support \(required.rawValue); found: \(found.joined(separator: ", "))."
         case let .targetIsNotAppBundle(url):
             return "The current app path is not an app bundle: \(url.path)."
         case let .helperLaunchFailed(message):
@@ -67,7 +76,8 @@ public struct AppUpdateInstaller {
         expectedBundleIdentifier: String = AppBuildInfo.bundleIdentifier,
         appName: String = "\(AppBuildInfo.repositoryName).app"
     ) async throws -> PreparedAppUpdate {
-        guard let asset = release.installArchiveAsset() else {
+        let requiredArchitecture = MacHardwareArchitecture.current
+        guard let asset = release.installArchiveAsset(architecture: requiredArchitecture) else {
             throw AppUpdateInstallerError.missingInstallArchiveAsset
         }
 
@@ -96,7 +106,8 @@ public struct AppUpdateInstaller {
         try validateExtractedApp(
             at: appURL,
             expectedVersion: release.version,
-            bundleIdentifier: expectedBundleIdentifier
+            bundleIdentifier: expectedBundleIdentifier,
+            requiredArchitecture: requiredArchitecture
         )
         return PreparedAppUpdate(archiveURL: archiveURL, extractionDirectoryURL: extractionURL, appURL: appURL)
     }
@@ -129,7 +140,8 @@ public struct AppUpdateInstaller {
     public func validateExtractedApp(
         at appURL: URL,
         expectedVersion: AppVersion,
-        bundleIdentifier: String
+        bundleIdentifier: String,
+        requiredArchitecture: MacHardwareArchitecture? = nil
     ) throws {
         guard appURL.pathExtension == "app", let bundle = Bundle(url: appURL) else {
             throw AppUpdateInstallerError.invalidAppBundle(appURL)
@@ -149,6 +161,64 @@ public struct AppUpdateInstaller {
         guard actualVersion == expectedVersion else {
             throw AppUpdateInstallerError.versionMismatch(found: actualVersion, expected: expectedVersion)
         }
+
+        if let requiredArchitecture, requiredArchitecture != .unknown {
+            guard let executableName = bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String,
+                  !executableName.isEmpty,
+                  executableName == (executableName as NSString).lastPathComponent,
+                  executableName != ".",
+                  executableName != ".." else {
+                throw AppUpdateInstallerError.missingExecutable
+            }
+            let executableURL = appURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("MacOS", isDirectory: true)
+                .appendingPathComponent(executableName)
+            guard fileManager.fileExists(atPath: executableURL.path) else {
+                throw AppUpdateInstallerError.missingExecutable
+            }
+            let architectures = try executableArchitectures(at: executableURL)
+            guard architectures.contains(requiredArchitecture.rawValue) else {
+                throw AppUpdateInstallerError.incompatibleArchitecture(
+                    required: requiredArchitecture,
+                    found: architectures
+                )
+            }
+        }
+    }
+
+    private func executableArchitectures(at executableURL: URL) throws -> [String] {
+        let process = Process()
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/lipo")
+        process.arguments = ["-archs", executableURL.path]
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+
+        do {
+            try process.run()
+        } catch {
+            throw AppUpdateInstallerError.architectureInspectionFailed(error.localizedDescription)
+        }
+        process.waitUntilExit()
+
+        let outputData = standardOutput.fileHandleForReading.readDataToEndOfFile()
+        let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: outputData, encoding: .utf8) ?? ""
+        let error = String(data: errorData, encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            let message = error.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AppUpdateInstallerError.architectureInspectionFailed(
+                message.isEmpty ? "lipo exited with status \(process.terminationStatus)" : message
+            )
+        }
+
+        let architectures = output.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !architectures.isEmpty else {
+            throw AppUpdateInstallerError.architectureInspectionFailed("lipo returned no architectures")
+        }
+        return architectures
     }
 
     public func startInstall(extractedAppURL: URL, targetAppURL: URL, currentProcessID: Int32) throws {

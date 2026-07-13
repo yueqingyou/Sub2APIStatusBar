@@ -5,8 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sub2APIStatusBar"
 VERSION="${VERSION:-v0.1.27}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+ARCHITECTURE="${ARCHITECTURE:-native}"
 DIST_DIR="$ROOT_DIR/dist"
-ARCHIVE_BASE="$APP_NAME-${VERSION#v}-macOS"
+source "$ROOT_DIR/scripts/macos-architecture.sh"
+ARCHITECTURE="$(resolve_macos_architecture "$ARCHITECTURE")"
+ARCHIVE_BASE="$APP_NAME-${VERSION#v}-macOS-$ARCHITECTURE"
 ZIP_PATH="$DIST_DIR/$ARCHIVE_BASE.zip"
 CHECKSUM_PATH="$ZIP_PATH.sha256"
 
@@ -16,7 +19,8 @@ if [[ -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" ]]; then
 fi
 
 cd "$ROOT_DIR"
-VERSION="$VERSION" SIGN_IDENTITY="$SIGN_IDENTITY" "$ROOT_DIR/scripts/build-app.sh" >/dev/null
+VERSION="$VERSION" SIGN_IDENTITY="$SIGN_IDENTITY" ARCHITECTURE="$ARCHITECTURE" \
+  "$ROOT_DIR/scripts/build-app.sh" >/dev/null
 
 rm -f "$ZIP_PATH" "$CHECKSUM_PATH"
 (

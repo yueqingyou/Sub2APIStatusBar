@@ -18,6 +18,7 @@ TokenRouter Monitor is a macOS menu bar companion for [TokenFlux/TokenRouter](ht
 - Light, dark, and system-matching appearance modes
 - Private local credential storage with legacy Keychain migration; no telemetry or third-party analytics
 - GitHub Releases update checking from Settings
+- Tag-driven GitHub Actions releases with separate Intel, Apple Silicon, and Universal 2 archives
 
 ## Requirements
 
@@ -138,7 +139,13 @@ dist/Sub2APIStatusBar.app
 
 The build script generates the app icon, copies bundle resources, and applies ad-hoc signing by default. This is suitable for GitHub-only distribution when you do not need Apple notarization.
 
-Release builds are host-native. Building on an Intel Mac produces an `x86_64` app bundle.
+Release builds are host-native by default. Building on an Intel Mac without an architecture override produces an `x86_64` app bundle.
+
+Set `ARCHITECTURE` to build a specific target or a Universal 2 app. Supported values are `x86_64`, `arm64`, and `universal`; `native` remains the default.
+
+```bash
+VERSION=v0.1.27 ARCHITECTURE=universal ./scripts/build-app.sh
+```
 
 Optional signed build:
 
@@ -151,23 +158,27 @@ VERSION=v0.1.27 \
 ## Package A Release
 
 ```bash
-VERSION=v0.1.27 ./scripts/package-release.sh
+for ARCHITECTURE in x86_64 arm64 universal; do
+  VERSION=v0.1.27 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
+done
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.27-macOS.zip
-dist/Sub2APIStatusBar-0.1.27-macOS.zip.sha256
+dist/Sub2APIStatusBar-0.1.27-macOS-x86_64.zip
+dist/Sub2APIStatusBar-0.1.27-macOS-arm64.zip
+dist/Sub2APIStatusBar-0.1.27-macOS-universal.zip
 ```
 
-The checksum manifest references the archive by file name only, so downloaded assets can be verified together from any directory with `shasum -a 256 -c Sub2APIStatusBar-0.1.27-macOS.zip.sha256`.
+Each ZIP has a matching `.sha256` file. The checksum manifest references the archive by file name only, so downloaded assets can be verified together from any directory with `shasum -a 256 -c <archive>.sha256`.
 
 By default, `package-release.sh` creates an ad-hoc signed archive. You can pass a signing identity explicitly if you have one:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
 VERSION=v0.1.27 \
+ARCHITECTURE=universal \
 ./scripts/package-release.sh
 ```
 
@@ -188,9 +199,11 @@ VERSION=v0.1.27 \
 
 ## Updates
 
-The app checks GitHub Releases once on launch and lets users check manually from Settings > Updates. When a newer release is available, the popover shows a small update banner with an Install Update action that downloads the macOS zip asset, replaces the current app bundle, and restarts the app. The GitHub release link remains available as a manual fallback.
+The app checks GitHub Releases once on launch and lets users check manually from Settings > Updates. When a newer release is available, the popover shows a small update banner with an Install Update action. The updater selects the current process architecture first (`x86_64` or `arm64`), falls back to Universal 2, and then supports legacy architecture-neutral archive names. It validates the downloaded app's Mach-O architecture, bundle identifier, and version before replacing the current bundle and restarting. The GitHub release link remains available as a manual fallback.
 
 GitHub only exposes published releases through the public latest-release API. Draft releases are intentionally not shown to users.
+
+Pushing a `v*` tag runs the GitHub Actions release pipeline on the explicit Intel runner. CI builds and verifies `x86_64`, `arm64`, and Universal 2 archives, uploads them as workflow artifacts, and creates the public GitHub Release only after all architecture checks pass. Local `gh release create` is not part of the normal release path.
 
 ## Development Checks
 

@@ -7,6 +7,22 @@ public enum AppBuildInfo {
     public static let bundleIdentifier = "com.geekywizkid.sub2api-statusbar"
 }
 
+public enum MacHardwareArchitecture: String, Equatable, Sendable {
+    case x86_64
+    case arm64
+    case unknown
+
+    public static var current: MacHardwareArchitecture {
+        #if arch(x86_64)
+        return .x86_64
+        #elseif arch(arm64)
+        return .arm64
+        #else
+        return .unknown
+        #endif
+    }
+}
+
 public struct AppVersion: Comparable, CustomStringConvertible, Sendable {
     public let rawValue: String
     private let parts: [Int]
@@ -120,27 +136,49 @@ public struct GitHubRelease: Decodable, Equatable, Sendable {
         AppVersion(tagName)
     }
 
-    public func installArchiveAsset(repositoryName: String = AppBuildInfo.repositoryName) -> GitHubReleaseAsset? {
+    public func installArchiveAsset(
+        repositoryName: String = AppBuildInfo.repositoryName,
+        architecture: MacHardwareArchitecture = .current
+    ) -> GitHubReleaseAsset? {
         let zipAssets = assets.filter { $0.name.lowercased().hasSuffix(".zip") }
         let repository = repositoryName.lowercased()
-
-        if let appArchive = zipAssets.first(where: { asset in
+        let repositoryArchives = zipAssets.filter { asset in
             let name = asset.name.lowercased()
             return name.contains(repository)
                 && name.contains("macos")
                 && !name.contains("symbols")
-        }) {
-            return appArchive
         }
-
-        if let macOSArchive = zipAssets.first(where: { asset in
+        let macOSArchives = zipAssets.filter { asset in
             let name = asset.name.lowercased()
             return name.contains("macos") && !name.contains("symbols")
-        }) {
-            return macOSArchive
         }
 
-        return zipAssets.first
+        if let archive = Self.preferredInstallArchive(in: repositoryArchives, architecture: architecture) {
+            return archive
+        }
+        if let archive = Self.preferredInstallArchive(in: macOSArchives, architecture: architecture) {
+            return archive
+        }
+        return nil
+    }
+
+    private static func preferredInstallArchive(
+        in assets: [GitHubReleaseAsset],
+        architecture: MacHardwareArchitecture
+    ) -> GitHubReleaseAsset? {
+        if architecture != .unknown,
+           let exact = assets.first(where: {
+               $0.name.lowercased().hasSuffix("-macos-\(architecture.rawValue).zip")
+           }) {
+            return exact
+        }
+        if let universal = assets.first(where: {
+            let name = $0.name.lowercased()
+            return name.hasSuffix("-macos-universal.zip") || name.hasSuffix("-macos-universal2.zip")
+        }) {
+            return universal
+        }
+        return assets.first(where: { $0.name.lowercased().hasSuffix("-macos.zip") })
     }
 }
 

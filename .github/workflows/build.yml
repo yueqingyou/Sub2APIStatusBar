@@ -13,10 +13,13 @@ on:
       - codex/macos12-intel-compat
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   macos:
-    name: Test and Package
-    runs-on: macos-latest
+    name: Test and Package All Architectures
+    runs-on: macos-15-intel
 
     steps:
       - name: Checkout
@@ -38,8 +41,10 @@ jobs:
           else
             VERSION="v0.1.27"
           fi
-          VERSION="$VERSION" ./scripts/package-release.sh
-          VERSION="$VERSION" ./scripts/verify-release.sh
+          for ARCHITECTURE in x86_64 arm64 universal; do
+            VERSION="$VERSION" ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
+            VERSION="$VERSION" ARCHITECTURE="$ARCHITECTURE" ./scripts/verify-release.sh
+          done
 
       - name: Upload App Archive
         uses: actions/upload-artifact@v7
@@ -49,3 +54,38 @@ jobs:
             dist/*.zip
             dist/*.sha256
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Release Assets
+        uses: actions/download-artifact@v8
+        with:
+          name: Sub2APIStatusBar-macOS
+          path: release-assets
+
+      - name: Verify Downloaded Assets
+        working-directory: release-assets
+        run: |
+          for CHECKSUM in *.sha256; do
+            sha256sum -c "$CHECKSUM"
+          done
+
+      - name: Create GitHub Release
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            ./*.zip \
+            ./*.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes \
+            --title "TokenRouter Monitor $GITHUB_REF_NAME"

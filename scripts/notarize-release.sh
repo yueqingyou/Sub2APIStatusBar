@@ -5,9 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sub2APIStatusBar"
 VERSION="${VERSION:-v0.1.27}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+ARCHITECTURE="${ARCHITECTURE:-universal}"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
-ZIP_PATH="$DIST_DIR/$APP_NAME-${VERSION#v}-macOS.zip"
+source "$ROOT_DIR/scripts/macos-architecture.sh"
+ARCHITECTURE="$(resolve_macos_architecture "$ARCHITECTURE")"
+ZIP_PATH="$DIST_DIR/$APP_NAME-${VERSION#v}-macOS-$ARCHITECTURE.zip"
 CHECKSUM_PATH="$ZIP_PATH.sha256"
 
 source "$ROOT_DIR/scripts/signing-identity.sh"
@@ -34,7 +37,8 @@ if [[ -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" ]]; then
 fi
 
 cd "$ROOT_DIR"
-VERSION="$VERSION" SIGN_IDENTITY="$SIGN_IDENTITY" "$ROOT_DIR/scripts/package-release.sh" >/dev/null
+VERSION="$VERSION" SIGN_IDENTITY="$SIGN_IDENTITY" ARCHITECTURE="$ARCHITECTURE" \
+  "$ROOT_DIR/scripts/package-release.sh" >/dev/null
 
 xcrun notarytool submit "$ZIP_PATH" \
   --apple-id "$APPLE_ID" \

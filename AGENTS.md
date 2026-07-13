@@ -54,6 +54,7 @@
 - 默认 token 存储应使用 Application Support 下当前用户私有凭据文件；旧 Keychain 项只允许无 UI 读取迁移，不得触发系统密码框作为常规读取路径。
 - 正式版本标签必须由 GitHub Actions 自动构建、校验并发布 `x86_64`、`arm64` 和 Universal 2 三类资产；本地手动创建 GitHub Release 只作为 CI 故障恢复手段，不得作为默认发布路径。
 - 为兼容尚未识别架构的旧版 updater，CI 必须额外复制一份名称按字典序排在单架构资产之前、内容与 Universal 2 完全相同的兼容 ZIP，并在公开 Release 前断言该兼容包是 API 返回的第一份 macOS ZIP、两份资产 digest 一致且资产数量准确。
+- GitHub 草稿 Release 刚创建时，草稿 ID、资产列表和 digest 可能短暂不可见；CI 必须在有限超时内轮询草稿 ID，并基于同一份 release API 快照校验资产，避免把最终一致性延迟误判为发布失败。
 - App 自动更新必须优先选择与当前进程架构一致的资产，其次选择 Universal 2，再兼容旧版无架构资产；不得回退安装另一种不兼容的单架构资产，并且替换前必须校验下载 App 的真实 Mach-O 架构。
 
 ## 约束维护

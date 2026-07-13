@@ -128,7 +128,7 @@ Admin accounts can additionally enable realtime concurrency, normal account coun
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.30 ./scripts/build-app.sh
+VERSION=v0.1.31 ./scripts/build-app.sh
 ```
 
 Output:
@@ -144,14 +144,14 @@ Release builds are host-native by default. Building on an Intel Mac without an a
 Set `ARCHITECTURE` to build a specific target or a Universal 2 app. Supported values are `x86_64`, `arm64`, and `universal`; `native` remains the default.
 
 ```bash
-VERSION=v0.1.30 ARCHITECTURE=universal ./scripts/build-app.sh
+VERSION=v0.1.31 ARCHITECTURE=universal ./scripts/build-app.sh
 ```
 
 Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.30 \
+VERSION=v0.1.31 \
 ./scripts/build-app.sh
 ```
 
@@ -159,16 +159,16 @@ VERSION=v0.1.30 \
 
 ```bash
 for ARCHITECTURE in x86_64 arm64 universal; do
-  VERSION=v0.1.30 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
+  VERSION=v0.1.31 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
 done
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.30-macOS-x86_64.zip
-dist/Sub2APIStatusBar-0.1.30-macOS-arm64.zip
-dist/Sub2APIStatusBar-0.1.30-macOS-universal.zip
+dist/Sub2APIStatusBar-0.1.31-macOS-x86_64.zip
+dist/Sub2APIStatusBar-0.1.31-macOS-arm64.zip
+dist/Sub2APIStatusBar-0.1.31-macOS-universal.zip
 ```
 
 Each ZIP has a matching `.sha256` file. The checksum manifest references the archive by file name only, so downloaded assets can be verified together from any directory with `shasum -a 256 -c <archive>.sha256`.
@@ -177,7 +177,7 @@ By default, `package-release.sh` creates an ad-hoc signed archive. You can pass 
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.30 \
+VERSION=v0.1.31 \
 ARCHITECTURE=universal \
 ./scripts/package-release.sh
 ```
@@ -193,7 +193,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.30 \
+VERSION=v0.1.31 \
 ./scripts/notarize-release.sh
 ```
 

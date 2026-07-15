@@ -4568,14 +4568,14 @@ func testAppConfigPersistsMenuBarDetailPreferences() throws {
         baseURL: "http://127.0.0.1:8080",
         showsMenuBarText: true,
         menuBarUsageWindow: .today,
-        menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice]
+        menuBarDisplayItems: [.totalRequests, .requestType, .inputPrice, .outputPrice]
     )
 
     try store.save(config)
     let loaded = store.load()
 
     XCTAssert(loaded.menuBarUsageWindow == .today)
-    XCTAssert(loaded.menuBarDisplayItems == [.totalRequests, .inputPrice, .outputPrice])
+    XCTAssert(loaded.menuBarDisplayItems == [.totalRequests, .requestType, .inputPrice, .outputPrice])
 }
 
 func testAppConfigPersistsCodexTaskTimelineEventLimit() throws {
@@ -4866,6 +4866,11 @@ func testAppConfigSupportsAdminModeAndSelectedUser() throws {
 
 func testMenuBarDisplayItemsExposeAdminRealtimeConcurrencyItem() {
     XCTAssertEqual(MenuBarDisplayItem(rawValue: "realtimeConcurrency"), .realtimeConcurrency)
+    XCTAssertEqual(MenuBarDisplayItem(rawValue: "requestType"), .requestType)
+    XCTAssertEqual(MenuBarDisplayItem.fromEnvironment("model,requestType"), [.model, .requestType])
+    XCTAssertFalse(MenuBarDisplayItem.defaultSelection.contains(.requestType))
+    XCTAssertTrue(MenuBarDisplayItem.userVisibleCases.contains(.requestType))
+    XCTAssertTrue(MenuBarDisplayItem.adminVisibleCases.contains(.requestType))
     XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.normalAccounts) == false)
     XCTAssert(MenuBarDisplayItem.defaultSelection.contains(.realtimeConcurrency) == false)
     XCTAssert(MenuBarDisplayItem.userVisibleCases.contains(.normalAccounts) == false)
@@ -4883,6 +4888,7 @@ func testMenuBarDisplayItemsExposeAdminRealtimeConcurrencyItem() {
     XCTAssertEqual(MenuBarDisplayItem.realtimeConcurrency.displayName, "Realtime Concurrency")
     XCTAssertEqual(MenuBarDisplayItem.fiveHourRemaining.displayName, "5-hour Remaining")
     XCTAssertEqual(MenuBarDisplayItem.sevenDayRemaining.displayName, "7-day Remaining")
+    XCTAssertEqual(MenuBarDisplayItem.requestType.displayName, "Request Type")
 }
 
 func testCapabilityPolicyFiltersUserAndAdminOnlyFeatures() {
@@ -6082,6 +6088,7 @@ func testTokenRouterClientUsesAdminFilteredEndpointsForSelectedUserMetrics() asy
     XCTAssert(latest.items.first?.userAgent == "codex_cli_rs/0.125.0")
     XCTAssert(latest.items.first?.inboundEndpoint == "/openai/v1/responses")
     XCTAssert(latest.items.first?.upstreamEndpoint == "/v1/responses")
+    XCTAssert(latest.items.first?.requestType == "stream")
     XCTAssert(latest.items.first?.stream == true)
     XCTAssert(StubURLProtocol.requestedPaths == [
         "/api/v1/admin/users/2",
@@ -6537,7 +6544,7 @@ func testMonitorSnapshotBuildsMenuBarPresentationFromDashboardStats() {
         showsMenuBarText: true,
         menuBarDisplayItems: [.totalRequests, .inputPrice, .outputPrice]
     )
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).topRow, "$12.35 | GPT-5.5 | xhigh | 88.4Kc | Fast | 3rpm")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).topRow, "$12.35 | GPT-5.5 | XHigh | 88.4Kc | Fast | 3rpm")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleDefaultConfig).bottomRow, "Cost | Model | Eff | Ctx | Tier | RPM")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).topRow, "2048r | $10/M | $60/M")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleCustomConfig).bottomRow, "Req | In | Out")
@@ -6575,7 +6582,7 @@ func testMonitorSnapshotShowsStandardTierWhenLatestUsageIsNotFast() {
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "")
 
     let visibleConfig = AppConfig(baseURL: "http://127.0.0.1:8080", showsMenuBarText: true)
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).topRow, "$12.35 | GPT-5.5 | xhigh | 88.4Kc | Std | 3rpm")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).topRow, "$12.35 | GPT-5.5 | XHigh | 88.4Kc | Std | 3rpm")
     XCTAssertEqual(snapshot.menuBarStatusPresentation(config: visibleConfig).bottomRow, "Cost | Model | Eff | Ctx | Tier | RPM")
 }
 
@@ -6710,34 +6717,66 @@ func testStatusFormattersBuildReasoningEffortPresentationsWithoutRejectingNewVal
     let missing = StatusFormatters.reasoningEffortPresentation(nil)
     XCTAssertNil(missing.rawValue)
     XCTAssertEqual(missing.displayName, "None")
-    XCTAssertEqual(missing.compactName, "no")
+    XCTAssertEqual(missing.compactName, "No")
     XCTAssertFalse(missing.isProvided)
 
     let minimal = StatusFormatters.reasoningEffortPresentation("minimal")
     XCTAssertEqual(minimal.displayName, "Minimal")
-    XCTAssertEqual(minimal.compactName, "min")
+    XCTAssertEqual(minimal.compactName, "Min")
     XCTAssertTrue(minimal.isProvided)
 
-    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("low").compactName, "low")
-    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("medium").compactName, "med")
-    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("high").compactName, "high")
+    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("low").compactName, "Low")
+    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("medium").compactName, "Med")
+    XCTAssertEqual(StatusFormatters.reasoningEffortPresentation("high").compactName, "High")
 
     let extraHigh = StatusFormatters.reasoningEffortPresentation("x-high")
     XCTAssertEqual(extraHigh.displayName, "Extra High")
-    XCTAssertEqual(extraHigh.compactName, "xhigh")
+    XCTAssertEqual(extraHigh.compactName, "XHigh")
     XCTAssertTrue(extraHigh.isProvided)
 
     let maximum = StatusFormatters.reasoningEffortPresentation("max")
     XCTAssertEqual(maximum.displayName, "Max")
-    XCTAssertEqual(maximum.compactName, "max")
+    XCTAssertEqual(maximum.compactName, "Max")
     XCTAssertTrue(maximum.isProvided)
 
     let unknown = StatusFormatters.reasoningEffortPresentation("ultracode")
     XCTAssertEqual(unknown.rawValue, "ultracode")
     XCTAssertEqual(unknown.displayName, "ultracode")
-    XCTAssertEqual(unknown.compactName, "ultra")
+    XCTAssertEqual(unknown.compactName, "Ultra")
     XCTAssertTrue(unknown.isLossy)
     XCTAssertTrue(unknown.isProvided)
+}
+
+func testStatusFormattersBuildStrictRequestTypePresentations() {
+    let missing = StatusFormatters.requestTypePresentation(nil)
+    XCTAssertEqual(missing.displayName, "None")
+    XCTAssertEqual(missing.compactName, "No")
+    XCTAssertFalse(missing.isProvided)
+    XCTAssertFalse(missing.isKnown)
+
+    let sse = StatusFormatters.requestTypePresentation("stream")
+    XCTAssertEqual(sse.displayName, "SSE")
+    XCTAssertEqual(sse.compactName, "SSE")
+    XCTAssertTrue(sse.isKnown)
+
+    let webSocket = StatusFormatters.requestTypePresentation("ws_v2")
+    XCTAssertEqual(webSocket.displayName, "WebSocket")
+    XCTAssertEqual(webSocket.compactName, "WS")
+    XCTAssertTrue(webSocket.isKnown)
+
+    let synchronous = StatusFormatters.requestTypePresentation("sync")
+    XCTAssertEqual(synchronous.displayName, "Synchronous")
+    XCTAssertEqual(synchronous.compactName, "Sync")
+    XCTAssertTrue(synchronous.isKnown)
+
+    let explicitUnknown = StatusFormatters.requestTypePresentation("unknown")
+    XCTAssertEqual(explicitUnknown.compactName, "Unknown")
+    XCTAssertFalse(explicitUnknown.isKnown)
+
+    let future = StatusFormatters.requestTypePresentation("future_transport")
+    XCTAssertEqual(future.rawValue, "future_transport")
+    XCTAssertEqual(future.compactName, "Unknown")
+    XCTAssertFalse(future.isKnown)
 }
 
 func testMonitorSnapshotMenuBarTooltipKeepsFullClaudeModelName() {
@@ -6791,9 +6830,90 @@ func testMonitorSnapshotMenuBarTooltipKeepsUnknownReasoningEffortRawValue() {
     let presentation = snapshot.menuBarStatusPresentation(config: config)
     let tooltip = snapshot.menuBarTooltip(statusText: "OK", config: config)
 
-    XCTAssertEqual(presentation.topRow, "GPT-5.6-Terra | ultra")
+    XCTAssertEqual(presentation.topRow, "GPT-5.6-Terra | Ultra")
     XCTAssertTrue(tooltip.contains("Model: gpt-5.6-terra"))
     XCTAssertTrue(tooltip.contains("Reasoning Effort: ultracode"))
+}
+
+func testMonitorSnapshotMenuBarShowsStrictRequestTypeAfterServiceTier() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: UsageLog(model: "gpt-5.6-sol", serviceTier: "priority", requestType: "ws_v2", stream: true),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.model, .fast, .requestType, .inputPrice]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+    let tooltip = snapshot.menuBarTooltip(statusText: "OK", config: config)
+
+    XCTAssertEqual(presentation.topRow, "GPT-5.6-Sol | Fast | WS | $0/M")
+    XCTAssertEqual(presentation.bottomRow, "Model | Tier | Type | In")
+    XCTAssertEqual(presentation.cells.first { $0.label == "Type" }?.width, 56)
+    XCTAssertEqual(presentation.cells.first { $0.label == "Type" }?.valueTone, .primary)
+    XCTAssertTrue(tooltip.contains("Request Type: WebSocket (ws_v2)"))
+}
+
+func testMonitorSnapshotMenuBarDoesNotInferRequestTypeFromLegacyStreamFlag() {
+    let snapshot = MonitorSnapshot(
+        mode: .user,
+        connected: true,
+        stats: nil,
+        latestUsage: UsageLog(model: "gpt-5.6-sol", requestType: nil, stream: true),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.requestType]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+
+    XCTAssertEqual(presentation.topRow, "No")
+    XCTAssertEqual(presentation.bottomRow, "Type")
+    XCTAssertEqual(presentation.cells.first?.valueTone, .secondary)
+    XCTAssertFalse(snapshot.menuBarTooltip(statusText: "OK", config: config).contains("Request Type:"))
+}
+
+func testMonitorSnapshotMenuBarKeepsUnknownRequestTypeRawValueInTooltip() {
+    let snapshot = MonitorSnapshot(
+        mode: .admin,
+        connected: true,
+        stats: nil,
+        latestUsage: UsageLog(model: "gpt-5.6-sol", requestType: "future_transport"),
+        realtime: nil,
+        accountHealth: nil,
+        subscriptionSummary: nil,
+        lastUpdatedAt: nil,
+        message: nil
+    )
+    let config = AppConfig(
+        baseURL: "http://127.0.0.1:8080",
+        monitorMode: .admin,
+        showsMenuBarText: true,
+        menuBarDisplayItems: [.requestType]
+    )
+
+    let presentation = snapshot.menuBarStatusPresentation(config: config)
+    let tooltip = snapshot.menuBarTooltip(statusText: "OK", config: config)
+
+    XCTAssertEqual(presentation.topRow, "Unknown")
+    XCTAssertEqual(presentation.cells.first?.valueTone, .secondary)
+    XCTAssertTrue(tooltip.contains("Request Type: Unknown (future_transport)"))
 }
 
 func testMonitorSnapshotMenuBarTooltipKeepsTransformedServiceTierRawValue() {
@@ -6855,8 +6975,8 @@ func testMonitorSnapshotMenuBarPresentationUsesValueAndLabelRowsForSelectedItems
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.title, " $0.22 | 239r | GPT-5.5 | xhigh | Fast | 4N")
-    XCTAssertEqual(presentation.topRow, "$0.22 | 239r | GPT-5.5 | xhigh | Fast | 4N")
+    XCTAssertEqual(presentation.title, " $0.22 | 239r | GPT-5.5 | XHigh | Fast | 4N")
+    XCTAssertEqual(presentation.topRow, "$0.22 | 239r | GPT-5.5 | XHigh | Fast | 4N")
     XCTAssertEqual(presentation.bottomRow, "Cost | Req | Model | Eff | Tier | Acct")
     XCTAssert(presentation.hidesHealthyStatusImage == true)
 }
@@ -6895,7 +7015,7 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllSelectedItemsInRows() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "$2.86K | GPT-5.5 | xhigh | Fast | 4N")
+    XCTAssertEqual(presentation.topRow, "$2.86K | GPT-5.5 | XHigh | Fast | 4N")
     XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Tier | Acct")
 }
 
@@ -6931,7 +7051,7 @@ func testMonitorSnapshotMenuBarPresentationUsesReadableCellWidthsForCommonStatus
     XCTAssertEqual(presentation.cells, [
         MenuBarStatusCell(value: "$597.00", label: "Cost", width: 58),
         MenuBarStatusCell(value: "GPT-5.5", label: "Model", width: 100),
-        MenuBarStatusCell(value: "no", label: "Eff", width: 40),
+        MenuBarStatusCell(value: "No", label: "Eff", width: 40),
         MenuBarStatusCell(value: "Std", label: "Tier", width: 40),
         MenuBarStatusCell(value: "1N", label: "Acct", width: 36),
         MenuBarStatusCell(value: "0", label: "T0R0Q0D0E0", width: 96, valueTone: .secondary),
@@ -6949,7 +7069,8 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
         cacheReadTokens: 85_400,
         inputCost: 0.00125,
         outputCost: 0.006,
-        actualCost: 0.00725
+        actualCost: 0.00725,
+        requestType: "ws_v2"
     )
     var activities: [CodexTaskActivity] = []
     for index in 1 ... 33 {
@@ -7004,13 +7125,13 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
 
     XCTAssertEqual(
         presentation.topRow,
-        "$53.24 | 223r | Mini Latest | xhigh | 86.4Kc | Fast | $1.25/M | $6/M | 2C | 2N | 0% | 0% | A33R +32"
+        "$53.24 | 223r | Mini Latest | XHigh | 86.4Kc | Fast | WS | $1.25/M | $6/M | 2C | 2N | 0% | 0% | A33R +32"
     )
     XCTAssertEqual(
         presentation.bottomRow,
-        "Cost | Req | Model | Eff | Ctx | Tier | In | Out | Conc | Acct | 5h Left | 7d Left | T33R2Q0D0E0"
+        "Cost | Req | Model | Eff | Ctx | Tier | Type | In | Out | Conc | Acct | 5h Left | 7d Left | T33R2Q0D0E0"
     )
-    XCTAssertEqual(presentation.cells.map { $0.width }, [58, 36, 100, 40, 50, 40, 54, 54, 36, 36, 64, 64, 96])
+    XCTAssertEqual(presentation.cells.map { $0.width }, [58, 36, 100, 40, 50, 40, 56, 54, 54, 36, 36, 64, 64, 96])
     XCTAssertFalse(presentation.topRow.contains("i$"))
     XCTAssertFalse(presentation.topRow.contains("o$"))
 }
@@ -7040,10 +7161,10 @@ func testMonitorSnapshotMenuBarPresentationTreatsNoneReasoningEffortAsNo() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "no")
+    XCTAssertEqual(presentation.topRow, "No")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "no", label: "Eff", width: 40)
+        MenuBarStatusCell(value: "No", label: "Eff", width: 40)
     ])
 }
 
@@ -7072,7 +7193,7 @@ func testMonitorSnapshotMenuBarPresentationFitsGPT56SolAndMaxReasoning() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "GPT-5.6-Sol | max")
+    XCTAssertEqual(presentation.topRow, "GPT-5.6-Sol | Max")
     XCTAssertEqual(presentation.bottomRow, "Model | Eff")
     XCTAssertEqual(presentation.cells.map(\.width), [100, 40])
     XCTAssertTrue(snapshot.menuBarTooltip(statusText: "OK", config: config).contains("Model: gpt-5.6-sol"))
@@ -7096,7 +7217,7 @@ func testMonitorSnapshotMenuBarPresentationKeepsMinimalReasoningDistinctFromMiss
         menuBarDisplayItems: [.reasoningEffort]
     )
 
-    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "min")
+    XCTAssertEqual(snapshot.menuBarStatusPresentation(config: config).topRow, "Min")
 }
 
 func testMonitorSnapshotMenuBarPresentationShowsDashReasoningEffortAsNo() {
@@ -7124,10 +7245,10 @@ func testMonitorSnapshotMenuBarPresentationShowsDashReasoningEffortAsNo() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "no")
+    XCTAssertEqual(presentation.topRow, "No")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "no", label: "Eff", width: 40)
+        MenuBarStatusCell(value: "No", label: "Eff", width: 40)
     ])
 }
 
@@ -7213,7 +7334,7 @@ func testMonitorSnapshotMenuBarPresentationUsesPersistentValueAndLabelRowsForEna
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "$0.00 | No model | no | 0c | no | 0rpm")
+    XCTAssertEqual(presentation.topRow, "$0.00 | No model | No | 0c | No | 0rpm")
     XCTAssertEqual(presentation.bottomRow, "Cost | Model | Eff | Ctx | Tier | RPM")
     XCTAssertEqual(presentation.cells.first { $0.label == "Model" }?.valueTone, .secondary)
     XCTAssertEqual(presentation.cells.first { $0.label == "Tier" }?.valueTone, .secondary)
@@ -7242,13 +7363,13 @@ func testMonitorSnapshotMenuBarPresentationKeepsEnabledItemsWhenDisconnected() {
     let presentation = snapshot.menuBarStatusPresentation(config: config)
     let tooltip = snapshot.menuBarTooltip(statusText: "Disconnected", config: config)
 
-    XCTAssertEqual(presentation.topRow, "$0.00 | No model | no | 0rpm")
+    XCTAssertEqual(presentation.topRow, "$0.00 | No model | No | 0rpm")
     XCTAssertEqual(presentation.bottomRow, "Cost | Model | Tier | RPM")
     XCTAssertEqual(
         tooltip,
         """
         TokenRouter Disconnected
-        $0.00 | No model | no | 0rpm
+        $0.00 | No model | No | 0rpm
         Cost | Model | Tier | RPM
         """
     )
@@ -7280,7 +7401,7 @@ func testMonitorSnapshotMenuBarTooltipUsesSamePersistentValueAndLabelRows() {
         tooltip,
         """
         TokenRouter OK
-        $0.00 | No model | no | 0c | no | 0rpm
+        $0.00 | No model | No | 0c | No | 0rpm
         Cost | Model | Eff | Ctx | Tier | RPM
         """
     )

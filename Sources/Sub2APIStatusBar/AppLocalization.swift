@@ -86,6 +86,8 @@ struct AppStrings {
             return phrase("上下文长度", "Context Length")
         case .fast:
             return phrase("服务等级", "Service Tier")
+        case .requestType:
+            return phrase("请求类型", "Request Type")
         case .inputPrice:
             return phrase("输入价格", "Input Price")
         case .outputPrice:

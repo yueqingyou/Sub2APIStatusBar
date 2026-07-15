@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.32
+
+- Added an opt-in request type menu bar item backed strictly by the latest usage record's `request_type`, with `SSE`, `WS`, `Sync`, `Unknown`, and `No` states.
+- Exposed the request type setting to both user and administrator monitoring modes without changing the default menu bar selection.
+- Preserved raw request type values in the menu bar tooltip and avoided ambiguous inference from the legacy `stream` flag.
+- Capitalized compact reasoning effort values and unavailable service tier labels for consistent menu bar presentation.
+- Added regression coverage for configuration persistence, user/admin visibility, request type mapping and ordering, tooltip diagnostics, fallback rejection, and the complete administrator menu bar layout.
+
 ## v0.1.19
 
 - Fixed administrator monitoring disconnecting after v0.1.18 when `/api/v1/admin/users/{id}` returns the real admin user detail payload without `current_concurrency`.

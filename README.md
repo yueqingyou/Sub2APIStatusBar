@@ -111,7 +111,7 @@ SUB2API_SHOW_MENU_BAR_TEXT=true \
 SUB2API_LAUNCH_AT_LOGIN=false \
 SUB2API_APPEARANCE=system \
 SUB2API_MENU_BAR_USAGE_WINDOW=last24Hours \
-SUB2API_MENU_BAR_ITEMS=totalCost,model,reasoningEffort,contextLength,fast,rpm \
+SUB2API_MENU_BAR_ITEMS=totalCost,model,reasoningEffort,contextLength,fast,requestType,rpm \
 swift run Sub2APIStatusBar
 ```
 
@@ -121,14 +121,14 @@ The default appearance follows the current macOS Light/Dark Mode setting. Settin
 
 Automatic refreshes update live status, selected-user usage, concurrency, and the newest request at the configured interval, with a five-second minimum. Aggregate token trend, model, subscription, user-list, and account-composition data refresh at most once per minute. OpenAI OAuth account usage is sampled every ten minutes while an administrator is signed in. Manual refresh updates all applicable paths immediately.
 
-When menu bar text is enabled, the status item uses a bounded adaptive-cell two-row layout: each enabled item owns a stable-height cell, adjacent cells are separated by the same vertical divider, and widths are measured from the current value and label then rounded to four-point steps within per-item caps. The top row shows selected values, and the bottom row shows short labels or compact task counts. The default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, service tier, input price, output price, realtime RPM for normal users, task status, and administrator-only realtime concurrency, normal account count, five-hour remaining capacity, and seven-day remaining capacity. Enabled fields remain present in the two-row status item; unavailable numeric values use explicit zero, reasoning effort uses `no` when absent or reported as `-`, service tier uses `no` until a latest usage record exists, and model uses explicit "No ..." text rather than placeholder dashes. Known reasoning values use `min`, `low`, `med`, `high`, `xhigh`, and `max`; known service tiers use `Fast`, `Std`, `Flex`, `Auto`, or `Scale`. Readable model names retain identifiers such as `GPT-5.6-Sol` and `Auto Review`, while lossy compact values keep their raw source in the tooltip. Input and output price values do not repeat `i` / `o` prefixes because the lower row already labels them as `In` and `Out`. Codex task counts use a compact persistent `T/R/Q/D/E` row such as `T2R1Q1D0E0`. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
+When menu bar text is enabled, the status item uses a bounded adaptive-cell two-row layout: each enabled item owns a stable-height cell, adjacent cells are separated by the same vertical divider, and widths are measured from the current value and label then rounded to four-point steps within per-item caps. The top row shows selected values, and the bottom row shows short labels or compact task counts. The default usage window is **Last 24 Hours**. Settings lets users switch the window to **Today** and choose exactly which fields appear in the status item: total cost, total requests, latest model, reasoning effort, context length, service tier, request type, input price, output price, realtime RPM for normal users, task status, and administrator-only realtime concurrency, normal account count, five-hour remaining capacity, and seven-day remaining capacity. Request type is an opt-in item and is not part of the default selection; its configuration value is `requestType`. It strictly uses the latest usage record's `request_type`: `stream` displays `SSE`, `ws_v2` displays `WS`, `sync` displays `Sync`, explicit or unrecognized values display `Unknown`, and a missing latest value displays `No`. The app does not infer request type from the legacy `stream` flag. Enabled fields remain present in the two-row status item; unavailable numeric values use explicit zero, reasoning effort uses `No` when absent or reported as `-`, service tier uses `No` until a latest usage record exists, and model uses explicit "No ..." text rather than placeholder dashes. Known reasoning values use `Min`, `Low`, `Med`, `High`, `XHigh`, and `Max`; known service tiers use `Fast`, `Std`, `Flex`, `Auto`, or `Scale`. Readable model names retain identifiers such as `GPT-5.6-Sol` and `Auto Review`, while lossy compact values and unknown request types keep their raw source in the tooltip. Input and output price values do not repeat `i` / `o` prefixes because the lower row already labels them as `In` and `Out`. Codex task counts use a compact persistent `T/R/Q/D/E` row such as `T2R1Q1D0E0`. Context length is derived from the latest usage record as input tokens plus cache creation and cache read tokens; input/output prices follow the web dashboard's cost-detail calculation by deriving price per 1M tokens from cost and token counts.
 
 Admin accounts can additionally enable realtime concurrency, normal account count, five-hour remaining capacity, and seven-day remaining capacity in the menu bar text. The quota items reuse the Accounts page's schedulable OpenAI OAuth capacity totals, including per-plan values when multiple plans are present. Their bounded adaptive-width cells handle values from zero through multi-account percentages above 100%; longer per-plan text is truncated only in the status item and remains complete in its tooltip. Administrator-only menu bar items are hidden for normal user accounts. Realtime RPM remains a normal-user item because the current administrator usage endpoints do not provide a selected-user realtime RPM contract.
 
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.31 ./scripts/build-app.sh
+VERSION=v0.1.32 ./scripts/build-app.sh
 ```
 
 Output:
@@ -144,14 +144,14 @@ Release builds are host-native by default. Building on an Intel Mac without an a
 Set `ARCHITECTURE` to build a specific target or a Universal 2 app. Supported values are `x86_64`, `arm64`, and `universal`; `native` remains the default.
 
 ```bash
-VERSION=v0.1.31 ARCHITECTURE=universal ./scripts/build-app.sh
+VERSION=v0.1.32 ARCHITECTURE=universal ./scripts/build-app.sh
 ```
 
 Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.31 \
+VERSION=v0.1.32 \
 ./scripts/build-app.sh
 ```
 
@@ -159,16 +159,16 @@ VERSION=v0.1.31 \
 
 ```bash
 for ARCHITECTURE in x86_64 arm64 universal; do
-  VERSION=v0.1.31 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
+  VERSION=v0.1.32 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
 done
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.31-macOS-x86_64.zip
-dist/Sub2APIStatusBar-0.1.31-macOS-arm64.zip
-dist/Sub2APIStatusBar-0.1.31-macOS-universal.zip
+dist/Sub2APIStatusBar-0.1.32-macOS-x86_64.zip
+dist/Sub2APIStatusBar-0.1.32-macOS-arm64.zip
+dist/Sub2APIStatusBar-0.1.32-macOS-universal.zip
 ```
 
 Each ZIP has a matching `.sha256` file. The checksum manifest references the archive by file name only, so downloaded assets can be verified together from any directory with `shasum -a 256 -c <archive>.sha256`.
@@ -177,7 +177,7 @@ By default, `package-release.sh` creates an ad-hoc signed archive. You can pass 
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.31 \
+VERSION=v0.1.32 \
 ARCHITECTURE=universal \
 ./scripts/package-release.sh
 ```
@@ -193,7 +193,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.31 \
+VERSION=v0.1.32 \
 ./scripts/notarize-release.sh
 ```
 

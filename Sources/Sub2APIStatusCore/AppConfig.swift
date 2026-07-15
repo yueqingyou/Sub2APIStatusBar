@@ -177,6 +177,7 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
     case reasoningEffort
     case contextLength
     case fast
+    case requestType
     case inputPrice
     case outputPrice
     case rpm
@@ -202,6 +203,8 @@ public enum MenuBarDisplayItem: String, Codable, CaseIterable, Identifiable, Sen
             return "Context Length"
         case .fast:
             return "Service Tier"
+        case .requestType:
+            return "Request Type"
         case .inputPrice:
             return "Input Price"
         case .outputPrice:

@@ -1915,6 +1915,11 @@ public struct MonitorSnapshot: Equatable, Sendable {
            latestUsage?.menuBarServiceTierName != rawTier {
             lines.append("Service Tier: \(rawTier)")
         }
+        let requestType = StatusFormatters.requestTypePresentation(latestUsage?.requestType)
+        if cells.contains(where: { $0.label == menuBarCellLabel(for: .requestType) }),
+           let rawValue = requestType.rawValue {
+            lines.append("Request Type: \(requestType.displayName) (\(rawValue))")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -1978,9 +1983,11 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return compact ? context.replacingOccurrences(of: " ctx", with: "c") : context
         case .fast:
             guard let latestUsage else {
-                return "no"
+                return "No"
             }
             return latestUsage.menuBarServiceTierName
+        case .requestType:
+            return StatusFormatters.requestTypePresentation(latestUsage?.requestType).compactName
         case .inputPrice:
             guard let price = latestUsage?.inputPricePerMillion else {
                 return "$0/M"
@@ -2037,6 +2044,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return 50
         case .fast:
             return 40
+        case .requestType:
+            return 56
         case .inputPrice, .outputPrice:
             return 54
         case .rpm:
@@ -2056,8 +2065,10 @@ public struct MonitorSnapshot: Equatable, Sendable {
         switch item {
         case .model where value == "No model":
             return .secondary
-        case .fast where value == "no":
+        case .fast where value == "No":
             return .secondary
+        case .requestType:
+            return StatusFormatters.requestTypePresentation(latestUsage?.requestType).isKnown ? .primary : .secondary
         case .realtimeConcurrency where value == "0C" || value == "0 concurrent":
             return .secondary
         default:
@@ -2086,6 +2097,8 @@ public struct MonitorSnapshot: Equatable, Sendable {
             return "Ctx"
         case .fast:
             return "Tier"
+        case .requestType:
+            return "Type"
         case .inputPrice:
             return "In"
         case .outputPrice:

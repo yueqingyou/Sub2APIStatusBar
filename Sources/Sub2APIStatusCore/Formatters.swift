@@ -36,6 +36,28 @@ public struct ReasoningEffortPresentation: Equatable, Sendable {
     }
 }
 
+public struct RequestTypePresentation: Equatable, Sendable {
+    public let rawValue: String?
+    public let displayName: String
+    public let compactName: String
+    public let isProvided: Bool
+    public let isKnown: Bool
+
+    public init(
+        rawValue: String?,
+        displayName: String,
+        compactName: String,
+        isProvided: Bool,
+        isKnown: Bool
+    ) {
+        self.rawValue = rawValue
+        self.displayName = displayName
+        self.compactName = compactName
+        self.isProvided = isProvided
+        self.isKnown = isKnown
+    }
+}
+
 public enum StatusFormatters {
     public static func modelDisplayName(_ model: String) -> String {
         modelPresentation(model).displayName
@@ -105,25 +127,25 @@ public enum StatusFormatters {
             return ReasoningEffortPresentation(
                 rawValue: rawValue,
                 displayName: "None",
-                compactName: "no",
+                compactName: "No",
                 isLossy: false,
                 isProvided: false
             )
         case "minimal":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Minimal", compactName: "min", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Minimal", compactName: "Min", isLossy: false, isProvided: true)
         case "low":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Low", compactName: "low", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Low", compactName: "Low", isLossy: false, isProvided: true)
         case "medium":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Medium", compactName: "med", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Medium", compactName: "Med", isLossy: false, isProvided: true)
         case "high":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "High", compactName: "high", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "High", compactName: "High", isLossy: false, isProvided: true)
         case "xhigh", "extrahigh":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Extra High", compactName: "xhigh", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Extra High", compactName: "XHigh", isLossy: false, isProvided: true)
         case "max":
-            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Max", compactName: "max", isLossy: false, isProvided: true)
+            return ReasoningEffortPresentation(rawValue: rawValue, displayName: "Max", compactName: "Max", isLossy: false, isProvided: true)
         default:
             let value = rawValue ?? ""
-            let compactName = String(normalized.prefix(5))
+            let compactName = capitalizingFirstCharacter(String(normalized.prefix(5)))
             return ReasoningEffortPresentation(
                 rawValue: rawValue,
                 displayName: value,
@@ -131,6 +153,27 @@ public enum StatusFormatters {
                 isLossy: compactName != value,
                 isProvided: true
             )
+        }
+    }
+
+    public static func requestTypePresentation(_ requestType: String?) -> RequestTypePresentation {
+        let trimmed = requestType?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawValue = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+        let normalized = rawValue?.lowercased() ?? ""
+
+        switch normalized {
+        case "":
+            return RequestTypePresentation(rawValue: nil, displayName: "None", compactName: "No", isProvided: false, isKnown: false)
+        case "stream":
+            return RequestTypePresentation(rawValue: rawValue, displayName: "SSE", compactName: "SSE", isProvided: true, isKnown: true)
+        case "ws_v2":
+            return RequestTypePresentation(rawValue: rawValue, displayName: "WebSocket", compactName: "WS", isProvided: true, isKnown: true)
+        case "sync":
+            return RequestTypePresentation(rawValue: rawValue, displayName: "Synchronous", compactName: "Sync", isProvided: true, isKnown: true)
+        case "unknown":
+            return RequestTypePresentation(rawValue: rawValue, displayName: "Unknown", compactName: "Unknown", isProvided: true, isKnown: false)
+        default:
+            return RequestTypePresentation(rawValue: rawValue, displayName: "Unknown", compactName: "Unknown", isProvided: true, isKnown: false)
         }
     }
 
@@ -323,5 +366,12 @@ public enum StatusFormatters {
             .replacingOccurrences(of: "_", with: "")
             .replacingOccurrences(of: "-", with: "")
             .replacingOccurrences(of: " ", with: "")
+    }
+
+    private static func capitalizingFirstCharacter(_ value: String) -> String {
+        guard let first = value.first else {
+            return value
+        }
+        return first.uppercased() + String(value.dropFirst())
     }
 }

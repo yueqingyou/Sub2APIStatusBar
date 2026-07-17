@@ -2039,7 +2039,7 @@ public struct MonitorSnapshot: Equatable, Sendable {
         case .model:
             return 100
         case .reasoningEffort:
-            return 40
+            return 44
         case .contextLength:
             return 50
         case .fast:

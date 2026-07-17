@@ -7051,7 +7051,7 @@ func testMonitorSnapshotMenuBarPresentationUsesReadableCellWidthsForCommonStatus
     XCTAssertEqual(presentation.cells, [
         MenuBarStatusCell(value: "$597.00", label: "Cost", width: 58),
         MenuBarStatusCell(value: "GPT-5.5", label: "Model", width: 100),
-        MenuBarStatusCell(value: "No", label: "Eff", width: 40),
+        MenuBarStatusCell(value: "No", label: "Eff", width: 44),
         MenuBarStatusCell(value: "Std", label: "Tier", width: 40),
         MenuBarStatusCell(value: "1N", label: "Acct", width: 36),
         MenuBarStatusCell(value: "0", label: "T0R0Q0D0E0", width: 96, valueTone: .secondary),
@@ -7131,7 +7131,7 @@ func testMonitorSnapshotMenuBarPresentationKeepsAllAdminItemsReadable() {
         presentation.bottomRow,
         "Cost | Req | Model | Eff | Ctx | Tier | Type | In | Out | Conc | Acct | 5h Left | 7d Left | T33R2Q0D0E0"
     )
-    XCTAssertEqual(presentation.cells.map { $0.width }, [58, 36, 100, 40, 50, 40, 56, 54, 54, 36, 36, 64, 64, 96])
+    XCTAssertEqual(presentation.cells.map { $0.width }, [58, 36, 100, 44, 50, 40, 56, 54, 54, 36, 36, 64, 64, 96])
     XCTAssertFalse(presentation.topRow.contains("i$"))
     XCTAssertFalse(presentation.topRow.contains("o$"))
 }
@@ -7164,15 +7164,15 @@ func testMonitorSnapshotMenuBarPresentationTreatsNoneReasoningEffortAsNo() {
     XCTAssertEqual(presentation.topRow, "No")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "No", label: "Eff", width: 40)
+        MenuBarStatusCell(value: "No", label: "Eff", width: 44)
     ])
 }
 
-func testMonitorSnapshotMenuBarPresentationFitsGPT56SolAndMaxReasoning() {
+func testMonitorSnapshotMenuBarPresentationFitsGPT56SolAndXHighReasoning() {
     let latestUsage = UsageLog(
         id: 133608,
         model: "gpt-5.6-sol",
-        reasoningEffort: "max"
+        reasoningEffort: "xhigh"
     )
     let snapshot = MonitorSnapshot(
         mode: .user,
@@ -7193,9 +7193,9 @@ func testMonitorSnapshotMenuBarPresentationFitsGPT56SolAndMaxReasoning() {
 
     let presentation = snapshot.menuBarStatusPresentation(config: config)
 
-    XCTAssertEqual(presentation.topRow, "GPT-5.6-Sol | Max")
+    XCTAssertEqual(presentation.topRow, "GPT-5.6-Sol | XHigh")
     XCTAssertEqual(presentation.bottomRow, "Model | Eff")
-    XCTAssertEqual(presentation.cells.map(\.width), [100, 40])
+    XCTAssertEqual(presentation.cells.map(\.width), [100, 44])
     XCTAssertTrue(snapshot.menuBarTooltip(statusText: "OK", config: config).contains("Model: gpt-5.6-sol"))
 }
 
@@ -7248,7 +7248,7 @@ func testMonitorSnapshotMenuBarPresentationShowsDashReasoningEffortAsNo() {
     XCTAssertEqual(presentation.topRow, "No")
     XCTAssertEqual(presentation.bottomRow, "Eff")
     XCTAssertEqual(presentation.cells, [
-        MenuBarStatusCell(value: "No", label: "Eff", width: 40)
+        MenuBarStatusCell(value: "No", label: "Eff", width: 44)
     ])
 }
 

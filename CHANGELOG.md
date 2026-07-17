@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.33
+
+- Fixed the menu bar reasoning-effort cell width so `XHigh` is displayed completely instead of being truncated.
+- Kept shorter reasoning-effort values compact through the existing measured, stepped adaptive-width layout.
+- Added regression coverage for the `GPT-5.6-Sol` and `XHigh` menu bar combination and synchronized related layout assertions.
+
 ## v0.1.32
 
 - Added an opt-in request type menu bar item backed strictly by the latest usage record's `request_type`, with `SSE`, `WS`, `Sync`, `Unknown`, and `No` states.

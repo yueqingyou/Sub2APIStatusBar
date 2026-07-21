@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sub2APIStatusBar"
-VERSION="${VERSION:-v0.1.33}"
+VERSION="${VERSION:-v0.1.34}"
 SIGN_IDENTITY="${SIGN_IDENTITY:-}"
 ARCHITECTURE="${ARCHITECTURE:-universal}"
 DIST_DIR="$ROOT_DIR/dist"

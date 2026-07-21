@@ -51,16 +51,15 @@ struct UserAccountCard: View {
             Spacer()
 
             if let status = user.status, !status.isEmpty {
-                Text(strings.activeStatus(status))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(status.lowercased() == "active" ? ClaudeTheme.success : .secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background((status.lowercased() == "active" ? ClaudeTheme.success : ClaudeTheme.muted).opacity(0.14), in: Capsule())
+                StatusPill(
+                    title: strings.activeStatus(status),
+                    tint: status.lowercased() == "active" ? ClaudeTheme.success : ClaudeTheme.slate,
+                    systemImage: status.lowercased() == "active" ? "checkmark" : nil
+                )
             }
         }
-        .padding(10)
-        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(12)
+        .glassSurface(cornerRadius: 12)
     }
 
     private var strings: AppStrings {
@@ -78,7 +77,7 @@ struct MonitoredUserCard: View {
         HStack(spacing: 10) {
             ZStack {
                 Circle()
-                    .fill(ClaudeTheme.warning.opacity(0.14))
+                    .fill(ClaudeTheme.warning.opacity(0.08))
                 Image(systemName: "scope")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(ClaudeTheme.warning)
@@ -109,8 +108,8 @@ struct MonitoredUserCard: View {
                 }
             }
         }
-        .padding(10)
-        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(12)
+        .glassSurface(cornerRadius: 12)
     }
 
     private var strings: AppStrings {
@@ -136,13 +135,20 @@ struct DefaultAvatar: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(ClaudeTheme.avatarBackground)
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [ClaudeTheme.avatarBackground, ClaudeTheme.ink],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
             Text(initials)
                 .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(ClaudeTheme.avatarForeground)
         }
         .frame(width: 42, height: 42)
+        .shadow(color: ClaudeTheme.accent.opacity(0.16), radius: 5, y: 2)
     }
 }
 
@@ -154,10 +160,14 @@ struct MetricGrid: View {
             ForEach(items) { item in
                 HStack(spacing: 9) {
                     if let systemImage = item.systemImage {
-                        SafeSystemImage(systemName: systemImage)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(item.tint)
-                            .frame(width: 24, height: 24)
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(item.tint.opacity(0.075))
+                            SafeSystemImage(systemName: systemImage)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(item.tint)
+                        }
+                        .frame(width: 28, height: 28)
                     }
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -188,9 +198,9 @@ struct MetricGrid: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(minHeight: 58)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+                .glassSurface(cornerRadius: 12)
             }
         }
     }
@@ -210,12 +220,11 @@ struct SubscriptionQuotaCard: View {
                 Text(item.groupName)
                     .font(.headline)
                 Spacer()
-                Text(strings.activeStatus(item.status))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(item.status == "active" ? ClaudeTheme.success : .secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background((item.status == "active" ? ClaudeTheme.success : ClaudeTheme.muted).opacity(0.14), in: Capsule())
+                StatusPill(
+                    title: strings.activeStatus(item.status),
+                    tint: item.status == "active" ? ClaudeTheme.success : ClaudeTheme.slate,
+                    systemImage: item.status == "active" ? "checkmark" : nil
+                )
             }
 
             if let days = item.daysRemaining {
@@ -294,7 +303,7 @@ struct SubscriptionEmptyState: View {
         HStack(alignment: .center, spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(ClaudeTheme.slate.opacity(0.14))
+                    .fill(ClaudeTheme.slate.opacity(0.08))
                 Image(systemName: "tray")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(ClaudeTheme.slate)
@@ -314,12 +323,11 @@ struct SubscriptionEmptyState: View {
             Spacer(minLength: 8)
 
             if activeCount > 0 {
-                Text(strings.phrase("\(activeCount) 个活跃", "\(activeCount) active"))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(ClaudeTheme.success)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(ClaudeTheme.success.opacity(0.14), in: Capsule())
+                StatusPill(
+                    title: strings.phrase("\(activeCount) 个活跃", "\(activeCount) active"),
+                    tint: ClaudeTheme.success,
+                    systemImage: "checkmark"
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -376,8 +384,7 @@ struct QuotaProgressRow: View {
                 }
             }
 
-            ProgressView(value: normalizedProgress)
-                .tint(tint)
+            GlassProgressBar(value: normalizedProgress, tint: tint)
 
             if let resetInSeconds {
                 Text(strings.phrase(
@@ -442,8 +449,11 @@ struct ModelDistributionView: View {
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        ProgressView(value: Double(item.totalTokens) / maximumTokens)
-                            .tint(ClaudeTheme.slate)
+                        GlassProgressBar(
+                            value: Double(item.totalTokens) / maximumTokens,
+                            tint: ClaudeTheme.slate,
+                            height: 5
+                        )
                     }
                     if item.id != visibleModels.last?.id {
                         Divider()
@@ -475,6 +485,10 @@ struct TokenTrendView: View {
     @State private var metric: Metric = .total
 
     var body: some View {
+        let metricValues = values
+        let maximumValue = max(metricValues.max() ?? 0, 1)
+        let chartPoints = parsedPoints(values: metricValues)
+
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Picker("", selection: $metric) {
@@ -489,9 +503,9 @@ struct TokenTrendView: View {
 
             HStack(spacing: 6) {
                 VStack(alignment: .trailing) {
-                    Text(StatusFormatters.compactNumber(Int64(maximum)))
+                    Text(StatusFormatters.compactNumber(Int64(maximumValue)))
                     Spacer()
-                    Text(StatusFormatters.compactNumber(Int64(maximum / 2)))
+                    Text(StatusFormatters.compactNumber(Int64(maximumValue / 2)))
                     Spacer()
                     Text("0")
                 }
@@ -503,16 +517,16 @@ struct TokenTrendView: View {
                     ZStack {
                         grid(in: proxy.size)
                             .stroke(ClaudeTheme.border, lineWidth: 1)
-                        trendPath(in: proxy.size)
+                        trendPath(in: proxy.size, points: chartPoints, maximum: maximumValue)
                             .stroke(metricColor, style: StrokeStyle(lineWidth: 2.25, lineCap: .round, lineJoin: .round))
                     }
                 }
             }
 
             HStack {
-                Text(parsedPoints.first?.label ?? "")
+                Text(chartPoints.first?.label ?? "")
                 Spacer()
-                Text(parsedPoints.last?.label ?? "")
+                Text(chartPoints.last?.label ?? "")
             }
             .font(.caption2)
             .foregroundStyle(ClaudeTheme.secondaryText)
@@ -537,10 +551,6 @@ struct TokenTrendView: View {
         }
     }
 
-    private var maximum: Double {
-        max(values.max() ?? 0, 1)
-    }
-
     private func grid(in size: CGSize) -> Path {
         var path = Path()
         for ratio in [0.0, 0.5, 1.0] {
@@ -551,16 +561,19 @@ struct TokenTrendView: View {
         return path
     }
 
-    private func trendPath(in size: CGSize) -> Path {
-        let datedPoints = parsedPoints
-        guard let firstDate = datedPoints.first?.date,
-              let lastDate = datedPoints.last?.date else {
+    private func trendPath(
+        in size: CGSize,
+        points: [(date: Date, value: Double, label: String)],
+        maximum: Double
+    ) -> Path {
+        guard let firstDate = points.first?.date,
+              let lastDate = points.last?.date else {
             return Path()
         }
         let duration = max(lastDate.timeIntervalSince(firstDate), 1)
         var path = Path()
         var previousDate: Date?
-        for point in datedPoints {
+        for point in points {
             let x = size.width * CGFloat(point.date.timeIntervalSince(firstDate) / duration)
             let y = size.height - size.height * CGFloat(point.value / maximum)
             if let previousDate, point.date.timeIntervalSince(previousDate) <= 36 * 60 * 60 {
@@ -573,15 +586,19 @@ struct TokenTrendView: View {
         return path
     }
 
-    private var parsedPoints: [(date: Date, value: Double, label: String)] {
+    private func parsedPoints(values: [Double]) -> [(date: Date, value: Double, label: String)] {
+        zip(points, values).compactMap { point, value in
+            Self.dateFormatter.date(from: point.date).map { ($0, value, point.date) }
+        }.sorted { $0.date < $1.date }
+    }
+
+    private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        return zip(points, values).compactMap { point, value in
-            formatter.date(from: point.date).map { ($0, value, point.date) }
-        }.sorted { $0.date < $1.date }
-    }
+        return formatter
+    }()
 
     private var metricColor: Color {
         switch metric {

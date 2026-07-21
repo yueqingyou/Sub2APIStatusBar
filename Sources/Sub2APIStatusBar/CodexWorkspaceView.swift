@@ -28,26 +28,32 @@ struct CodexWorkspaceView: View {
                     }
                 }
 
-                Picker("", selection: $selection) {
-                    Text(strings.phrase("任务动态", "Activity")).tag(Section.activity)
-                    Text(strings.phrase("节点管理", "Nodes")).tag(Section.nodes)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                GlassSegmentedControl(
+                    selection: $selection,
+                    items: [
+                        GlassSegmentedItem(
+                            value: .activity,
+                            title: strings.phrase("任务动态", "Activity"),
+                            systemImage: "waveform.path.ecg"
+                        ),
+                        GlassSegmentedItem(
+                            value: .nodes,
+                            title: strings.phrase("节点管理", "Nodes"),
+                            systemImage: "server.rack"
+                        ),
+                    ]
+                )
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
             .padding(.bottom, 8)
 
-            ZStack {
-                taskView
-                    .opacity(selection == .activity ? 1 : 0)
-                    .allowsHitTesting(selection == .activity)
-                    .accessibilityHidden(selection != .activity)
-                nodeView
-                    .opacity(selection == .nodes ? 1 : 0)
-                    .allowsHitTesting(selection == .nodes)
-                    .accessibilityHidden(selection != .nodes)
+            Group {
+                if selection == .activity {
+                    taskView
+                } else {
+                    nodeView
+                }
             }
         }
     }

@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import Sub2APIStatusCore
 
@@ -17,17 +18,22 @@ struct LoginPanel: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(ClaudeTheme.accent.opacity(0.16))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(ClaudeTheme.elevatedCard)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(ClaudeTheme.accent.opacity(0.08))
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
                     Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
-                        .font(.system(size: 32, weight: .semibold))
+                        .font(.system(size: 30, weight: .semibold))
                         .foregroundStyle(ClaudeTheme.accent)
                 }
-                .frame(width: 54, height: 54)
+                .frame(width: 56, height: 56)
+                .shadow(color: ClaudeTheme.glassShadow, radius: 7, y: 3)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("TokenRouter")
-                        .font(.system(size: 26, weight: .semibold, design: .rounded))
+                        .font(.system(size: 25, weight: .semibold, design: .rounded))
                     Text(strings.phrase("连接你的服务", "Connect your server"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -36,19 +42,25 @@ struct LoginPanel: View {
 
             GlassCard {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker(strings.phrase("语言", "Language"), selection: languageBinding) {
-                        ForEach([AppLanguage.zhHans, .en]) { language in
-                            Text(strings.languageName(language)).tag(language)
-                        }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(strings.phrase("语言", "Language"))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                        GlassSegmentedControl(
+                            selection: languageBinding,
+                            items: languageItems
+                        )
                     }
-                    .pickerStyle(.segmented)
 
-                    Picker(strings.phrase("外观", "Appearance"), selection: appearanceBinding) {
-                        ForEach(AppAppearance.allCases) { appearance in
-                            Text(strings.appearanceName(appearance)).tag(appearance)
-                        }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(strings.phrase("外观", "Appearance"))
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                        GlassSegmentedControl(
+                            selection: appearanceBinding,
+                            items: appearanceItems
+                        )
                     }
-                    .pickerStyle(.segmented)
 
                     TextField(strings.phrase("服务地址", "Server URL"), text: $model.settingsDraft.baseURL)
                         .themedTextField()
@@ -136,11 +148,10 @@ struct LoginPanel: View {
             }
             .buttonStyle(.borderless)
         }
-        .padding(20)
+        .padding(22)
         .frame(width: 520, height: 680)
         .background(PanelBackground())
         .environment(\.appLanguage, model.settingsDraft.language)
-        .appAppearance(model.settingsDraft.appearance)
         .onAppear {
             DispatchQueue.main.async {
                 focusedField = model.settingsDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .baseURL : .email
@@ -169,15 +180,36 @@ struct LoginPanel: View {
             }
         )
     }
+
+    private var languageItems: [GlassSegmentedItem<AppLanguage>] {
+        [AppLanguage.zhHans, .en].map {
+            GlassSegmentedItem(value: $0, title: strings.languageName($0))
+        }
+    }
+
+    private var appearanceItems: [GlassSegmentedItem<AppAppearance>] {
+        AppAppearance.allCases.map {
+            GlassSegmentedItem(
+                value: $0,
+                title: strings.appearanceName($0),
+                systemImage: $0.systemImageName
+            )
+        }
+    }
 }
 
 struct SettingsView: View {
-    @ObservedObject var model: MonitorViewModel
+    let model: MonitorViewModel
+    @StateObject private var renderState: SettingsRenderState
     @FocusState private var focusedField: SettingsField?
     @State private var adminUserSearchText = ""
-    @State private var showsDeferredSections = false
 
     private static let maxAdminUserPickerOptions = 20
+
+    init(model: MonitorViewModel) {
+        self.model = model
+        _renderState = StateObject(wrappedValue: SettingsRenderState(model: model))
+    }
 
     var body: some View {
         ScrollView {
@@ -186,21 +218,19 @@ struct SettingsView: View {
 
                 generalSettingsCard
 
-                if showsDeferredSections {
-                    menuBarSettingsCard
+                menuBarSettingsCard
 
-                    taskConsoleSettingsCard
+                taskConsoleSettingsCard
 
-                    if isAdminAccount {
-                        adminMonitoringSettingsCard
-                    }
-
-                    UpdateSettingsSection(model: model)
-
-                    connectionSection
+                if isAdminAccount {
+                    adminMonitoringSettingsCard
                 }
 
-                if let error = model.settingsError {
+                UpdateSettingsSection(model: model)
+
+                connectionSection
+
+                if let error = renderState.settingsError {
                     MessageRow(message: error)
                 }
             }
@@ -211,15 +241,6 @@ struct SettingsView: View {
             if focus == nil {
                 model.scheduleSettingsAutosave(refreshAfterSave: true)
             }
-        }
-        .onAppear {
-            showsDeferredSections = false
-            DispatchQueue.main.async {
-                showsDeferredSections = true
-            }
-        }
-        .onDisappear {
-            showsDeferredSections = false
         }
     }
 
@@ -237,41 +258,35 @@ struct SettingsView: View {
                     .font(.headline)
 
                 settingsRow(strings.phrase("语言", "Language")) {
-                    Picker("", selection: languageBinding) {
-                        ForEach([AppLanguage.zhHans, .en]) { language in
-                            Text(strings.languageName(language)).tag(language)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
+                    GlassSegmentedControl(
+                        selection: languageBinding,
+                        items: languageItems
+                    )
                 }
 
                 settingsRow(strings.phrase("外观", "Appearance")) {
-                    Picker("", selection: appearanceBinding) {
-                        ForEach(AppAppearance.allCases) { appearance in
-                            Text(strings.appearanceName(appearance)).tag(appearance)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
+                    GlassSegmentedControl(
+                        selection: appearanceBinding,
+                        items: appearanceItems
+                    )
                 }
 
                 settingsRow(strings.phrase("启动", "Startup")) {
-                    Toggle(strings.phrase("登录时打开", "Open at Login"), isOn: launchAtLoginBinding)
+                    GlassCheckbox(
+                        isOn: launchAtLoginBinding,
+                        title: strings.phrase("登录时打开", "Open at Login")
+                    )
                 }
 
                 settingsRow("Base URL") {
-                    TextField("https://sub2api.example.com", text: $model.settingsDraft.baseURL)
+                    TextField("https://sub2api.example.com", text: baseURLBinding)
                         .themedTextField()
                         .focused($focusedField, equals: .baseURL)
-                        .onChange(of: model.settingsDraft.baseURL) { _ in
-                            model.scheduleSettingsAutosave(refreshAfterSave: false)
-                        }
                 }
 
                 settingsRow(strings.phrase("刷新", "Refresh")) {
                     RefreshIntervalControl(
-                        seconds: $model.settingsDraft.refreshIntervalSeconds,
+                        seconds: refreshIntervalBinding,
                         strings: strings
                     ) {
                         model.scheduleSettingsAutosave(refreshAfterSave: false)
@@ -287,16 +302,16 @@ struct SettingsView: View {
                 Text(strings.phrase("菜单栏", "Menu Bar"))
                     .font(.headline)
 
-                Toggle(strings.phrase("在菜单栏显示文字", "Show text in menu bar"), isOn: showsMenuBarTextBinding)
+                GlassCheckbox(
+                    isOn: showsMenuBarTextBinding,
+                    title: strings.phrase("在菜单栏显示文字", "Show text in menu bar")
+                )
 
                 settingsRow(strings.phrase("统计窗口", "Usage window")) {
-                    Picker("", selection: menuBarUsageWindowBinding) {
-                        ForEach(MenuBarUsageWindow.allCases) { window in
-                            Text(strings.usageWindowName(window)).tag(window)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
+                    GlassSegmentedControl(
+                        selection: menuBarUsageWindowBinding,
+                        items: usageWindowItems
+                    )
                 }
 
                 VStack(alignment: .leading, spacing: 9) {
@@ -305,7 +320,11 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
                         ForEach(availableMenuBarDisplayItems) { item in
-                            Toggle(strings.menuBarItemName(item), isOn: menuBarItemBinding(item))
+                            GlassCheckbox(
+                                isOn: menuBarItemBinding(item),
+                                title: strings.menuBarItemName(item),
+                                compact: true
+                            )
                         }
                     }
                 }
@@ -389,7 +408,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if model.snapshot.realtimeConcurrency != nil {
+                if renderState.hasRealtimeConcurrency {
                     Text(strings.phrase("实时并发来自管理员运维接口。", "Realtime concurrency comes from the admin ops endpoint."))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -404,36 +423,33 @@ struct SettingsView: View {
                 Text(strings.phrase("登录", "Login"))
                     .font(.headline)
 
-                SecureField("Bearer Token", text: $model.settingsDraft.authToken)
+                SecureField("Bearer Token", text: authTokenBinding)
                     .themedTextField()
                     .focused($focusedField, equals: .authToken)
-                    .onChange(of: model.settingsDraft.authToken) { _ in
-                        model.scheduleSettingsAutosave(refreshAfterSave: false)
-                    }
 
-                TextField("Email", text: $model.loginEmail)
+                TextField("Email", text: loginEmailBinding)
                     .themedTextField()
-                SecureField(strings.phrase("密码", "Password"), text: $model.loginPassword)
+                SecureField(strings.phrase("密码", "Password"), text: loginPasswordBinding)
                     .themedTextField()
                 Button {
                     model.loginAndSave()
                 } label: {
                     Label(strings.phrase("登录并保存令牌", "Login and Save Token"), systemImage: "key")
                 }
-                .disabled(!LoginFormState(baseURL: model.settingsDraft.baseURL, email: model.loginEmail, password: model.loginPassword).canSubmit || model.isLoggingIn)
+                .disabled(!LoginFormState(baseURL: renderState.draft.baseURL, email: renderState.loginEmail, password: renderState.loginPassword).canSubmit || renderState.isLoggingIn)
 
                 Button(role: .destructive) {
                     model.disconnect()
                 } label: {
                     Label(strings.phrase("断开连接", "Disconnect"), systemImage: "person.crop.circle.badge.xmark")
                 }
-                .disabled(model.config.authToken.isEmpty && model.settingsDraft.authToken.isEmpty)
+                .disabled(!renderState.configHasAuthToken && renderState.draft.authToken.isEmpty)
             }
         }
     }
 
     private func settingsRow<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             Text(label)
                 .font(.callout.weight(.semibold))
                 .opacity(label.isEmpty ? 0 : 1)
@@ -445,12 +461,12 @@ struct SettingsView: View {
     }
 
     private var strings: AppStrings {
-        AppStrings(model.settingsDraft.language)
+        AppStrings(renderState.draft.language)
     }
 
     private var languageBinding: Binding<AppLanguage> {
         Binding(
-            get: { model.settingsDraft.language },
+            get: { renderState.draft.language },
             set: { value in
                 model.applySettingsChange(refreshAfterSave: false) { $0.language = value }
             }
@@ -459,7 +475,7 @@ struct SettingsView: View {
 
     private var appearanceBinding: Binding<AppAppearance> {
         Binding(
-            get: { model.settingsDraft.appearance },
+            get: { renderState.draft.appearance },
             set: { value in
                 model.applySettingsChange(refreshAfterSave: false) { $0.appearance = value }
             }
@@ -468,7 +484,7 @@ struct SettingsView: View {
 
     private var showsMenuBarTextBinding: Binding<Bool> {
         Binding(
-            get: { model.settingsDraft.showsMenuBarText },
+            get: { renderState.draft.showsMenuBarText },
             set: { value in
                 model.applySettingsChange(refreshAfterSave: false) { $0.showsMenuBarText = value }
             }
@@ -477,7 +493,7 @@ struct SettingsView: View {
 
     private var menuBarUsageWindowBinding: Binding<MenuBarUsageWindow> {
         Binding(
-            get: { model.settingsDraft.menuBarUsageWindow },
+            get: { renderState.draft.menuBarUsageWindow },
             set: { value in
                 model.applySettingsChange(refreshAfterSave: true) { $0.menuBarUsageWindow = value }
             }
@@ -486,7 +502,7 @@ struct SettingsView: View {
 
     private var launchAtLoginBinding: Binding<Bool> {
         Binding(
-            get: { model.settingsDraft.launchAtLogin },
+            get: { renderState.draft.launchAtLogin },
             set: { value in
                 model.applySettingsChange(refreshAfterSave: false) { $0.launchAtLogin = value }
             }
@@ -495,15 +511,37 @@ struct SettingsView: View {
 
     private var codexTaskTimelineEventLimitBinding: Binding<Int> {
         Binding(
-            get: { model.settingsDraft.codexTaskTimelineEventLimit },
+            get: { renderState.draft.codexTaskTimelineEventLimit },
             set: { value in
                 model.applySettingsChange(refreshAfterSave: false) { $0.codexTaskTimelineEventLimit = value }
             }
         )
     }
 
+    private var languageItems: [GlassSegmentedItem<AppLanguage>] {
+        [AppLanguage.zhHans, .en].map {
+            GlassSegmentedItem(value: $0, title: strings.languageName($0))
+        }
+    }
+
+    private var appearanceItems: [GlassSegmentedItem<AppAppearance>] {
+        AppAppearance.allCases.map {
+            GlassSegmentedItem(
+                value: $0,
+                title: strings.appearanceName($0),
+                systemImage: $0.systemImageName
+            )
+        }
+    }
+
+    private var usageWindowItems: [GlassSegmentedItem<MenuBarUsageWindow>] {
+        MenuBarUsageWindow.allCases.map {
+            GlassSegmentedItem(value: $0, title: strings.usageWindowName($0))
+        }
+    }
+
     private var isAdminAccount: Bool {
-        model.snapshot.currentUser?.isAdmin == true
+        renderState.isAdminAccount
     }
 
     private var availableMenuBarDisplayItems: [MenuBarDisplayItem] {
@@ -511,7 +549,7 @@ struct SettingsView: View {
     }
 
     private var adminUserOptions: [AdminUserSummary] {
-        return model.adminUsers
+        renderState.adminUsers
     }
 
     private var visibleAdminUserOptions: [AdminUserSummary] {
@@ -546,8 +584,8 @@ struct SettingsView: View {
     }
 
     private var selectedAdminMonitoredUserID: Int64 {
-        model.settingsDraft.adminMonitoredUserID
-            ?? model.snapshot.currentUser?.id
+        renderState.draft.adminMonitoredUserID
+            ?? renderState.currentUserID
             ?? adminUserOptions.first?.id
             ?? 0
     }
@@ -569,7 +607,7 @@ struct SettingsView: View {
     private func menuBarItemBinding(_ item: MenuBarDisplayItem) -> Binding<Bool> {
         Binding(
             get: {
-                model.settingsDraft.menuBarDisplayItems.contains(item)
+                renderState.draft.menuBarDisplayItems.contains(item)
             },
             set: { isEnabled in
                 model.applySettingsChange(refreshAfterSave: false) { draft in
@@ -590,6 +628,148 @@ struct SettingsView: View {
                 }
             }
         )
+    }
+
+    private var baseURLBinding: Binding<String> {
+        Binding(
+            get: { renderState.draft.baseURL },
+            set: { value in
+                model.settingsDraft.baseURL = value
+                model.scheduleSettingsAutosave(refreshAfterSave: false)
+            }
+        )
+    }
+
+    private var authTokenBinding: Binding<String> {
+        Binding(
+            get: { renderState.draft.authToken },
+            set: { value in
+                model.settingsDraft.authToken = value
+                model.scheduleSettingsAutosave(refreshAfterSave: false)
+            }
+        )
+    }
+
+    private var refreshIntervalBinding: Binding<Double> {
+        Binding(
+            get: { renderState.draft.refreshIntervalSeconds },
+            set: { model.settingsDraft.refreshIntervalSeconds = $0 }
+        )
+    }
+
+    private var loginEmailBinding: Binding<String> {
+        Binding(
+            get: { renderState.loginEmail },
+            set: { model.loginEmail = $0 }
+        )
+    }
+
+    private var loginPasswordBinding: Binding<String> {
+        Binding(
+            get: { renderState.loginPassword },
+            set: { model.loginPassword = $0 }
+        )
+    }
+}
+
+@MainActor
+private final class SettingsRenderState: ObservableObject {
+    @Published private(set) var draft: AppConfig
+    @Published private(set) var settingsError: String?
+    @Published private(set) var adminUsers: [AdminUserSummary]
+    @Published private(set) var isAdminAccount: Bool
+    @Published private(set) var currentUserID: Int64?
+    @Published private(set) var hasRealtimeConcurrency: Bool
+    @Published private(set) var loginEmail: String
+    @Published private(set) var loginPassword: String
+    @Published private(set) var isLoggingIn: Bool
+    @Published private(set) var configHasAuthToken: Bool
+
+    private var cancellables: Set<AnyCancellable> = []
+
+    init(model: MonitorViewModel) {
+        draft = model.settingsDraft
+        settingsError = model.settingsError
+        adminUsers = model.adminUsers
+        isAdminAccount = model.snapshot.currentUser?.isAdmin == true
+        currentUserID = model.snapshot.currentUser?.id
+        hasRealtimeConcurrency = model.snapshot.realtimeConcurrency != nil
+        loginEmail = model.loginEmail
+        loginPassword = model.loginPassword
+        isLoggingIn = model.isLoggingIn
+        configHasAuthToken = !model.config.authToken.isEmpty
+
+        model.$settingsDraft
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.draft = $0 }
+            .store(in: &cancellables)
+        model.$settingsError
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.settingsError = $0 }
+            .store(in: &cancellables)
+        model.$adminUsers
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.adminUsers = $0 }
+            .store(in: &cancellables)
+        model.$snapshot
+            .map {
+                SettingsAccessState(
+                    isAdminAccount: $0.currentUser?.isAdmin == true,
+                    currentUserID: $0.currentUser?.id,
+                    hasRealtimeConcurrency: $0.realtimeConcurrency != nil
+                )
+            }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] accessState in
+                self?.isAdminAccount = accessState.isAdminAccount
+                self?.currentUserID = accessState.currentUserID
+                self?.hasRealtimeConcurrency = accessState.hasRealtimeConcurrency
+            }
+            .store(in: &cancellables)
+        model.$loginEmail
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.loginEmail = $0 }
+            .store(in: &cancellables)
+        model.$loginPassword
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.loginPassword = $0 }
+            .store(in: &cancellables)
+        model.$isLoggingIn
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.isLoggingIn = $0 }
+            .store(in: &cancellables)
+        model.$config
+            .map { !$0.authToken.isEmpty }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.configHasAuthToken = $0 }
+            .store(in: &cancellables)
+    }
+}
+
+private struct SettingsAccessState: Equatable {
+    let isAdminAccount: Bool
+    let currentUserID: Int64?
+    let hasRealtimeConcurrency: Bool
+}
+
+private extension AppAppearance {
+    var systemImageName: String {
+        switch self {
+        case .system:
+            return "display"
+        case .light:
+            return "sun.max"
+        case .dark:
+            return "moon"
+        }
     }
 }
 

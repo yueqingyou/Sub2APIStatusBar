@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.34
+
+- Reworked the popover into a restrained macOS glass interface with adaptive light and dark surfaces, consistent continuous corners, SF Symbols, and lightweight custom controls across Overview, Accounts, Tasks, Settings, login, empty, loading, and update states.
+- Fixed System appearance mode so SwiftUI, the AppKit popover, its hosting view, the active window, semantic colors, and material surfaces use one resolved Light or Dark appearance and update when macOS changes appearance.
+- Reduced Settings page switching overhead by isolating it from unrelated high-frequency monitor updates, deduplicating the state it actually consumes, replacing batches of native toggles, and avoiding hidden page trees.
+- Reduced repeated task-console and OpenAI quota chart work by preparing stable presentation rows and chart series once per render pass while preserving the existing monitoring and quota contracts.
+- Added project-level UI constraints covering SF Symbol fallbacks, status-label geometry, coherent appearance propagation, and long-page rendering performance.
+
 ## v0.1.33
 
 - Fixed the menu bar reasoning-effort cell width so `XHigh` is displayed completely instead of being truncated.

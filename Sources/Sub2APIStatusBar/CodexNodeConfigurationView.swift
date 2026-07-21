@@ -50,12 +50,14 @@ struct CodexNodeConfigurationView: View {
     }
 
     private var receiverBadge: some View {
-        Text(strings.phrase("已配置 \(model.codexNodes.count) 个节点", "\(model.codexNodes.count) nodes configured"))
-            .font(.caption.monospacedDigit().weight(.medium))
-            .foregroundStyle(ClaudeTheme.primaryText)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(ClaudeTheme.elevatedCard, in: Capsule())
+        StatusPill(
+            title: strings.phrase(
+                "已配置 \(model.codexNodes.count) 个节点",
+                "\(model.codexNodes.count) nodes configured"
+            ),
+            tint: ClaudeTheme.slate,
+            systemImage: "server.rack"
+        )
     }
 
     @ViewBuilder
@@ -82,9 +84,12 @@ struct CodexNodeConfigurationView: View {
     private func nodeRow(_ node: CodexNode) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: node.kind == .local ? "desktopcomputer" : "network")
-                    .foregroundStyle(node.kind == .local ? ClaudeTheme.success : ClaudeTheme.accent)
-                    .frame(width: 20)
+                SafeSystemImage(
+                    systemName: node.kind == .local ? "desktopcomputer" : "network",
+                    fallbackName: "server.rack"
+                )
+                .foregroundStyle(node.kind == .local ? ClaudeTheme.success : ClaudeTheme.accent)
+                .frame(width: 20)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(node.name)
                         .font(.callout.weight(.semibold))
@@ -166,7 +171,7 @@ struct CodexNodeConfigurationView: View {
             .buttonStyle(.borderless)
         }
         .padding(12)
-        .background(ClaudeTheme.elevatedCard, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .glassSurface(cornerRadius: 10)
     }
 
     @ViewBuilder
@@ -204,7 +209,7 @@ struct CodexNodeConfigurationView: View {
                             .padding(10)
                     }
                     .frame(minHeight: 180, maxHeight: 260)
-                    .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .glassSurface(cornerRadius: 8)
 
                     HStack {
                         Button {
@@ -240,11 +245,26 @@ struct CodexNodeConfigurationView: View {
                 Label(strings.phrase("节点表单", "Node Form"), systemImage: "slider.horizontal.3")
                     .font(.headline)
 
-                Picker(strings.phrase("节点类型", "Node Type"), selection: nodeKindBinding) {
-                    Text(strings.phrase("本机", "Local")).tag(CodexNodeKind.local)
-                    Text(strings.phrase("远端", "Remote")).tag(CodexNodeKind.remote)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(strings.phrase("节点类型", "Node Type"))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(ClaudeTheme.secondaryText)
+                    GlassSegmentedControl(
+                        selection: nodeKindBinding,
+                        items: [
+                            GlassSegmentedItem(
+                                value: .local,
+                                title: strings.phrase("本机", "Local"),
+                                systemImage: "desktopcomputer"
+                            ),
+                            GlassSegmentedItem(
+                                value: .remote,
+                                title: strings.phrase("远端", "Remote"),
+                                systemImage: "network"
+                            ),
+                        ]
+                    )
                 }
-                .pickerStyle(.segmented)
 
                 if model.codexNodeForm.kind == .remote {
                     remoteFields

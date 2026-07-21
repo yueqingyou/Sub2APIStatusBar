@@ -12,11 +12,9 @@ struct MonitorPanel: View {
             } else {
                 VStack(spacing: 0) {
                     header
-                    Divider()
 
                     content
 
-                    Divider()
                     PanelFooter(model: model, strings: strings)
                 }
             }
@@ -36,17 +34,22 @@ struct MonitorPanel: View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(iconColor.opacity(0.15))
-                    Image(systemName: iconName)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(ClaudeTheme.elevatedCard)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(iconColor.opacity(0.08))
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
+                    SafeSystemImage(systemName: iconName, fallbackName: "circle.fill")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(iconColor)
                 }
-                .frame(width: 32, height: 32)
+                .frame(width: 34, height: 34)
+                .shadow(color: ClaudeTheme.glassShadow.opacity(0.5), radius: 3, y: 1)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("TokenRouter")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
                     Text(model.snapshot.connected ? lastUpdatedText : strings.phrase("未连接", "Disconnected"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -65,10 +68,16 @@ struct MonitorPanel: View {
 
             PanelPageTabs(selection: $selectedPage, pages: availablePages, strings: strings)
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
         .background(ClaudeTheme.header)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(ClaudeTheme.border)
+                .frame(height: 0.5)
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -114,7 +123,8 @@ struct MonitorPanel: View {
                     MessageRow(message: message)
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 18)
         }
     }
 
@@ -133,16 +143,15 @@ struct MonitorPanel: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            Text(statusScopeLabel)
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(iconColor.opacity(0.12), in: Capsule())
-                .foregroundStyle(iconColor)
+            StatusPill(
+                title: statusScopeLabel,
+                tint: iconColor,
+                systemImage: model.snapshot.mode == .admin ? "scope" : "person"
+            )
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.vertical, 11)
+        .glassSurface(cornerRadius: 11)
     }
 
     private var userSection: some View {
@@ -175,11 +184,11 @@ struct MonitorPanel: View {
             if model.snapshot.mode == .admin {
                 if let quota = model.snapshot.openAIQuota {
                     if quota.accounts.isEmpty {
-                        Text(strings.phrase("暂无 OpenAI OAuth 账号", "No OpenAI OAuth accounts"))
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(ClaudeTheme.secondaryText)
-                            .frame(maxWidth: .infinity, minHeight: 90)
-                            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        GlassEmptyState(
+                            title: strings.phrase("暂无 OpenAI OAuth 账号", "No OpenAI OAuth accounts"),
+                            systemImage: "person.crop.circle.badge.xmark",
+                            minHeight: 90
+                        )
                     } else {
                         OpenAIQuotaOverviewView(snapshot: quota, strings: strings)
                     }
@@ -384,7 +393,7 @@ struct MonitorPanel: View {
     }
 
     private var activeAppearance: AppAppearance {
-        model.config.authToken.isEmpty ? model.settingsDraft.appearance : model.config.appearance
+        model.resolvedAppearance
     }
 
     private var isAdminAccount: Bool {

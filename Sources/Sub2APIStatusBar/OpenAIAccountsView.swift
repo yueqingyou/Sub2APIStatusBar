@@ -41,8 +41,9 @@ struct OpenAIAccountsView: View {
                         }
                     }
                 } else if model.isRefreshing {
-                    ProgressView()
-                        .frame(maxWidth: .infinity, minHeight: 120)
+                    GlassLoadingState(
+                        message: strings.phrase("正在刷新账号额度…", "Refreshing account quota…")
+                    )
                 }
             }
             .padding(16)
@@ -50,11 +51,11 @@ struct OpenAIAccountsView: View {
     }
 
     private var emptyState: some View {
-        Text(strings.phrase("暂无 OpenAI OAuth 账号", "No OpenAI OAuth accounts"))
-            .font(.callout.weight(.medium))
-            .foregroundStyle(ClaudeTheme.secondaryText)
-            .frame(maxWidth: .infinity, minHeight: 120)
-            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        GlassEmptyState(
+            title: strings.phrase("暂无 OpenAI OAuth 账号", "No OpenAI OAuth accounts"),
+            systemImage: "person.crop.circle.badge.xmark",
+            minHeight: 120
+        )
     }
 
     private func summaryMetrics(_ summary: OpenAIQuotaPoolSummary) -> [MetricItem] {
@@ -92,7 +93,7 @@ struct OpenAIAccountsView: View {
             selectedAccountID = account.id
         } label: {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 7) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(account.account.displayName)
                             .font(.callout.weight(.semibold))
@@ -106,17 +107,18 @@ struct OpenAIAccountsView: View {
                         }
                     }
                     Spacer()
-                    Text(account.planLabel)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(ClaudeTheme.accent)
+                    StatusPill(title: account.planLabel, tint: ClaudeTheme.accent)
                     if account.account.isPrivate {
-                        Text(strings.phrase("隐私", "Private"))
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(ClaudeTheme.success)
+                        StatusPill(
+                            title: strings.phrase("隐私", "Private"),
+                            tint: ClaudeTheme.success,
+                            systemImage: "lock.fill"
+                        )
                     }
-                    Text(strings.activeStatus(account.account.status))
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(account.isSchedulable ? ClaudeTheme.success : ClaudeTheme.secondaryText)
+                    StatusPill(
+                        title: strings.activeStatus(account.account.status),
+                        tint: account.isSchedulable ? ClaudeTheme.success : ClaudeTheme.slate
+                    )
                 }
 
                 if let expiresAt = account.account.subscriptionExpiresAt {
@@ -141,7 +143,7 @@ struct OpenAIAccountsView: View {
                 }
             }
             .padding(12)
-            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .glassSurface(cornerRadius: 12)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -167,8 +169,16 @@ private struct OpenAIAccountDetailView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Button(action: dismiss) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 14, weight: .semibold))
+                    ZStack {
+                        Circle()
+                            .fill(ClaudeTheme.elevatedCard)
+                        Circle()
+                            .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(ClaudeTheme.primaryText)
+                    }
+                    .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .help(strings.phrase("返回", "Back"))
@@ -177,15 +187,20 @@ private struct OpenAIAccountDetailView: View {
                     Text(account.account.displayName)
                         .font(.headline)
                         .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(account.planLabel)
+                    HStack(spacing: 5) {
+                        StatusPill(title: account.planLabel, tint: ClaudeTheme.accent)
                         if account.account.isPrivate {
-                            Text(strings.phrase("隐私", "Private"))
+                            StatusPill(
+                                title: strings.phrase("隐私", "Private"),
+                                tint: ClaudeTheme.success,
+                                systemImage: "lock.fill"
+                            )
                         }
-                        Text(strings.activeStatus(account.account.status))
+                        StatusPill(
+                            title: strings.activeStatus(account.account.status),
+                            tint: account.isSchedulable ? ClaudeTheme.success : ClaudeTheme.slate
+                        )
                     }
-                    .font(.caption2)
-                    .foregroundStyle(ClaudeTheme.secondaryText)
                     if let expiresAt = account.account.subscriptionExpiresAt {
                         Text(subscriptionExpiryText(expiresAt, strings: strings))
                             .font(.caption2.monospacedDigit())
@@ -196,15 +211,20 @@ private struct OpenAIAccountDetailView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+            .background(ClaudeTheme.header)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(ClaudeTheme.border)
+                    .frame(height: 0.5)
+                    .allowsHitTesting(false)
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Picker("", selection: $selectedWindow) {
-                        Text(strings.phrase("五小时", "5 hours")).tag(OpenAIQuotaWindow.fiveHour)
-                        Text(strings.phrase("七天", "7 days")).tag(OpenAIQuotaWindow.sevenDay)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                    GlassSegmentedControl(
+                        selection: $selectedWindow,
+                        items: quotaWindowItems
+                    )
 
                     if let progress = account.progress(for: selectedWindow) {
                         SectionBlock(title: windowTitle) {
@@ -270,6 +290,21 @@ private struct OpenAIAccountDetailView: View {
             : strings.phrase("七天", "7 days")
     }
 
+    private var quotaWindowItems: [GlassSegmentedItem<OpenAIQuotaWindow>] {
+        [
+            GlassSegmentedItem(
+                value: .fiveHour,
+                title: strings.phrase("五小时", "5 hours"),
+                systemImage: "clock"
+            ),
+            GlassSegmentedItem(
+                value: .sevenDay,
+                title: strings.phrase("七天", "7 days"),
+                systemImage: "calendar"
+            ),
+        ]
+    }
+
     private func forecastText(_ forecast: OpenAIQuotaForecast) -> String {
         switch forecast.trend {
         case .insufficient:
@@ -320,8 +355,7 @@ private struct OpenAIQuotaProgressRow: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(ClaudeTheme.secondaryText)
             }
-            ProgressView(value: progress.normalizedPercentage)
-                .tint(progressTint)
+            GlassProgressBar(value: progress.normalizedPercentage, tint: progressTint)
             HStack {
                 if progress.remainingSeconds > 0 {
                     Text(strings.phrase(
@@ -358,10 +392,17 @@ private struct OpenAIQuotaProgressRow: View {
 }
 
 private func subscriptionExpiryText(_ date: Date, strings: AppStrings) -> String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = "yyyy-MM-dd HH:mm"
-    return strings.phrase("到期 \(formatter.string(from: date))", "Expires \(formatter.string(from: date))")
+    let formattedDate = OpenAIAccountFormatters.subscriptionExpiry.string(from: date)
+    return strings.phrase("到期 \(formattedDate)", "Expires \(formattedDate)")
+}
+
+private enum OpenAIAccountFormatters {
+    static let subscriptionExpiry: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
 }
 
 private func quotaResetDuration(_ seconds: Int, language: AppLanguage) -> String {
@@ -398,7 +439,9 @@ private struct OpenAIQuotaHistoryChart: View {
     }
 
     var body: some View {
-        if points.count < 2 {
+        let chartPoints = points
+
+        if chartPoints.count < 2 {
             Text(strings.phrase("数据不足", "Insufficient data"))
                 .font(.caption)
                 .foregroundStyle(ClaudeTheme.secondaryText)
@@ -408,7 +451,7 @@ private struct OpenAIQuotaHistoryChart: View {
                 ZStack {
                     grid(in: proxy.size)
                         .stroke(ClaudeTheme.border, lineWidth: 1)
-                    line(in: proxy.size)
+                    line(points: chartPoints, in: proxy.size)
                         .stroke(ClaudeTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             }
@@ -429,7 +472,7 @@ private struct OpenAIQuotaHistoryChart: View {
         return path
     }
 
-    private func line(in size: CGSize) -> Path {
+    private func line(points: [(Date, OpenAIQuotaWindowSample)], in size: CGSize) -> Path {
         guard let firstDate = points.first?.0, let lastDate = points.last?.0 else {
             return Path()
         }

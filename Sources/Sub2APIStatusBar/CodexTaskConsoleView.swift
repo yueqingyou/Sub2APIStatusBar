@@ -11,31 +11,45 @@ private struct GatewayInfoLine: Identifiable {
 }
 
 struct CodexTaskConsoleView: View {
-    let activities: [CodexTaskActivity]
-    let latestUsage: UsageLog?
-    let realtimeConcurrency: UserRealtimeConcurrency?
+    private let consoleRows: [CodexTaskConsoleRow]
+    private let gatewayUsage: CodexTaskGatewayUsageDetail?
+    private let gatewayConcurrency: CodexTaskGatewayConcurrencyDetail?
     let timelineEventLimit: Int
     let strings: AppStrings
-    var showsPageHeader = true
+    let showsPageHeader: Bool
     @State private var expandedTaskIDs: Set<String> = []
     @State private var isGatewayExpanded = false
 
-    private var rows: [CodexTaskConsoleRow] {
-        CodexTaskConsoleModel.rows(activities: activities)
-    }
-
-    private var gatewayUsage: CodexTaskGatewayUsageDetail? {
-        CodexTaskConsoleModel.gatewayUsageDetail(latestUsage: latestUsage)
-    }
-
-    private var gatewayConcurrency: CodexTaskGatewayConcurrencyDetail? {
-        CodexTaskConsoleModel.gatewayConcurrencyDetail(realtimeConcurrency: realtimeConcurrency)
+    init(
+        activities: [CodexTaskActivity],
+        latestUsage: UsageLog?,
+        realtimeConcurrency: UserRealtimeConcurrency?,
+        timelineEventLimit: Int,
+        strings: AppStrings,
+        showsPageHeader: Bool = true
+    ) {
+        consoleRows = CodexTaskConsoleModel.rows(activities: activities)
+        gatewayUsage = CodexTaskConsoleModel.gatewayUsageDetail(latestUsage: latestUsage)
+        gatewayConcurrency = CodexTaskConsoleModel.gatewayConcurrencyDetail(
+            realtimeConcurrency: realtimeConcurrency
+        )
+        self.timelineEventLimit = timelineEventLimit
+        self.strings = strings
+        self.showsPageHeader = showsPageHeader
     }
 
     var body: some View {
-        let consoleRows = rows
-        let activeRows = consoleRows.filter(\.isActive)
-        let recentRows = consoleRows.filter { !$0.isActive }
+        let groupedRows = consoleRows.reduce(
+            into: (active: [CodexTaskConsoleRow](), recent: [CodexTaskConsoleRow]())
+        ) { result, row in
+            if row.isActive {
+                result.active.append(row)
+            } else {
+                result.recent.append(row)
+            }
+        }
+        let activeRows = groupedRows.active
+        let recentRows = groupedRows.recent
 
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
@@ -109,7 +123,10 @@ struct CodexTaskConsoleView: View {
                                 .foregroundStyle(ClaudeTheme.secondaryText)
                         }
                         Spacer()
-                        Image(systemName: isGatewayExpanded ? "chevron.down" : "chevron.right")
+                        SafeSystemImage(
+                            systemName: isGatewayExpanded ? "chevron.down" : "chevron.right",
+                            fallbackName: "chevron.right"
+                        )
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(ClaudeTheme.secondaryText)
                     }
@@ -130,7 +147,7 @@ struct CodexTaskConsoleView: View {
                 }
             }
             .padding(12)
-            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .glassSurface(cornerRadius: 11)
         }
     }
 
@@ -187,7 +204,7 @@ struct CodexTaskConsoleView: View {
     private func taskCard(_ row: CodexTaskConsoleRow) -> some View {
         taskCardContent(row)
             .padding(12)
-            .background(ClaudeTheme.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .glassSurface(cornerRadius: 11)
     }
 
     private func taskCardContent(_ row: CodexTaskConsoleRow) -> some View {
@@ -219,7 +236,10 @@ struct CodexTaskConsoleView: View {
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(ClaudeTheme.secondaryText)
                     }
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    SafeSystemImage(
+                        systemName: isExpanded ? "chevron.down" : "chevron.right",
+                        fallbackName: "chevron.right"
+                    )
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(ClaudeTheme.secondaryText)
                 }
@@ -309,7 +329,7 @@ struct CodexTaskConsoleView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
-                    .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .glassSurface(cornerRadius: 8)
             }
         }
         .padding(.leading, 10)
@@ -317,6 +337,7 @@ struct CodexTaskConsoleView: View {
             Rectangle()
                 .fill(ClaudeTheme.border)
                 .frame(width: 2)
+                .allowsHitTesting(false)
         }
     }
 
@@ -329,7 +350,7 @@ struct CodexTaskConsoleView: View {
 
     private func sectionHeader(_ title: String, count: Int, systemImage: String) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: systemImage)
+            SafeSystemImage(systemName: systemImage, fallbackName: "circle")
                 .font(.caption)
             Text(title)
                 .font(.callout.weight(.semibold))
@@ -343,25 +364,18 @@ struct CodexTaskConsoleView: View {
     }
 
     private func summaryBadge(value: Int, label: String, tint: Color) -> some View {
-        HStack(spacing: 4) {
-            Text(String(value))
-                .font(.caption.weight(.semibold).monospacedDigit())
-            Text(label)
-                .font(.caption2)
-        }
-        .foregroundStyle(tint)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(tint.opacity(0.1), in: Capsule())
+        StatusPill(
+            title: "\(value) \(label)",
+            tint: tint
+        )
     }
 
     private func statusBadge(_ status: String) -> some View {
-        Label(statusText(status), systemImage: statusIcon(status))
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(statusColor(status))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(statusColor(status).opacity(0.12), in: Capsule())
+        StatusPill(
+            title: statusText(status),
+            tint: statusColor(status),
+            systemImage: statusIcon(status)
+        )
     }
 
     private func statusColor(_ status: String) -> Color {

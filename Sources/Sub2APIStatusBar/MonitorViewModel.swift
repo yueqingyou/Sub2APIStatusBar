@@ -5,6 +5,7 @@ import Sub2APIStatusCore
 @MainActor
 final class MonitorViewModel: ObservableObject {
     @Published var config: AppConfig
+    @Published private(set) var resolvedAppearance: AppAppearance
     @Published var snapshot: MonitorSnapshot
     @Published var isRefreshing = false
     @Published var isLoggingIn = false
@@ -93,6 +94,7 @@ final class MonitorViewModel: ObservableObject {
             loaded.launchAtLogin = true
         }
         config = loaded
+        resolvedAppearance = loaded.appearance == .dark ? .dark : .light
         settingsDraft = loaded
         snapshot = .idle(mode: loaded.monitorMode)
         do {
@@ -101,6 +103,13 @@ final class MonitorViewModel: ObservableObject {
             settingsError = error.localizedDescription
         }
         loadCodexNodeRegistry()
+    }
+
+    func updateResolvedAppearance(_ appearance: AppAppearance) {
+        guard appearance != .system, resolvedAppearance != appearance else {
+            return
+        }
+        resolvedAppearance = appearance
     }
 
     func start() {

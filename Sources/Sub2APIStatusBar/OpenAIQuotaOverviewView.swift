@@ -9,12 +9,10 @@ struct OpenAIQuotaOverviewView: View {
     var body: some View {
         SectionBlock(title: strings.phrase("账号额度", "Account Quota")) {
             VStack(alignment: .leading, spacing: 12) {
-                Picker("", selection: $window) {
-                    Text(strings.phrase("五小时", "5 hours")).tag(OpenAIQuotaWindow.fiveHour)
-                    Text(strings.phrase("七天", "7 days")).tag(OpenAIQuotaWindow.sevenDay)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                GlassSegmentedControl(
+                    selection: $window,
+                    items: quotaWindowItems
+                )
 
                 HStack(alignment: .top, spacing: 12) {
                     overviewValue(
@@ -49,15 +47,15 @@ struct OpenAIQuotaOverviewView: View {
                     .foregroundStyle(ClaudeTheme.secondaryText)
                 }
 
-                if let account = focusAccount,
-                   let progress = account.progress(for: window) {
+                if let focus = focusAccount,
+                   let progress = focus.account.progress(for: window) {
                     Divider()
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(account.account.displayName)
+                            Text(focus.account.account.displayName)
                                 .font(.callout.weight(.semibold))
                                 .lineLimit(1)
-                            Text(forecastText(account))
+                            Text(forecastText(focus.forecast))
                                 .font(.caption2)
                                 .foregroundStyle(ClaudeTheme.secondaryText)
                         }
@@ -88,19 +86,38 @@ struct OpenAIQuotaOverviewView: View {
         StatusFormatters.openAIQuotaRemaining(snapshot.summary.capacities, window: window)
     }
 
-    private var focusAccount: OpenAIAccountQuota? {
-        let forecasted = snapshot.accounts.compactMap { account -> (OpenAIAccountQuota, Date)? in
-            guard let date = snapshot.forecast(for: account, window: window)?.estimatedAt(85) else {
+    private var quotaWindowItems: [GlassSegmentedItem<OpenAIQuotaWindow>] {
+        [
+            GlassSegmentedItem(
+                value: .fiveHour,
+                title: strings.phrase("五小时", "5 hours"),
+                systemImage: "clock"
+            ),
+            GlassSegmentedItem(
+                value: .sevenDay,
+                title: strings.phrase("七天", "7 days"),
+                systemImage: "calendar"
+            ),
+        ]
+    }
+
+    private var focusAccount: (account: OpenAIAccountQuota, forecast: OpenAIQuotaForecast?)? {
+        let forecasted = snapshot.accounts.compactMap { account -> (OpenAIAccountQuota, OpenAIQuotaForecast, Date)? in
+            guard let forecast = snapshot.forecast(for: account, window: window),
+                  let date = forecast.estimatedAt(85) else {
                 return nil
             }
-            return (account, date)
+            return (account, forecast, date)
         }
-        if let earliest = forecasted.min(by: { $0.1 < $1.1 }) {
-            return earliest.0
+        if let earliest = forecasted.min(by: { $0.2 < $1.2 }) {
+            return (earliest.0, earliest.1)
         }
-        return snapshot.accounts.max { lhs, rhs in
+        guard let account = snapshot.accounts.max(by: { lhs, rhs in
             (lhs.progress(for: window)?.utilization ?? 0) < (rhs.progress(for: window)?.utilization ?? 0)
+        }) else {
+            return nil
         }
+        return (account, snapshot.forecast(for: account, window: window))
     }
 
     private var riskCount: Int {
@@ -109,8 +126,8 @@ struct OpenAIQuotaOverviewView: View {
         }.count
     }
 
-    private func forecastText(_ account: OpenAIAccountQuota) -> String {
-        guard let forecast = snapshot.forecast(for: account, window: window) else {
+    private func forecastText(_ forecast: OpenAIQuotaForecast?) -> String {
+        guard let forecast else {
             return ""
         }
         if let highRiskAt = forecast.estimatedAt(85) {
@@ -161,12 +178,23 @@ private struct OpenAIQuotaPoolTrendChart: View {
         let resetSignature: String
     }
 
+    private struct Series {
+        let pointsByPlan: [String: [Point]]
+        let plans: [String]
+        let firstDate: Date?
+        let lastDate: Date?
+        let maximum: Double
+        let hasTrend: Bool
+    }
+
     let samples: [OpenAIQuotaSample]
     let currentAccounts: [OpenAIAccountQuota]
     let window: OpenAIQuotaWindow
 
     var body: some View {
-        if !hasTrend {
+        let series = makeSeries()
+
+        if !series.hasTrend {
             Text(strings.phrase("数据不足", "Insufficient data"))
                 .font(.caption)
                 .foregroundStyle(ClaudeTheme.secondaryText)
@@ -176,8 +204,8 @@ private struct OpenAIQuotaPoolTrendChart: View {
                 ZStack {
                     grid(in: proxy.size)
                         .stroke(ClaudeTheme.border, lineWidth: 1)
-                    ForEach(Array(plans.enumerated()), id: \.element) { index, plan in
-                        path(for: plan, in: proxy.size)
+                    ForEach(Array(series.plans.enumerated()), id: \.element) { index, plan in
+                        path(for: plan, in: proxy.size, series: series)
                             .stroke(color(index), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     }
                 }
@@ -189,27 +217,20 @@ private struct OpenAIQuotaPoolTrendChart: View {
         AppStrings(language)
     }
 
-    private var currentAccountIDs: Set<Int64> {
-        Set(currentAccounts.filter(\.isSchedulable).map(\.id))
-    }
-
-    private var plans: [String] {
-        Array(Set(points.map(\.plan))).sorted()
-    }
-
-    private var hasTrend: Bool {
-        plans.contains { plan in
-            let planPoints = points.filter { $0.plan == plan }
-            return zip(planPoints, planPoints.dropFirst()).contains { previous, current in
-                previous.resetSignature == current.resetSignature
-            }
-        }
-    }
-
-    private var points: [Point] {
-        let groupedByCapture = Dictionary(grouping: samples.filter { currentAccountIDs.contains($0.accountID) }, by: \.capturedAt)
-        return groupedByCapture.flatMap { capturedAt, capturedSamples in
-            Dictionary(grouping: capturedSamples, by: \.planType).compactMap { plan, planSamples in
+    private func makeSeries() -> Series {
+        let currentAccountIDs = Set(currentAccounts.filter(\.isSchedulable).map(\.id))
+        let groupedByCapture = Dictionary(
+            grouping: samples.filter { currentAccountIDs.contains($0.accountID) },
+            by: \.capturedAt
+        )
+        let points: [Point] = groupedByCapture.flatMap { entry -> [Point] in
+            let (capturedAt, capturedSamples) = entry
+            let groupedByPlan: [String: [OpenAIQuotaSample]] = Dictionary(
+                grouping: capturedSamples,
+                by: \.planType
+            )
+            return groupedByPlan.compactMap { planEntry -> Point? in
+                let (plan, planSamples) = planEntry
                 let progress = planSamples.compactMap { sample -> (Int64, OpenAIQuotaWindowSample, String)? in
                     guard let value = window == .fiveHour ? sample.fiveHour : sample.sevenDay,
                           let resetsAt = value.resetsAt else {
@@ -228,10 +249,25 @@ private struct OpenAIQuotaPoolTrendChart: View {
                 return Point(date: capturedAt, plan: plan, remaining: remaining, resetSignature: signature)
             }
         }.sorted { $0.date < $1.date }
-    }
 
-    private var maximum: Double {
-        max(points.map(\.remaining).max() ?? 0, 1)
+        let pointsByPlan = Dictionary(grouping: points, by: \.plan)
+        let plans = pointsByPlan.keys.sorted()
+        let hasTrend = plans.contains { plan in
+            guard let planPoints = pointsByPlan[plan] else {
+                return false
+            }
+            return zip(planPoints, planPoints.dropFirst()).contains { previous, current in
+                previous.resetSignature == current.resetSignature
+            }
+        }
+        return Series(
+            pointsByPlan: pointsByPlan,
+            plans: plans,
+            firstDate: points.first?.date,
+            lastDate: points.last?.date,
+            maximum: max(points.map(\.remaining).max() ?? 0, 1),
+            hasTrend: hasTrend
+        )
     }
 
     private func grid(in size: CGSize) -> Path {
@@ -244,9 +280,10 @@ private struct OpenAIQuotaPoolTrendChart: View {
         return path
     }
 
-    private func path(for plan: String, in size: CGSize) -> Path {
-        let planPoints = points.filter { $0.plan == plan }
-        guard let first = points.first?.date, let last = points.last?.date else {
+    private func path(for plan: String, in size: CGSize, series: Series) -> Path {
+        guard let planPoints = series.pointsByPlan[plan],
+              let first = series.firstDate,
+              let last = series.lastDate else {
             return Path()
         }
         let duration = max(last.timeIntervalSince(first), 1)
@@ -255,7 +292,7 @@ private struct OpenAIQuotaPoolTrendChart: View {
         var hasPoint = false
         for point in planPoints {
             let x = size.width * CGFloat(point.date.timeIntervalSince(first) / duration)
-            let y = size.height * CGFloat(1 - point.remaining / maximum)
+            let y = size.height * CGFloat(1 - point.remaining / series.maximum)
             if hasPoint, previousSignature == point.resetSignature {
                 path.addLine(to: CGPoint(x: x, y: y))
             } else {

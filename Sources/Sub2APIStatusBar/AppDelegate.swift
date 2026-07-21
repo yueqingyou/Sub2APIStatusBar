@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let popover = NSPopover()
     private let model = MonitorViewModel()
     private let menuBarStatusView = MenuBarStatusView()
+    private var appliedAppearance: AppAppearance?
+    private var systemAppearancePollTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -24,13 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 520, height: 680)
         popover.delegate = self
-        applyAppearance(model.config.appearance)
-        popover.contentViewController = NSHostingController(
+        let appearanceViewController = NSHostingController(
             rootView: MonitorPanel(model: model)
             .environment(\.appLanguage, model.config.language)
-            .appAppearance(model.config.appearance)
             .tint(ClaudeTheme.accent)
         )
+        popover.contentViewController = appearanceViewController
+        applyAppearance(model.config.appearance)
+        startSystemAppearancePolling()
 
         model.onSnapshotChange = { [weak self] snapshot in
             self?.updateStatusItem(snapshot)
@@ -76,12 +79,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     private func applyAppearance(_ appearance: AppAppearance) {
-        let nsAppearance = appearance.nsAppearance
-        NSApp.appearance = nsAppearance
+        NSApp.appearance = appearance.nsAppearance
+        let resolvedAppearance = appearance == .system
+            ? AppAppearance.resolved(from: NSApp.effectiveAppearance)
+            : appearance
+        applyResolvedAppearance(resolvedAppearance)
+    }
+
+    private func startSystemAppearancePolling() {
+        systemAppearancePollTimer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.model.config.appearance == .system else {
+                    return
+                }
+                self.applyResolvedAppearance(AppAppearance.resolved(from: NSApp.effectiveAppearance))
+            }
+        }
+    }
+
+    private func applyResolvedAppearance(_ appearance: AppAppearance) {
+        guard let nsAppearance = appearance.nsAppearance else {
+            return
+        }
+        model.updateResolvedAppearance(appearance)
+        guard appliedAppearance != appearance else {
+            return
+        }
+        appliedAppearance = appearance
         popover.appearance = nsAppearance
+        popover.contentViewController?.view.appearance = nsAppearance
+        popover.contentViewController?.view.needsLayout = true
+        popover.contentViewController?.view.needsDisplay = true
+        popover.contentViewController?.view.window?.appearance = nsAppearance
+        popover.contentViewController?.view.window?.contentView?.needsDisplay = true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        systemAppearancePollTimer?.invalidate()
         model.stopAllCodexTunnels()
     }
 }

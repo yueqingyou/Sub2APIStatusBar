@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.35
+
+- Added an optional ESP32-S3-RLCD-4.2 hardware monitor that stays disabled until the user enables it, then connects directly to the Mac over BLE without a router or cloud relay.
+- Added a versioned, sanitized protocol for independent Overview, Tasks, Quota, and Device snapshots, with per-page sync intervals and a separate lightweight offline check. Realtime concurrency and running, waiting, or active task counts are intentionally excluded.
+- Added a physical 60-second pairing window, LE Secure Connections Just Works encryption, a persistent single-Mac bond, reconnect and reboot recovery, and explicit link-versus-data status handling.
+- Added the ESP-IDF 5.5.2 firmware, four content-specific 400×300 layouts, reproducible build metadata, Flash-readback records, hardware decisions, and MacPorts-based setup documentation under `硬件开发/ESP32-S3-RLCD-4.2/`.
+- Coalesced pending BLE writes so queued transfers keep the newest snapshot and byte-identical in-flight packets are not duplicated.
+- Sent one immediate replacement when a page changes from empty startup state to its first usable data, then returned to that page's configured low-frequency schedule.
+- Avoided redundant reflective-screen redraws when repeated device-page packets contain no changed health or display data, and hid the normal ready-state footer so link text appears only when it explains pairing, connection, or error progress.
+- Preserved the Waveshare Apache-2.0 license and modification notice for the derived ST7305 adapter.
+- Clamped extreme finite API values during BLE fixed-width encoding so malformed upstream totals cannot overflow the Mac app.
+
 ## v0.1.34
 
 - Reworked the popover into a restrained macOS glass interface with adaptive light and dark surfaces, consistent continuous corners, SF Symbols, and lightweight custom controls across Overview, Accounts, Tasks, Settings, login, empty, loading, and update states.

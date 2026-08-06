@@ -9,6 +9,7 @@ TokenRouter Monitor is a macOS menu bar companion for [TokenFlux/TokenRouter](ht
 - Admin accounts can monitor a selected user's realtime occupied concurrency and normal account count in supported views and menu bar fields
 - Administrator-only OpenAI OAuth account view with five-hour and seven-day quota, standard value, local history, and forecast signals
 - Codex task monitoring through local and remote hooks, keyed by `node_id`, `session_id`, and `turn_id`
+- Optional direct BLE connection to the ESP32-S3-RLCD-4.2 hardware monitor, disabled by default and requiring no router
 - Subscription quota card with separate daily, weekly, and monthly progress bars
 - Single-metric seven-day token trend and model distribution through TokenRouter's combined snapshot endpoint
 - Split fast and slow refresh paths so live usage stays current without repeatedly fetching expensive aggregate data
@@ -25,6 +26,7 @@ TokenRouter Monitor is a macOS menu bar companion for [TokenFlux/TokenRouter](ht
 - macOS 12 or later
 - Swift 5.7 or later for local development
 - A TokenRouter server with user API endpoints enabled
+- Bluetooth Low Energy on the Mac only when using the optional hardware monitor
 
 ## User API Endpoints
 
@@ -80,6 +82,18 @@ To validate remote Codex monitoring, save a remote node with SSH settings, previ
 
 If the Mac is locked without sleeping, macOS or the network may still interrupt an SSH-R tunnel. The app periodically probes the remote loopback-to-local receiver path for running remote tunnels and rebuilds the SSH-R tunnel when the path probe fails. The remote hook sender exits successfully and stays silent when the receiver path is unavailable, so Codex should not be blocked or filled with hook transport errors. This sender behavior is installed on Codex nodes through the hooks writer; after upgrading from an older build, preview and confirm hooks again for each node to replace the already installed sender script. Events that were already received remain visible after app restart. Events emitted while the app is not running or while the SSH-R path is actually down cannot be reconstructed by the app; use the node's **Restart SSH-R** action or the remote Test Event to re-confirm the tunnel, and subsequent real hook events will continue updating the task console.
 
+## Hardware Monitor
+
+Settings includes an optional **Hardware Monitor** switch for the Waveshare ESP32-S3-RLCD-4.2 companion. The switch is off by default, so Macs without the device are not asked for Bluetooth permission and do not scan in the background. When enabled, the app scans for the project service UUID, connects directly over BLE, subscribes to device status, and performs a versioned compatibility handshake. No router, hotspot, MQTT broker, or cloud relay is involved.
+
+The current `0.5.1-data-sync` firmware requires a physical long press to open a 60-second first-pairing window. It uses Bluetooth LE Secure Connections with an encrypted, persistent single-Mac bond; outside that window an unpaired device does not advertise the project service, while the bonded Mac can reconnect after either side restarts. The board has no passkey or numeric-confirmation input, so this is a Just Works bond without MITM authentication; the short physical pairing window is the deliberate authorization boundary.
+
+After the encrypted protocol-2 handshake, the app sends sanitized summaries for Overview, Tasks, Quota, and Device. Settings provides an independent full-sync interval for each page and a separate lightweight offline check; only the page currently shown on the device receives full data, and switching pages refreshes it only when stale. New configurations default to 5 minutes for Overview and Tasks, 30 minutes for Quota, and 15 minutes for Device. The device keeps its last values, reports Mac, network, and TokenRouter availability separately, and avoids redrawing unchanged data.
+
+The hardware is a low-frequency snapshot display, not a second realtime dashboard. Overview leads with today's accumulated cost, Tasks summarizes recent completed/error/stale results, Quota shows the five-hour and seven-day percentages plus normal account count, and Device uses one large Mac state followed by compact BLE, data-state, and firmware rows. Realtime concurrency and running, waiting, or active task counts are neither displayed nor sent over BLE because scheduled refresh latency would make them misleading. On the three metric pages, a tiny `SYNCED`, `STALE`, `OFFLINE`, or `NO DATA` marker shares the header with the page number instead of occupying a metric slot or showing relative time that would require periodic redraws; Device shows the same state once in its compact `DATA STATE` row. The four pages use separate information hierarchies instead of a repeated card grid; primary values sit near the top, while whitespace rather than decorative boxes and divider lines groups secondary information.
+
+Real-device checks cover pairing, encrypted reconnect, reboot recovery, all four page switches, real overview and quota values, independent and page-cycle fallback offline detection, recovery without dropping BLE, two reproducible builds, and Flash readback. No TokenRouter password, token, Codex secret, account identity, or raw API response is sent to the screen. Battery measurement, RTC sleep scheduling, enclosure work, and the 30-day endurance test remain future hardware milestones. Firmware, hardware decisions, and build instructions are under [`硬件开发/ESP32-S3-RLCD-4.2/`](硬件开发/ESP32-S3-RLCD-4.2/).
+
 ## Run From Source
 
 ```bash
@@ -109,6 +123,7 @@ SUB2API_BASE_URL=https://tokenrouter.example.com \
 SUB2API_AUTH_TOKEN=your-token \
 SUB2API_SHOW_MENU_BAR_TEXT=true \
 SUB2API_LAUNCH_AT_LOGIN=false \
+SUB2API_HARDWARE_MONITOR_ENABLED=false \
 SUB2API_APPEARANCE=system \
 SUB2API_MENU_BAR_USAGE_WINDOW=last24Hours \
 SUB2API_MENU_BAR_ITEMS=totalCost,model,reasoningEffort,contextLength,fast,requestType,rpm \
@@ -128,7 +143,7 @@ Admin accounts can additionally enable realtime concurrency, normal account coun
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.34 ./scripts/build-app.sh
+VERSION=v0.1.35 ./scripts/build-app.sh
 ```
 
 Output:
@@ -144,14 +159,14 @@ Release builds are host-native by default. Building on an Intel Mac without an a
 Set `ARCHITECTURE` to build a specific target or a Universal 2 app. Supported values are `x86_64`, `arm64`, and `universal`; `native` remains the default.
 
 ```bash
-VERSION=v0.1.34 ARCHITECTURE=universal ./scripts/build-app.sh
+VERSION=v0.1.35 ARCHITECTURE=universal ./scripts/build-app.sh
 ```
 
 Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.34 \
+VERSION=v0.1.35 \
 ./scripts/build-app.sh
 ```
 
@@ -159,16 +174,16 @@ VERSION=v0.1.34 \
 
 ```bash
 for ARCHITECTURE in x86_64 arm64 universal; do
-  VERSION=v0.1.34 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
+  VERSION=v0.1.35 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
 done
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.34-macOS-x86_64.zip
-dist/Sub2APIStatusBar-0.1.34-macOS-arm64.zip
-dist/Sub2APIStatusBar-0.1.34-macOS-universal.zip
+dist/Sub2APIStatusBar-0.1.35-macOS-x86_64.zip
+dist/Sub2APIStatusBar-0.1.35-macOS-arm64.zip
+dist/Sub2APIStatusBar-0.1.35-macOS-universal.zip
 ```
 
 Each ZIP has a matching `.sha256` file. The checksum manifest references the archive by file name only, so downloaded assets can be verified together from any directory with `shasum -a 256 -c <archive>.sha256`.
@@ -177,7 +192,7 @@ By default, `package-release.sh` creates an ad-hoc signed archive. You can pass 
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.34 \
+VERSION=v0.1.35 \
 ARCHITECTURE=universal \
 ./scripts/package-release.sh
 ```
@@ -193,7 +208,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.34 \
+VERSION=v0.1.35 \
 ./scripts/notarize-release.sh
 ```
 
@@ -227,7 +242,7 @@ swift run Sub2APIStatusBar
 
 ## Privacy
 
-TokenRouter Monitor stores the server URL, display preferences, refresh interval, and sanitized OpenAI quota history in the local Application Support directory. Quota history contains account IDs, plan labels, timestamps, reset boundaries, percentages, request and token totals, and standard value; it does not contain account names, email addresses, credentials, or raw API responses. Auth and refresh tokens are stored in a separate private local credentials file with current-user read/write permissions; older Keychain credentials are imported only without showing an authorization prompt. It does not send data anywhere except the configured TokenRouter server and the loopback hook receiver configured for Codex task monitoring.
+TokenRouter Monitor stores the server URL, display preferences, refresh interval, and sanitized OpenAI quota history in the local Application Support directory. Quota history contains account IDs, plan labels, timestamps, reset boundaries, percentages, request and token totals, and standard value; it does not contain account names, email addresses, credentials, or raw API responses. Auth and refresh tokens are stored in a separate private local credentials file with current-user read/write permissions; older Keychain credentials are imported only without showing an authorization prompt. It does not send data anywhere except the configured TokenRouter server, the loopback hook receiver configured for Codex task monitoring, and the optional locally connected BLE hardware monitor when that setting is enabled.
 
 ## Acknowledgements
 Thanks to the [LinuxDo](https://linux.do/) community for the discussions, sharing, and feedback.

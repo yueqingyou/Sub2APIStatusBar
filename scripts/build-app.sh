@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-v0.1.34}"
+VERSION="${VERSION:-v0.1.35}"
 APP_NAME="Sub2APIStatusBar"
 BUNDLE_ID="${BUNDLE_ID:-com.geekywizkid.sub2api-statusbar}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
@@ -91,6 +91,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Connect to your optional ESP32 hardware monitor and transfer local status data.</string>
   <key>NSSupportsAutomaticTermination</key>
   <true/>
   <key>NSSupportsSuddenTermination</key>

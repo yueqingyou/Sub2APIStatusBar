@@ -116,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         systemAppearancePollTimer?.invalidate()
+        model.stopHardwareMonitorBLE()
         model.stopAllCodexTunnels()
     }
 }

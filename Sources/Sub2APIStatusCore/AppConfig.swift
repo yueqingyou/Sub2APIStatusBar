@@ -280,6 +280,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
     public var menuBarDisplayItems: [MenuBarDisplayItem]
     public var codexTaskTimelineEventLimit: Int
     public var adminMonitoredUserID: Int64?
+    public var hardwareMonitorEnabled: Bool
+    public var hardwareMonitorSyncSettings: HardwareMonitorSyncSettings
 
     public init(
         baseURL: String,
@@ -294,7 +296,9 @@ public struct AppConfig: Codable, Equatable, Sendable {
         menuBarUsageWindow: MenuBarUsageWindow = .last24Hours,
         menuBarDisplayItems: [MenuBarDisplayItem] = MenuBarDisplayItem.defaultSelection,
         codexTaskTimelineEventLimit: Int = AppConfig.defaultCodexTaskTimelineEventLimit,
-        adminMonitoredUserID: Int64? = nil
+        adminMonitoredUserID: Int64? = nil,
+        hardwareMonitorEnabled: Bool = false,
+        hardwareMonitorSyncSettings: HardwareMonitorSyncSettings = HardwareMonitorSyncSettings()
     ) {
         self.baseURL = baseURL
         self.authToken = authToken
@@ -309,6 +313,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         self.menuBarDisplayItems = menuBarDisplayItems
         self.codexTaskTimelineEventLimit = codexTaskTimelineEventLimit
         self.adminMonitoredUserID = adminMonitoredUserID
+        self.hardwareMonitorEnabled = hardwareMonitorEnabled
+        self.hardwareMonitorSyncSettings = hardwareMonitorSyncSettings
         normalize()
     }
 
@@ -326,6 +332,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         case menuBarDisplayItems
         case codexTaskTimelineEventLimit
         case adminMonitoredUserID
+        case hardwareMonitorEnabled
+        case hardwareMonitorSyncSettings
     }
 
     public init(from decoder: Decoder) throws {
@@ -341,6 +349,11 @@ public struct AppConfig: Codable, Equatable, Sendable {
         monitorMode = try container.decodeIfPresent(MonitorMode.self, forKey: .monitorMode) ?? .user
         showsMenuBarText = try container.decodeIfPresent(Bool.self, forKey: .showsMenuBarText) ?? false
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? false
+        hardwareMonitorEnabled = try container.decodeIfPresent(Bool.self, forKey: .hardwareMonitorEnabled) ?? false
+        hardwareMonitorSyncSettings = try container.decodeIfPresent(
+            HardwareMonitorSyncSettings.self,
+            forKey: .hardwareMonitorSyncSettings
+        ) ?? HardwareMonitorSyncSettings()
         menuBarUsageWindow = try container.decodeIfPresent(MenuBarUsageWindow.self, forKey: .menuBarUsageWindow) ?? .last24Hours
         adminMonitoredUserID = try container.decodeIfPresent(Int64.self, forKey: .adminMonitoredUserID)
         if let rawItems = try container.decodeIfPresent([String].self, forKey: .menuBarDisplayItems) {
@@ -364,6 +377,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
         try container.encode(menuBarDisplayItems.map(\.rawValue), forKey: .menuBarDisplayItems)
         try container.encode(codexTaskTimelineEventLimit, forKey: .codexTaskTimelineEventLimit)
         try container.encodeIfPresent(adminMonitoredUserID, forKey: .adminMonitoredUserID)
+        try container.encode(hardwareMonitorEnabled, forKey: .hardwareMonitorEnabled)
+        try container.encode(hardwareMonitorSyncSettings, forKey: .hardwareMonitorSyncSettings)
     }
 
     public static func defaults() -> AppConfig {
@@ -379,7 +394,8 @@ public struct AppConfig: Codable, Equatable, Sendable {
             showsMenuBarText: ["1", "true", "yes", "on"].contains((env["SUB2API_SHOW_MENU_BAR_TEXT"] ?? "").lowercased()),
             launchAtLogin: ["1", "true", "yes", "on"].contains((env["SUB2API_LAUNCH_AT_LOGIN"] ?? "").lowercased()),
             menuBarUsageWindow: MenuBarUsageWindow.fromEnvironment(env["SUB2API_MENU_BAR_USAGE_WINDOW"]),
-            menuBarDisplayItems: MenuBarDisplayItem.fromEnvironment(env["SUB2API_MENU_BAR_ITEMS"])
+            menuBarDisplayItems: MenuBarDisplayItem.fromEnvironment(env["SUB2API_MENU_BAR_ITEMS"]),
+            hardwareMonitorEnabled: ["1", "true", "yes", "on"].contains((env["SUB2API_HARDWARE_MONITOR_ENABLED"] ?? "").lowercased())
         )
     }
 
@@ -395,6 +411,7 @@ public struct AppConfig: Codable, Equatable, Sendable {
         authToken = authToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshToken = refreshToken.trimmingCharacters(in: .whitespacesAndNewlines)
         refreshIntervalSeconds = min(max(refreshIntervalSeconds, 5), 300)
+        hardwareMonitorSyncSettings.normalize()
         codexTaskTimelineEventLimit = min(
             max(codexTaskTimelineEventLimit, Self.codexTaskTimelineEventLimitRange.lowerBound),
             Self.codexTaskTimelineEventLimitRange.upperBound

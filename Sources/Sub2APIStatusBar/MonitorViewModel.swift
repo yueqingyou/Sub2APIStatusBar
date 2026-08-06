@@ -30,6 +30,7 @@ final class MonitorViewModel: ObservableObject {
     @Published var codexNodeHealthStatuses: [String: CodexNodeHealthStatus] = [:]
     @Published var sshConfigHosts: [SSHConfigHost] = []
     @Published var selectedSSHConfigHostID = ""
+    @Published private(set) var hardwareMonitorBLEState: HardwareMonitorBLEConnectionState = .disabled
 
     var onSnapshotChange: ((MonitorSnapshot) -> Void)?
     var onAppearanceChange: ((AppAppearance) -> Void)?
@@ -76,6 +77,7 @@ final class MonitorViewModel: ObservableObject {
         nodeStaleAfterSeconds: 30 * 60
     )
     private let remoteTunnelPathProbeMinimumInterval: TimeInterval = 60
+    private var hardwareMonitorBLEClient: HardwareMonitorBLEClient?
 
     private enum CodexTestEventContext {
         case manual
@@ -116,6 +118,7 @@ final class MonitorViewModel: ObservableObject {
         loadCodexTaskActivities()
         syncCodexHookReceivers()
         ensureRemoteCodexTunnels()
+        syncHardwareMonitorBLE()
         refresh(manual: true)
         scheduleTimer()
         checkForUpdates(silent: true)
@@ -1818,6 +1821,7 @@ final class MonitorViewModel: ObservableObject {
             }
             config = next
             settingsDraft = next
+            syncHardwareMonitorBLE()
             let authenticationChanged = previousConfig.baseURL != next.baseURL || previousConfig.authToken != next.authToken
             let monitoredUserChanged = previousConfig.adminMonitoredUserID != next.adminMonitoredUserID
             if previousConfig.baseURL != next.baseURL {
@@ -2003,12 +2007,44 @@ final class MonitorViewModel: ObservableObject {
     }
 
     func quit() {
+        stopHardwareMonitorBLE()
         stopAllCodexTunnels()
         NSApp.terminate(nil)
     }
 
+    func stopHardwareMonitorBLE() {
+        hardwareMonitorBLEClient?.stop()
+        hardwareMonitorBLEClient = nil
+        hardwareMonitorBLEState = .disabled
+    }
+
+    private func syncHardwareMonitorBLE() {
+        guard config.hardwareMonitorEnabled else {
+            stopHardwareMonitorBLE()
+            return
+        }
+        if hardwareMonitorBLEClient == nil {
+            let client = HardwareMonitorBLEClient()
+            client.onStateChange = { [weak self] state in
+                Task { @MainActor [weak self] in
+                    self?.hardwareMonitorBLEState = state
+                }
+            }
+            hardwareMonitorBLEClient = client
+            client.start()
+        }
+        hardwareMonitorBLEClient?.update(
+            snapshot: snapshot,
+            syncSettings: config.hardwareMonitorSyncSettings
+        )
+    }
+
     private func publish(_ next: MonitorSnapshot) {
         snapshot = next
+        hardwareMonitorBLEClient?.update(
+            snapshot: next,
+            syncSettings: config.hardwareMonitorSyncSettings
+        )
         onSnapshotChange?(next)
         scheduleReasoningEffortRefreshIfNeeded(for: next)
     }

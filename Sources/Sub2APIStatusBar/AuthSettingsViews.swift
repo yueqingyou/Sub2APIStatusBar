@@ -205,6 +205,8 @@ struct SettingsView: View {
     @State private var adminUserSearchText = ""
 
     private static let maxAdminUserPickerOptions = 20
+    private static let hardwareMonitorPageIntervalOptions: [Double] = [5, 15, 30, 60, 300, 900, 1_800, 3_600, 21_600, 86_400]
+    private static let hardwareMonitorOfflineIntervalOptions: [Double] = [5, 15, 30, 60, 120, 300]
 
     init(model: MonitorViewModel) {
         self.model = model
@@ -221,6 +223,8 @@ struct SettingsView: View {
                 menuBarSettingsCard
 
                 taskConsoleSettingsCard
+
+                hardwareMonitorSettingsCard
 
                 if isAdminAccount {
                     adminMonitoringSettingsCard
@@ -247,7 +251,7 @@ struct SettingsView: View {
     private var settingsHeader: some View {
         PanelPageHeader(
             title: strings.phrase("设置", "Settings"),
-            subtitle: strings.phrase("外观、连接、菜单栏与更新", "Appearance, connection, menu bar, and updates")
+            subtitle: strings.phrase("外观、连接、硬件屏与更新", "Appearance, connection, hardware monitor, and updates")
         )
     }
 
@@ -356,6 +360,83 @@ struct SettingsView: View {
                     .pickerStyle(.menu)
                     .controlSize(.regular)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    private var hardwareMonitorSettingsCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(strings.phrase("硬件监控屏", "Hardware Monitor"))
+                    .font(.headline)
+
+                Text(strings.phrase(
+                    "通过本机蓝牙直连 ESP32-S3-RLCD-4.2，不依赖路由器。开启后才会请求蓝牙权限并开始扫描。",
+                    "Connect directly to ESP32-S3-RLCD-4.2 over this Mac's Bluetooth without a router. Bluetooth permission and scanning start only when enabled."
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                GlassCheckbox(
+                    isOn: hardwareMonitorEnabledBinding,
+                    title: strings.phrase("启用硬件监控屏", "Enable hardware monitor")
+                )
+
+                if renderState.draft.hardwareMonitorEnabled {
+                    Text(strings.phrase(
+                        "硬件屏显示低频快照，不发送实时并发、运行中或等待中的任务状态。完整数据只按当前页面发送，切页时仅补发已经过期的页面。",
+                        "The hardware screen shows low-frequency snapshots without live concurrency, running, or waiting task states. Full data follows the current page; switching pages only sends data when that page is stale."
+                    ))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    hardwareMonitorIntervalRow(
+                        strings.phrase("概览页", "Overview"),
+                        binding: hardwareMonitorPageIntervalBinding(\.overviewIntervalSeconds)
+                    )
+                    hardwareMonitorIntervalRow(
+                        strings.phrase("任务页", "Tasks"),
+                        binding: hardwareMonitorPageIntervalBinding(\.tasksIntervalSeconds)
+                    )
+                    hardwareMonitorIntervalRow(
+                        strings.phrase("配额页", "Quota"),
+                        binding: hardwareMonitorPageIntervalBinding(\.quotaIntervalSeconds)
+                    )
+                    hardwareMonitorIntervalRow(
+                        strings.phrase("设备页", "Device"),
+                        binding: hardwareMonitorPageIntervalBinding(\.deviceIntervalSeconds)
+                    )
+
+                    GlassCheckbox(
+                        isOn: hardwareMonitorOfflineCheckEnabledBinding,
+                        title: strings.phrase("独立检查离线状态", "Check offline status independently")
+                    )
+                    if renderState.draft.hardwareMonitorSyncSettings.offlineCheckIntervalSeconds != nil {
+                        hardwareMonitorIntervalRow(
+                            strings.phrase("离线检查", "Offline check"),
+                            binding: hardwareMonitorOfflineIntervalBinding,
+                            options: Self.hardwareMonitorOfflineIntervalOptions
+                        )
+                    } else {
+                        Text(strings.phrase(
+                            "关闭后，离线检查将按当前页面的完整同步周期计算，发现离线可能明显变慢。",
+                            "When disabled, offline detection follows the current page's full-sync interval and may become much slower."
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: hardwareMonitorStatusSymbol)
+                        .foregroundStyle(hardwareMonitorStatusColor)
+                    Text(hardwareMonitorStatusText)
+                        .font(.callout)
+                        .textSelection(.enabled)
                 }
             }
         }
@@ -516,6 +597,136 @@ struct SettingsView: View {
                 model.applySettingsChange(refreshAfterSave: false) { $0.codexTaskTimelineEventLimit = value }
             }
         )
+    }
+
+    private var hardwareMonitorEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { renderState.draft.hardwareMonitorEnabled },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) { $0.hardwareMonitorEnabled = value }
+            }
+        )
+    }
+
+    private func hardwareMonitorPageIntervalBinding(
+        _ keyPath: WritableKeyPath<HardwareMonitorSyncSettings, Double>
+    ) -> Binding<Double> {
+        Binding(
+            get: { renderState.draft.hardwareMonitorSyncSettings[keyPath: keyPath] },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) {
+                    $0.hardwareMonitorSyncSettings[keyPath: keyPath] = value
+                }
+            }
+        )
+    }
+
+    private var hardwareMonitorOfflineCheckEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { renderState.draft.hardwareMonitorSyncSettings.offlineCheckIntervalSeconds != nil },
+            set: { enabled in
+                model.applySettingsChange(refreshAfterSave: false) {
+                    $0.hardwareMonitorSyncSettings.offlineCheckIntervalSeconds = enabled ? 30 : nil
+                }
+            }
+        )
+    }
+
+    private var hardwareMonitorOfflineIntervalBinding: Binding<Double> {
+        Binding(
+            get: { renderState.draft.hardwareMonitorSyncSettings.offlineCheckIntervalSeconds ?? 30 },
+            set: { value in
+                model.applySettingsChange(refreshAfterSave: false) {
+                    $0.hardwareMonitorSyncSettings.offlineCheckIntervalSeconds = value
+                }
+            }
+        )
+    }
+
+    private func hardwareMonitorIntervalRow(
+        _ title: String,
+        binding: Binding<Double>,
+        options: [Double] = SettingsView.hardwareMonitorPageIntervalOptions
+    ) -> some View {
+        settingsRow(title) {
+            Picker("", selection: binding) {
+                ForEach(options, id: \.self) { interval in
+                    Text(hardwareMonitorIntervalLabel(interval)).tag(interval)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func hardwareMonitorIntervalLabel(_ seconds: Double) -> String {
+        let value = Int(seconds.rounded())
+        if value >= 86_400, value.isMultiple(of: 86_400) {
+            let days = value / 86_400
+            return strings.phrase("\(days) 天", "\(days) d")
+        }
+        if value >= 3_600, value.isMultiple(of: 3_600) {
+            let hours = value / 3_600
+            return strings.phrase("\(hours) 小时", "\(hours) h")
+        }
+        if value >= 60, value.isMultiple(of: 60) {
+            let minutes = value / 60
+            return strings.phrase("\(minutes) 分钟", "\(minutes) min")
+        }
+        return strings.phrase("\(value) 秒", "\(value) s")
+    }
+
+    private var hardwareMonitorStatusText: String {
+        switch renderState.hardwareMonitorBLEState {
+        case .disabled:
+            return strings.phrase("未启用", "Disabled")
+        case .waitingForBluetooth:
+            return strings.phrase("正在等待蓝牙可用", "Waiting for Bluetooth")
+        case .scanning:
+            return strings.phrase(
+                "正在扫描；首次连接请长按屏幕 KEY 进入配对",
+                "Scanning; hold the screen's KEY to pair for the first time"
+            )
+        case let .connecting(deviceName):
+            return strings.phrase("正在连接 \(deviceName)", "Connecting to \(deviceName)")
+        case let .connected(deviceName):
+            return strings.phrase("已连接 \(deviceName)，正在握手", "Connected to \(deviceName); handshaking")
+        case let .ready(deviceName, firmwareVersion):
+            return strings.phrase(
+                "\(deviceName) 安全链路已就绪 · 固件 \(firmwareVersion)",
+                "\(deviceName) secure link ready · firmware \(firmwareVersion)"
+            )
+        case let .unavailable(detail):
+            return strings.phrase("蓝牙不可用：\(detail)", "Bluetooth unavailable: \(detail)")
+        case let .failed(detail):
+            return strings.phrase("连接失败：\(detail)", "Connection failed: \(detail)")
+        }
+    }
+
+    private var hardwareMonitorStatusSymbol: String {
+        switch renderState.hardwareMonitorBLEState {
+        case .ready:
+            return "checkmark.circle.fill"
+        case .connecting, .connected, .scanning, .waitingForBluetooth:
+            return "antenna.radiowaves.left.and.right"
+        case .unavailable, .failed:
+            return "exclamationmark.triangle.fill"
+        case .disabled:
+            return "circle"
+        }
+    }
+
+    private var hardwareMonitorStatusColor: Color {
+        switch renderState.hardwareMonitorBLEState {
+        case .ready:
+            return .green
+        case .unavailable, .failed:
+            return .orange
+        default:
+            return .secondary
+        }
     }
 
     private var languageItems: [GlassSegmentedItem<AppLanguage>] {
@@ -684,6 +895,7 @@ private final class SettingsRenderState: ObservableObject {
     @Published private(set) var loginPassword: String
     @Published private(set) var isLoggingIn: Bool
     @Published private(set) var configHasAuthToken: Bool
+    @Published private(set) var hardwareMonitorBLEState: HardwareMonitorBLEConnectionState
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -698,6 +910,7 @@ private final class SettingsRenderState: ObservableObject {
         loginPassword = model.loginPassword
         isLoggingIn = model.isLoggingIn
         configHasAuthToken = !model.config.authToken.isEmpty
+        hardwareMonitorBLEState = model.hardwareMonitorBLEState
 
         model.$settingsDraft
             .removeDuplicates()
@@ -750,6 +963,11 @@ private final class SettingsRenderState: ObservableObject {
             .removeDuplicates()
             .dropFirst()
             .sink { [weak self] in self?.configHasAuthToken = $0 }
+            .store(in: &cancellables)
+        model.$hardwareMonitorBLEState
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.hardwareMonitorBLEState = $0 }
             .store(in: &cancellables)
     }
 }

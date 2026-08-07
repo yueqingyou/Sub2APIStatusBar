@@ -31,6 +31,9 @@ final class MonitorViewModel: ObservableObject {
     @Published var sshConfigHosts: [SSHConfigHost] = []
     @Published var selectedSSHConfigHostID = ""
     @Published private(set) var hardwareMonitorBLEState: HardwareMonitorBLEConnectionState = .disabled
+    @Published private(set) var hardwareFirmwareUpdateState: HardwareFirmwareUpdateState = .unavailable(
+        detail: "The bundled hardware firmware has not been loaded."
+    )
 
     var onSnapshotChange: ((MonitorSnapshot) -> Void)?
     var onAppearanceChange: ((AppAppearance) -> Void)?
@@ -1960,6 +1963,13 @@ final class MonitorViewModel: ObservableObject {
         guard !isInstallingUpdate else {
             return
         }
+        guard !hardwareFirmwareUpdateState.isInProgress else {
+            updateStatusMessage = AppStrings(config.language).phrase(
+                "请先等待硬件固件升级完成。",
+                "Wait for the hardware firmware update to finish first."
+            )
+            return
+        }
         guard let info = updateInfo, info.isUpdateAvailable else {
             updateStatusMessage = AppStrings(config.language).phrase("没有可用更新。", "No update is available.")
             return
@@ -2018,6 +2028,13 @@ final class MonitorViewModel: ObservableObject {
         hardwareMonitorBLEState = .disabled
     }
 
+    func installHardwareFirmware() {
+        guard !isInstallingUpdate else {
+            return
+        }
+        hardwareMonitorBLEClient?.installBundledFirmware()
+    }
+
     private func syncHardwareMonitorBLE() {
         guard config.hardwareMonitorEnabled else {
             stopHardwareMonitorBLE()
@@ -2028,6 +2045,11 @@ final class MonitorViewModel: ObservableObject {
             client.onStateChange = { [weak self] state in
                 Task { @MainActor [weak self] in
                     self?.hardwareMonitorBLEState = state
+                }
+            }
+            client.onFirmwareUpdateStateChange = { [weak self] state in
+                Task { @MainActor [weak self] in
+                    self?.hardwareFirmwareUpdateState = state
                 }
             }
             hardwareMonitorBLEClient = client
@@ -2085,7 +2107,7 @@ final class MonitorViewModel: ObservableObject {
         StatusFormatters.reasoningEffortPresentation(value).isProvided
     }
 
-    private var currentAppVersion: String {
+    var currentAppVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             ?? AppBuildInfo.fallbackVersion
     }

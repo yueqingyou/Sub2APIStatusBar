@@ -34,9 +34,6 @@ struct LoginPanel: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("TokenRouter")
                         .font(.system(size: 25, weight: .semibold, design: .rounded))
-                    Text(strings.phrase("连接你的服务", "Connect your server"))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -250,8 +247,7 @@ struct SettingsView: View {
 
     private var settingsHeader: some View {
         PanelPageHeader(
-            title: strings.phrase("设置", "Settings"),
-            subtitle: strings.phrase("外观、连接、硬件屏与更新", "Appearance, connection, hardware monitor, and updates")
+            title: strings.phrase("设置", "Settings")
         )
     }
 
@@ -342,14 +338,6 @@ struct SettingsView: View {
                 Text(strings.phrase("任务控制台", "Task Console"))
                     .font(.headline)
 
-                Text(strings.phrase(
-                    "事件时间线默认折叠，仅在展开任务卡时显示最近事件，用于排查 hooks 上报细节。",
-                    "The event timeline is collapsed by default. Recent events appear only after expanding a task card for hook diagnostics."
-                ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
                 settingsRow(strings.phrase("时间线事件", "Timeline Events")) {
                     Picker("", selection: codexTaskTimelineEventLimitBinding) {
                         ForEach(Array(AppConfig.codexTaskTimelineEventLimitRange), id: \.self) { limit in
@@ -371,28 +359,12 @@ struct SettingsView: View {
                 Text(strings.phrase("硬件监控屏", "Hardware Monitor"))
                     .font(.headline)
 
-                Text(strings.phrase(
-                    "通过本机蓝牙直连 ESP32-S3-RLCD-4.2，不依赖路由器。开启后才会请求蓝牙权限并开始扫描。",
-                    "Connect directly to ESP32-S3-RLCD-4.2 over this Mac's Bluetooth without a router. Bluetooth permission and scanning start only when enabled."
-                ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
                 GlassCheckbox(
                     isOn: hardwareMonitorEnabledBinding,
                     title: strings.phrase("启用硬件监控屏", "Enable hardware monitor")
                 )
 
                 if renderState.draft.hardwareMonitorEnabled {
-                    Text(strings.phrase(
-                        "硬件屏显示低频快照，不发送实时并发、运行中或等待中的任务状态。完整数据只按当前页面发送，切页时仅补发已经过期的页面。",
-                        "The hardware screen shows low-frequency snapshots without live concurrency, running, or waiting task states. Full data follows the current page; switching pages only sends data when that page is stale."
-                    ))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
                     hardwareMonitorIntervalRow(
                         strings.phrase("概览页", "Overview"),
                         binding: hardwareMonitorPageIntervalBinding(\.overviewIntervalSeconds)
@@ -422,8 +394,8 @@ struct SettingsView: View {
                         )
                     } else {
                         Text(strings.phrase(
-                            "关闭后，离线检查将按当前页面的完整同步周期计算，发现离线可能明显变慢。",
-                            "When disabled, offline detection follows the current page's full-sync interval and may become much slower."
+                            "关闭后仅随页面同步检查离线状态。",
+                            "When off, offline status is checked only during page sync."
                         ))
                         .font(.caption2)
                         .foregroundStyle(.orange)
@@ -438,8 +410,115 @@ struct SettingsView: View {
                         .font(.callout)
                         .textSelection(.enabled)
                 }
+
+                if renderState.draft.hardwareMonitorEnabled {
+                    hardwareFirmwareUpdateView
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private var hardwareFirmwareUpdateView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(strings.phrase("固件", "Firmware"))
+                    .font(.callout.weight(.semibold))
+                Spacer()
+
+                switch renderState.hardwareFirmwareUpdateState {
+                case let .waitingForDevice(targetVersion):
+                    Text(strings.phrase("内置 \(targetVersion) · 等待连接", "Bundled \(targetVersion) · Waiting"))
+                        .foregroundStyle(.secondary)
+                case let .available(currentVersion, targetVersion):
+                    Text("\(currentVersion) → \(targetVersion)")
+                        .monospacedDigit()
+                    firmwareUpdateButton(strings.phrase("更新", "Update"))
+                case let .upToDate(version):
+                    Text(strings.phrase("\(version) · 最新", "\(version) · Current"))
+                        .monospacedDigit()
+                    firmwareUpdateButton(strings.phrase("重新安装", "Reinstall"))
+                case let .preparing(targetVersion):
+                    Text(strings.phrase("准备 \(targetVersion)", "Preparing \(targetVersion)"))
+                case let .transferring(targetVersion, progressPercent):
+                    Text("\(targetVersion) · \(progressPercent)%")
+                        .monospacedDigit()
+                case let .verifying(targetVersion):
+                    Text(strings.phrase("正在校验 \(targetVersion)", "Verifying \(targetVersion)"))
+                case let .restarting(targetVersion):
+                    Text(strings.phrase("正在重启至 \(targetVersion)", "Restarting into \(targetVersion)"))
+                case let .completed(version):
+                    Label(
+                        strings.phrase("\(version) · 已完成", "\(version) · Complete"),
+                        systemImage: "checkmark.circle.fill"
+                    )
+                    .foregroundStyle(.green)
+                case let .unavailable(detail):
+                    Text(firmwareUpdateDetail(detail))
+                        .foregroundStyle(.secondary)
+                case .failed:
+                    firmwareUpdateButton(strings.phrase("重试", "Retry"))
+                }
+            }
+            .font(.callout)
+
+            switch renderState.hardwareFirmwareUpdateState {
+            case let .transferring(_, progressPercent):
+                ProgressView(value: Double(progressPercent), total: 100)
+                    .progressViewStyle(.linear)
+                Text(strings.phrase("保持设备供电并靠近 Mac。", "Keep the device powered and near this Mac."))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            case .preparing, .verifying, .restarting:
+                Text(strings.phrase("保持设备供电并靠近 Mac。", "Keep the device powered and near this Mac."))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            case let .failed(detail):
+                Text(firmwareUpdateDetail(detail))
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            default:
+                EmptyView()
+            }
+        }
+    }
+
+    private func firmwareUpdateButton(_ title: String) -> some View {
+        Button(title) {
+            model.installHardwareFirmware()
+        }
+        .buttonStyle(.borderless)
+        .disabled(!canStartFirmwareUpdate)
+    }
+
+    private var canStartFirmwareUpdate: Bool {
+        switch renderState.hardwareMonitorBLEState {
+        case .ready, .firmwareUpdateOnly:
+            return !renderState.hardwareFirmwareUpdateState.isInProgress
+                && !renderState.isInstallingAppUpdate
+        default:
+            return false
+        }
+    }
+
+    private func firmwareUpdateDetail(_ detail: String) -> String {
+        if detail.contains("one-time USB") {
+            return strings.phrase("首次需要通过 USB 初始化", "One-time USB setup required")
+        }
+        if detail.contains("bundled hardware firmware") {
+            return strings.phrase("内置固件不可用", "Bundled firmware unavailable")
+        }
+        if detail.contains("connection was lost") {
+            return strings.phrase("升级期间蓝牙连接中断。", "Bluetooth disconnected during the update.")
+        }
+        if detail.contains("timed out") {
+            return strings.phrase("固件升级超时。", "The firmware update timed out.")
+        }
+        if detail.contains("rolled back") {
+            return strings.phrase("新固件启动失败，硬件已回滚。", "The new firmware failed to start and was rolled back.")
+        }
+        return detail
     }
 
     private var adminMonitoringSettingsCard: some View {
@@ -447,11 +526,6 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(strings.phrase("管理员监控", "Admin Monitoring"))
                     .font(.headline)
-
-                Text(strings.phrase("使用当前管理员账号权限选择要监控的用户。普通用户账号不会显示这些项目。", "Use the current admin account to choose which user to monitor. Normal user accounts do not show these items."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
 
                 settingsRow(strings.phrase("监控用户", "Monitor User")) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -489,11 +563,6 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if renderState.hasRealtimeConcurrency {
-                    Text(strings.phrase("实时并发来自管理员运维接口。", "Realtime concurrency comes from the admin ops endpoint."))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
         }
     }
@@ -695,8 +764,13 @@ struct SettingsView: View {
             return strings.phrase("已连接 \(deviceName)，正在握手", "Connected to \(deviceName); handshaking")
         case let .ready(deviceName, firmwareVersion):
             return strings.phrase(
-                "\(deviceName) 安全链路已就绪 · 固件 \(firmwareVersion)",
-                "\(deviceName) secure link ready · firmware \(firmwareVersion)"
+                "\(deviceName) · 固件 \(firmwareVersion)",
+                "\(deviceName) · Firmware \(firmwareVersion)"
+            )
+        case let .firmwareUpdateOnly(deviceName, firmwareVersion, _):
+            return strings.phrase(
+                "\(deviceName) · 固件 \(firmwareVersion) · 等待升级",
+                "\(deviceName) · Firmware \(firmwareVersion) · Update required"
             )
         case let .unavailable(detail):
             return strings.phrase("蓝牙不可用：\(detail)", "Bluetooth unavailable: \(detail)")
@@ -709,6 +783,8 @@ struct SettingsView: View {
         switch renderState.hardwareMonitorBLEState {
         case .ready:
             return "checkmark.circle.fill"
+        case .firmwareUpdateOnly:
+            return "arrow.triangle.2.circlepath"
         case .connecting, .connected, .scanning, .waitingForBluetooth:
             return "antenna.radiowaves.left.and.right"
         case .unavailable, .failed:
@@ -722,6 +798,8 @@ struct SettingsView: View {
         switch renderState.hardwareMonitorBLEState {
         case .ready:
             return .green
+        case .firmwareUpdateOnly:
+            return .orange
         case .unavailable, .failed:
             return .orange
         default:
@@ -890,12 +968,13 @@ private final class SettingsRenderState: ObservableObject {
     @Published private(set) var adminUsers: [AdminUserSummary]
     @Published private(set) var isAdminAccount: Bool
     @Published private(set) var currentUserID: Int64?
-    @Published private(set) var hasRealtimeConcurrency: Bool
     @Published private(set) var loginEmail: String
     @Published private(set) var loginPassword: String
     @Published private(set) var isLoggingIn: Bool
     @Published private(set) var configHasAuthToken: Bool
     @Published private(set) var hardwareMonitorBLEState: HardwareMonitorBLEConnectionState
+    @Published private(set) var hardwareFirmwareUpdateState: HardwareFirmwareUpdateState
+    @Published private(set) var isInstallingAppUpdate: Bool
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -905,12 +984,13 @@ private final class SettingsRenderState: ObservableObject {
         adminUsers = model.adminUsers
         isAdminAccount = model.snapshot.currentUser?.isAdmin == true
         currentUserID = model.snapshot.currentUser?.id
-        hasRealtimeConcurrency = model.snapshot.realtimeConcurrency != nil
         loginEmail = model.loginEmail
         loginPassword = model.loginPassword
         isLoggingIn = model.isLoggingIn
         configHasAuthToken = !model.config.authToken.isEmpty
         hardwareMonitorBLEState = model.hardwareMonitorBLEState
+        hardwareFirmwareUpdateState = model.hardwareFirmwareUpdateState
+        isInstallingAppUpdate = model.isInstallingUpdate
 
         model.$settingsDraft
             .removeDuplicates()
@@ -931,8 +1011,7 @@ private final class SettingsRenderState: ObservableObject {
             .map {
                 SettingsAccessState(
                     isAdminAccount: $0.currentUser?.isAdmin == true,
-                    currentUserID: $0.currentUser?.id,
-                    hasRealtimeConcurrency: $0.realtimeConcurrency != nil
+                    currentUserID: $0.currentUser?.id
                 )
             }
             .removeDuplicates()
@@ -940,7 +1019,6 @@ private final class SettingsRenderState: ObservableObject {
             .sink { [weak self] accessState in
                 self?.isAdminAccount = accessState.isAdminAccount
                 self?.currentUserID = accessState.currentUserID
-                self?.hasRealtimeConcurrency = accessState.hasRealtimeConcurrency
             }
             .store(in: &cancellables)
         model.$loginEmail
@@ -969,13 +1047,22 @@ private final class SettingsRenderState: ObservableObject {
             .dropFirst()
             .sink { [weak self] in self?.hardwareMonitorBLEState = $0 }
             .store(in: &cancellables)
+        model.$hardwareFirmwareUpdateState
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.hardwareFirmwareUpdateState = $0 }
+            .store(in: &cancellables)
+        model.$isInstallingUpdate
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] in self?.isInstallingAppUpdate = $0 }
+            .store(in: &cancellables)
     }
 }
 
 private struct SettingsAccessState: Equatable {
     let isAdminAccount: Bool
     let currentUserID: Int64?
-    let hasRealtimeConcurrency: Bool
 }
 
 private extension AppAppearance {

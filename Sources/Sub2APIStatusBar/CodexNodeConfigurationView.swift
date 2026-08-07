@@ -25,8 +25,7 @@ struct CodexNodeConfigurationView: View {
         VStack(alignment: .leading, spacing: 8) {
             if showsPageHeader {
                 PanelPageHeader(
-                    title: strings.phrase("节点", "Nodes"),
-                    subtitle: strings.phrase("本机与远端 Codex hooks", "Local and remote Codex hooks")
+                    title: strings.phrase("Codex 节点", "Codex Nodes")
                 )
             }
             HStack(spacing: 8) {

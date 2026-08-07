@@ -98,8 +98,7 @@ struct MonitorPanel: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 PanelPageHeader(
-                    title: strings.phrase("概览", "Overview"),
-                    subtitle: strings.phrase("用量、并发与账户状态", "Usage, concurrency, and account status")
+                    title: strings.phrase("概览", "Overview")
                 )
                 statusSection
 
@@ -107,6 +106,7 @@ struct MonitorPanel: View {
                     UpdateAvailableBanner(
                         info: updateInfo,
                         isInstalling: model.isInstallingUpdate,
+                        isHardwareFirmwareUpdating: model.hardwareFirmwareUpdateState.isInProgress,
                         statusMessage: model.updateStatusMessage,
                         installUpdate: {
                             model.installUpdate()

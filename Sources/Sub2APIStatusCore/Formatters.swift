@@ -268,6 +268,19 @@ public enum StatusFormatters {
         }.joined(separator: " · ")
     }
 
+    public static func quotaResetDuration(seconds: Int, language: AppLanguage) -> String {
+        let nonnegativeSeconds = max(0, seconds)
+        let days = nonnegativeSeconds / 86_400
+        let hours = nonnegativeSeconds % 86_400 / 3_600
+        let minutes = nonnegativeSeconds % 3_600 / 60
+        switch language {
+        case .auto, .zhHans:
+            return "\(days)天\(hours)小时\(minutes)分钟"
+        case .en:
+            return "\(days)d \(hours)h \(minutes)m"
+        }
+    }
+
     public static func duration(seconds: Double) -> String {
         let seconds = Int(seconds)
         if seconds >= 86_400 {

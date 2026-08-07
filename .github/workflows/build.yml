@@ -39,7 +39,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             VERSION="$GITHUB_REF_NAME"
           else
-            VERSION="v0.1.35"
+            VERSION="v0.1.36"
           fi
           for ARCHITECTURE in x86_64 arm64 universal; do
             VERSION="$VERSION" ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh

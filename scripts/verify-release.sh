@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Sub2APIStatusBar"
-VERSION="${VERSION:-v0.1.35}"
+VERSION="${VERSION:-v0.1.36}"
 ARCHITECTURE="${ARCHITECTURE:-native}"
 DIST_DIR="$ROOT_DIR/dist"
 source "$ROOT_DIR/scripts/macos-architecture.sh"
@@ -26,6 +26,8 @@ unzip -t "$ZIP_PATH" >/dev/null
 unzip -q "$ZIP_PATH" -d "$VERIFY_DIR"
 plutil -lint "$VERIFY_DIR/$APP_NAME.app/Contents/Info.plist" >/dev/null
 codesign --verify --deep --strict "$VERIFY_DIR/$APP_NAME.app"
+"$ROOT_DIR/scripts/verify-hardware-firmware.sh" \
+  "$VERIFY_DIR/$APP_NAME.app/Contents/Resources/HardwareFirmware/ESP32-S3-RLCD-4.2" >/dev/null
 
 APP_EXECUTABLE="$VERIFY_DIR/$APP_NAME.app/Contents/MacOS/$APP_NAME"
 ACTUAL_ARCHITECTURES="$(/usr/bin/lipo -archs "$APP_EXECUTABLE")"

@@ -121,8 +121,9 @@ public enum HardwareMonitorBLEProtocol {
     public static let serviceUUIDString = "BFB75D90-76B2-4BBF-803D-3A8DDE689207"
     public static let commandCharacteristicUUIDString = "EC17F230-4F00-4BFD-903D-66B5EFBB92F0"
     public static let statusCharacteristicUUIDString = "FEE4D514-9AFD-4FBA-9737-D2FD6BDCBF2F"
-    public static let protocolVersion: UInt8 = 2
-    public static let statusPayloadLength = 9
+    public static let protocolVersion: UInt8 = 4
+    public static let minimumStatusPayloadLength = 9
+    public static let firmwareUpdateStatusPayloadLength = 16
 
     public enum MessageType: UInt8, Sendable {
         case hello = 0x01
@@ -172,24 +173,31 @@ public enum HardwareMonitorBLEProtocol {
 
         let quotaSnapshot = snapshot.openAIQuota
         let quotaSummary = quotaSnapshot?.summary
-        let hasFiveHour = quotaSnapshot?.accounts.contains {
-            $0.isSchedulable && $0.usage.fiveHour != nil
-        } == true
-        let hasSevenDay = quotaSnapshot?.accounts.contains {
-            $0.isSchedulable && $0.usage.sevenDay != nil
-        } == true
+        let schedulableQuotaAccounts = quotaSnapshot?.accounts.filter(\.isSchedulable) ?? []
+        let hasFiveHour = schedulableQuotaAccounts.contains { $0.usage.fiveHour != nil }
+        let hasSevenDay = schedulableQuotaAccounts.contains { $0.usage.sevenDay != nil }
         let fiveHourEquivalent = quotaSummary?.capacities.reduce(0) { $0 + $1.fiveHourRemaining } ?? 0
         let sevenDayEquivalent = quotaSummary?.capacities.reduce(0) { $0 + $1.sevenDayRemaining } ?? 0
+        let fiveHourResetSeconds = nextResetSeconds(
+            in: schedulableQuotaAccounts,
+            window: .fiveHour
+        )
+        let sevenDayResetSeconds = nextResetSeconds(
+            in: schedulableQuotaAccounts,
+            window: .sevenDay
+        )
         var quotaAvailability: UInt8 = 0
         if hasFiveHour { quotaAvailability |= 0x01 }
         if hasSevenDay { quotaAvailability |= 0x02 }
-        if snapshot.adminNormalAccountCount != nil { quotaAvailability |= 0x04 }
+        if fiveHourResetSeconds != nil { quotaAvailability |= 0x04 }
+        if sevenDayResetSeconds != nil { quotaAvailability |= 0x08 }
 
         var quota = packetHeader(type: .quota) + common(.quota)
         quota.append(quotaAvailability)
         appendUInt32(capacityBasisPoints(fiveHourEquivalent), to: &quota)
         appendUInt32(capacityBasisPoints(sevenDayEquivalent), to: &quota)
-        appendUInt32(clampedUInt32(snapshot.adminNormalAccountCount ?? 0), to: &quota)
+        appendUInt32(clampedUInt32(fiveHourResetSeconds ?? 0), to: &quota)
+        appendUInt32(clampedUInt32(sevenDayResetSeconds ?? 0), to: &quota)
 
         let device = Data(packetHeader(type: .device) + common(.device))
         return HardwareMonitorBLEPayloadSet(
@@ -222,24 +230,23 @@ public enum HardwareMonitorBLEProtocol {
             let hasQuotaWindow = snapshot.openAIQuota?.accounts.contains {
                 $0.isSchedulable && ($0.usage.fiveHour != nil || $0.usage.sevenDay != nil)
             } == true
-            return hasQuotaWindow || snapshot.adminNormalAccountCount != nil
+            return hasQuotaWindow
         }
     }
 
     public static func decodeStatus(_ data: Data) throws -> HardwareMonitorBLEDeviceStatus {
         let bytes = [UInt8](data)
-        guard bytes.count == statusPayloadLength else {
+        guard bytes.count >= minimumStatusPayloadLength else {
             throw HardwareMonitorBLEProtocolError.invalidStatusLength(bytes.count)
         }
         guard Array(bytes.prefix(magic.count)) == magic else {
             throw HardwareMonitorBLEProtocolError.invalidMagic
         }
-        guard bytes[3] == protocolVersion else {
-            throw HardwareMonitorBLEProtocolError.unsupportedProtocolVersion(bytes[3])
-        }
         guard let currentPage = HardwareMonitorPage(rawValue: bytes[8]) else {
             throw HardwareMonitorBLEProtocolError.unsupportedPage(bytes[8])
         }
+
+        let hasFirmwareUpdateStatus = bytes.count >= firmwareUpdateStatusPayloadLength
 
         return HardwareMonitorBLEDeviceStatus(
             protocolVersion: bytes[3],
@@ -251,7 +258,15 @@ public enum HardwareMonitorBLEProtocol {
             isLinkEncrypted: bytes[7] & 0x04 != 0,
             isBonded: bytes[7] & 0x08 != 0,
             isPairingWindowOpen: bytes[7] & 0x10 != 0,
-            currentPage: currentPage
+            currentPage: currentPage,
+            firmwareUpdateProtocolVersion: hasFirmwareUpdateStatus ? bytes[9] : nil,
+            firmwareUpdateState: hasFirmwareUpdateStatus
+                ? HardwareFirmwareUpdateDeviceState(rawValue: bytes[10])
+                : nil,
+            firmwareUpdateErrorCode: hasFirmwareUpdateStatus ? bytes[11] : nil,
+            firmwareUpdateReceivedBytes: hasFirmwareUpdateStatus
+                ? readUInt32(bytes, at: 12)
+                : nil
         )
     }
 
@@ -300,6 +315,15 @@ public enum HardwareMonitorBLEProtocol {
         return UInt32(min(scaled.rounded(), Double(UInt32.max)))
     }
 
+    private static func nextResetSeconds(
+        in accounts: [OpenAIAccountQuota],
+        window: OpenAIQuotaWindow
+    ) -> Int? {
+        accounts.compactMap { account in
+            account.progress(for: window).map { max(0, $0.remainingSeconds) }
+        }.min()
+    }
+
     private static func nonnegativeUInt64(_ value: Int64) -> UInt64 {
         value > 0 ? UInt64(value) : 0
     }
@@ -331,6 +355,12 @@ public enum HardwareMonitorBLEProtocol {
             bytes.append(UInt8(truncatingIfNeeded: value >> UInt64(shift)))
         }
     }
+
+    private static func readUInt32(_ bytes: [UInt8], at offset: Int) -> UInt32 {
+        (0..<4).reduce(0) { value, byteOffset in
+            value | (UInt32(bytes[offset + byteOffset]) << UInt32(byteOffset * 8))
+        }
+    }
 }
 
 public struct HardwareMonitorBLEDeviceStatus: Equatable, Sendable {
@@ -344,9 +374,29 @@ public struct HardwareMonitorBLEDeviceStatus: Equatable, Sendable {
     public let isBonded: Bool
     public let isPairingWindowOpen: Bool
     public let currentPage: HardwareMonitorPage
+    public let firmwareUpdateProtocolVersion: UInt8?
+    public let firmwareUpdateState: HardwareFirmwareUpdateDeviceState?
+    public let firmwareUpdateErrorCode: UInt8?
+    public let firmwareUpdateReceivedBytes: UInt32?
 
     public var firmwareVersion: String {
         "\(firmwareMajor).\(firmwareMinor).\(firmwarePatch)"
+    }
+
+    public var parsedFirmwareVersion: HardwareFirmwareVersion {
+        HardwareFirmwareVersion(
+            major: firmwareMajor,
+            minor: firmwareMinor,
+            patch: firmwarePatch
+        )
+    }
+
+    public var isMonitorProtocolCompatible: Bool {
+        protocolVersion == HardwareMonitorBLEProtocol.protocolVersion
+    }
+
+    public var supportsFirmwareUpdate: Bool {
+        firmwareUpdateProtocolVersion == HardwareFirmwareUpdateProtocol.protocolVersion
     }
 }
 

@@ -233,19 +233,12 @@ struct SectionBlock<Content: View>: View {
 
 struct PanelPageHeader: View {
     let title: String
-    let subtitle: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 21, weight: .semibold, design: .rounded))
-                .foregroundStyle(ClaudeTheme.primaryText)
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(ClaudeTheme.secondaryText)
-                .lineLimit(1)
-        }
-        .frame(minHeight: 44, alignment: .leading)
+        Text(title)
+            .font(.system(size: 21, weight: .semibold, design: .rounded))
+            .foregroundStyle(ClaudeTheme.primaryText)
+            .frame(minHeight: 28, alignment: .leading)
     }
 }
 

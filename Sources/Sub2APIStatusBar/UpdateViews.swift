@@ -44,10 +44,9 @@ struct UpdateSettingsSection: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text(strings.phrase("检查 GitHub Releases 中的新版本。", "Checks GitHub Releases for newer versions."))
+                    Text(strings.phrase("当前版本 \(model.currentAppVersion)", "Version \(model.currentAppVersion)"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 HStack(spacing: 14) {
@@ -65,7 +64,11 @@ struct UpdateSettingsSection: View {
                             } label: {
                                 Label(strings.phrase("安装更新", "Install Update"), systemImage: "arrow.down.circle")
                             }
-                            .disabled(model.isCheckingForUpdates || model.isInstallingUpdate)
+                            .disabled(
+                                model.isCheckingForUpdates
+                                    || model.isInstallingUpdate
+                                    || model.hardwareFirmwareUpdateState.isInProgress
+                            )
                         }
 
                         Button {
@@ -91,6 +94,7 @@ struct UpdateAvailableBanner: View {
 
     let info: UpdateInfo
     let isInstalling: Bool
+    let isHardwareFirmwareUpdating: Bool
     let statusMessage: String?
     let installUpdate: () -> Void
     let openRelease: () -> Void
@@ -99,15 +103,13 @@ struct UpdateAvailableBanner: View {
         info.latestRelease.installArchiveAsset() != nil
     }
 
-    private var detailText: String {
+    private var detailText: String? {
         if let statusMessage,
            statusMessage != info.statusText,
            statusMessage != strings.updateStatus(info) {
             return statusMessage
         }
-        return canInstallDirectly
-            ? strings.phrase("可直接安装，也可以打开 GitHub 发布页。", "Install directly or open the GitHub release.")
-            : strings.phrase("从 GitHub 下载最新版本。", "Download the latest release from GitHub.")
+        return nil
     }
 
     var body: some View {
@@ -123,9 +125,11 @@ struct UpdateAvailableBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(strings.updateStatus(info))
                     .font(.callout.weight(.semibold))
-                Text(detailText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let detailText {
+                    Text(detailText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             if canInstallDirectly {
@@ -135,7 +139,7 @@ struct UpdateAvailableBanner: View {
                     Image(systemName: "arrow.down.circle")
                 }
                 .buttonStyle(.borderless)
-                .disabled(isInstalling)
+                .disabled(isInstalling || isHardwareFirmwareUpdating)
                 .help(strings.phrase("安装更新", "Install update"))
             }
             Button {

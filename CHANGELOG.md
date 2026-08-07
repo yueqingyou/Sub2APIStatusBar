@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.36
+
+- Added an independently versioned, encrypted BLE firmware-update path for the ESP32-S3-RLCD-4.2, including acknowledged transfer progress, image identity and SHA-256 validation, dual OTA partitions, restart verification, and ESP-IDF rollback.
+- Embedded the reproducible `0.7.0` ESP32 firmware and its versioned manifest in every macOS app bundle, and made app builds, downloaded-app validation, and release verification reject missing or mismatched firmware resources.
+- Preserved existing Bluetooth bonds across the one-time USB OTA-layout initialization and added GATT Service Changed migration so already bonded Macs rediscover new characteristics without re-pairing or another USB setup.
+- Added five-hour and seven-day reset durations to both the macOS account view and ESP32 Quota page, always retaining day, hour, and minute components; removed Normal Account from the hardware page.
+- Simplified macOS page headers and settings copy, and removed persistent page numbers, key tutorials, and duplicate link annotations from the hardware UI.
+- Prevented macOS app replacement and hardware firmware transfer from running at the same time, while keeping firmware update-only mode available for older monitor-data protocols.
+
 ## v0.1.35
 
 - Added an optional ESP32-S3-RLCD-4.2 hardware monitor that stays disabled until the user enables it, then connects directly to the Mac over BLE without a router or cloud relay.

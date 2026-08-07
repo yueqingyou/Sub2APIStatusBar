@@ -25,6 +25,7 @@ public enum AppUpdateInstallerError: Error, Equatable, LocalizedError, Sendable 
     case missingExecutable
     case architectureInspectionFailed(String)
     case incompatibleArchitecture(required: MacHardwareArchitecture, found: [String])
+    case invalidBundledHardwareFirmware(String)
     case targetIsNotAppBundle(URL)
     case helperLaunchFailed(String)
 
@@ -54,6 +55,8 @@ public enum AppUpdateInstallerError: Error, Equatable, LocalizedError, Sendable 
             return "Could not inspect the downloaded update architecture: \(message)"
         case let .incompatibleArchitecture(required, found):
             return "The downloaded update does not support \(required.rawValue); found: \(found.joined(separator: ", "))."
+        case let .invalidBundledHardwareFirmware(detail):
+            return "The downloaded update has invalid bundled hardware firmware: \(detail)"
         case let .targetIsNotAppBundle(url):
             return "The current app path is not an app bundle: \(url.path)."
         case let .helperLaunchFailed(message):
@@ -107,7 +110,8 @@ public struct AppUpdateInstaller {
             at: appURL,
             expectedVersion: release.version,
             bundleIdentifier: expectedBundleIdentifier,
-            requiredArchitecture: requiredArchitecture
+            requiredArchitecture: requiredArchitecture,
+            requiresBundledHardwareFirmware: true
         )
         return PreparedAppUpdate(archiveURL: archiveURL, extractionDirectoryURL: extractionURL, appURL: appURL)
     }
@@ -141,7 +145,8 @@ public struct AppUpdateInstaller {
         at appURL: URL,
         expectedVersion: AppVersion,
         bundleIdentifier: String,
-        requiredArchitecture: MacHardwareArchitecture? = nil
+        requiredArchitecture: MacHardwareArchitecture? = nil,
+        requiresBundledHardwareFirmware: Bool = false
     ) throws {
         guard appURL.pathExtension == "app", let bundle = Bundle(url: appURL) else {
             throw AppUpdateInstallerError.invalidAppBundle(appURL)
@@ -183,6 +188,21 @@ public struct AppUpdateInstaller {
                     required: requiredArchitecture,
                     found: architectures
                 )
+            }
+        }
+
+        if requiresBundledHardwareFirmware {
+            let firmwareDirectory = appURL
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("Resources", isDirectory: true)
+                .appendingPathComponent(HardwareFirmwarePackageLoader.relativeDirectory, isDirectory: true)
+            do {
+                _ = try HardwareFirmwarePackageLoader().load(
+                    from: firmwareDirectory,
+                    requiresCurrentProtocolVersions: false
+                )
+            } catch {
+                throw AppUpdateInstallerError.invalidBundledHardwareFirmware(error.localizedDescription)
             }
         }
     }

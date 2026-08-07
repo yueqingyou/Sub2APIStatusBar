@@ -5204,6 +5204,25 @@ func testAppUpdateInstallerValidatesExtractedAppBundleMetadata() throws {
     ))
 }
 
+func testAppUpdateInstallerRequiresBundledHardwareFirmwareForDownloadedUpdates() throws {
+    let appURL = try makeTemporaryAppBundle(
+        bundleIdentifier: "com.geekywizkid.sub2api-statusbar",
+        version: "0.1.9"
+    )
+    let installer = AppUpdateInstaller()
+
+    XCTAssertThrowsError(try installer.validateExtractedApp(
+        at: appURL,
+        expectedVersion: AppVersion("0.1.9"),
+        bundleIdentifier: "com.geekywizkid.sub2api-statusbar",
+        requiresBundledHardwareFirmware: true
+    )) { error in
+        guard case AppUpdateInstallerError.invalidBundledHardwareFirmware = error else {
+            return XCTFail("Expected invalidBundledHardwareFirmware, got \(error)")
+        }
+    }
+}
+
 func testAppUpdateInstallerRejectsUnexpectedBundleIdentifier() throws {
     let appURL = try makeTemporaryAppBundle(bundleIdentifier: "com.example.other", version: "0.1.9")
     let installer = AppUpdateInstaller()

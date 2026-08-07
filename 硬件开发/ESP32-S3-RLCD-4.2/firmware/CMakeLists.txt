@@ -12,5 +12,10 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-set(PROJECT_VER "0.5.1-data-sync")
+set(MONITOR_FIRMWARE_VERSION "0.7.0" CACHE STRING "Hardware monitor firmware version")
+if(NOT MONITOR_FIRMWARE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR
+        "MONITOR_FIRMWARE_VERSION must contain three numeric components: ${MONITOR_FIRMWARE_VERSION}")
+endif()
+set(PROJECT_VER "${MONITOR_FIRMWARE_VERSION}")
 project(tokenrouter_monitor)

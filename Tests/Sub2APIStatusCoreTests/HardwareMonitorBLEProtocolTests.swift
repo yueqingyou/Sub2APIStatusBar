@@ -6,23 +6,46 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
     func testHelloPayloadContainsMagicVersionAndMessageType() {
         XCTAssertEqual(
             HardwareMonitorBLEProtocol.helloPayload,
-            Data([0x54, 0x52, 0x4D, 0x02, 0x01])
+            Data([0x54, 0x52, 0x4D, 0x04, 0x01])
         )
     }
 
     func testDecodesReadyDeviceStatusAndCurrentPage() throws {
         let status = try HardwareMonitorBLEProtocol.decodeStatus(
-            Data([0x54, 0x52, 0x4D, 0x02, 0x00, 0x05, 0x01, 0x0F, 0x02])
+            Data([
+                0x54, 0x52, 0x4D, 0x04, 0x00, 0x07, 0x00, 0x0F, 0x02,
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ])
         )
 
-        XCTAssertEqual(status.protocolVersion, 2)
-        XCTAssertEqual(status.firmwareVersion, "0.5.1")
+        XCTAssertEqual(status.protocolVersion, 4)
+        XCTAssertEqual(status.firmwareVersion, "0.7.0")
         XCTAssertEqual(status.currentPage, .quota)
         XCTAssertTrue(status.isLinkConnected)
         XCTAssertTrue(status.isHandshakeReady)
         XCTAssertTrue(status.isLinkEncrypted)
         XCTAssertTrue(status.isBonded)
         XCTAssertFalse(status.isPairingWindowOpen)
+        XCTAssertTrue(status.isMonitorProtocolCompatible)
+        XCTAssertTrue(status.supportsFirmwareUpdate)
+        XCTAssertEqual(status.firmwareUpdateState, .idle)
+        XCTAssertEqual(status.firmwareUpdateErrorCode, 0)
+        XCTAssertEqual(status.firmwareUpdateReceivedBytes, 0)
+    }
+
+    func testDecodesOlderMonitorStatusForFirmwareUpdateCompatibility() throws {
+        let status = try HardwareMonitorBLEProtocol.decodeStatus(
+            Data([
+                0x54, 0x52, 0x4D, 0x03, 0x00, 0x06, 0x00, 0x0D, 0x00,
+                0x01, 0x01, 0x00, 0xF0, 0x00, 0x00, 0x00,
+            ])
+        )
+
+        XCTAssertFalse(status.isMonitorProtocolCompatible)
+        XCTAssertTrue(status.supportsFirmwareUpdate)
+        XCTAssertEqual(status.firmwareVersion, "0.6.0")
+        XCTAssertEqual(status.firmwareUpdateState, .receiving)
+        XCTAssertEqual(status.firmwareUpdateReceivedBytes, 240)
     }
 
     func testBuildsSanitizedOverviewAndTaskPayloadsWithoutRealtimeCounts() throws {
@@ -57,15 +80,15 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             payloads.heartbeats[.overview]?.bytes,
-            [0x54, 0x52, 0x4D, 0x02, 0x02, 0x03, 90, 0, 0, 0]
+            [0x54, 0x52, 0x4D, 0x04, 0x02, 0x03, 90, 0, 0, 0]
         )
-        XCTAssertEqual(Array(overview.prefix(11)), [0x54, 0x52, 0x4D, 0x02, 0x10, 0x03, 90, 0, 0, 0, 1])
+        XCTAssertEqual(Array(overview.prefix(11)), [0x54, 0x52, 0x4D, 0x04, 0x10, 0x03, 90, 0, 0, 0, 1])
         XCTAssertEqual(readUInt64(overview, at: 11), 1_250_000)
         XCTAssertEqual(readUInt64(overview, at: 19), 42)
         XCTAssertEqual(readUInt64(overview, at: 27), 123_456)
         XCTAssertEqual(overview.count, 35)
 
-        XCTAssertEqual(Array(tasks.prefix(10)), [0x54, 0x52, 0x4D, 0x02, 0x11, 0x03, 90, 0, 0, 0])
+        XCTAssertEqual(Array(tasks.prefix(10)), [0x54, 0x52, 0x4D, 0x04, 0x11, 0x03, 90, 0, 0, 0])
         XCTAssertEqual(readUInt16(tasks, at: 10), 1)
         XCTAssertEqual(readUInt16(tasks, at: 12), 1)
         XCTAssertEqual(readUInt16(tasks, at: 14), 0)
@@ -126,7 +149,15 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             ),
             adminNormalAccountCount: 8,
             openAIQuota: OpenAIAccountQuotaSnapshot(
-                accounts: [quotaAccount, quotaAccountWithID(2, basedOn: quotaAccount)],
+                accounts: [
+                    quotaAccount,
+                    quotaAccountWithID(
+                        2,
+                        basedOn: quotaAccount,
+                        fiveHourRemainingSeconds: 500,
+                        sevenDayRemainingSeconds: 3_000
+                    ),
+                ],
                 history: OpenAIQuotaHistory()
             ),
             accountHealth: nil,
@@ -136,17 +167,20 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             isStale: true
         )
 
+        XCTAssertTrue(HardwareMonitorBLEProtocol.isPageDataAvailable(in: snapshot, for: .quota))
+
         let quota = try XCTUnwrap(HardwareMonitorBLEProtocol.payloads(
             snapshot: snapshot,
             networkAvailable: true,
             syncSettings: HardwareMonitorSyncSettings(offlineCheckIntervalSeconds: nil)
         ).pages[.quota]).bytes
 
-        XCTAssertEqual(Array(quota.prefix(11)), [0x54, 0x52, 0x4D, 0x02, 0x12, 0x0F, 0x18, 0x15, 0x00, 0x00, 0x07])
+        XCTAssertEqual(Array(quota.prefix(11)), [0x54, 0x52, 0x4D, 0x04, 0x12, 0x0F, 0x18, 0x15, 0x00, 0x00, 0x0F])
         XCTAssertEqual(readUInt32(quota, at: 11), 16_000)
         XCTAssertEqual(readUInt32(quota, at: 15), 10_000)
-        XCTAssertEqual(readUInt32(quota, at: 19), 8)
-        XCTAssertEqual(quota.count, 23)
+        XCTAssertEqual(readUInt32(quota, at: 19), 500)
+        XCTAssertEqual(readUInt32(quota, at: 23), 2_000)
+        XCTAssertEqual(quota.count, 27)
     }
 
     func testOverviewPayloadClampsExtremeFiniteCostWithoutOverflowing() throws {
@@ -193,7 +227,7 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertFalse(HardwareMonitorBLEProtocol.isPageDataAvailable(in: idle, for: .tasks))
         XCTAssertTrue(HardwareMonitorBLEProtocol.isPageDataAvailable(in: idle, for: .device))
         XCTAssertTrue(HardwareMonitorBLEProtocol.isPageDataAvailable(in: overview, for: .overview))
-        XCTAssertTrue(HardwareMonitorBLEProtocol.isPageDataAvailable(in: overview, for: .quota))
+        XCTAssertFalse(HardwareMonitorBLEProtocol.isPageDataAvailable(in: overview, for: .quota))
 
         let completedTaskSnapshot = idle.withCodexTaskActivities([
             task(status: .done, id: "done", now: Date()),
@@ -248,20 +282,20 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertNil(disabled.offlineCheckIntervalSeconds)
     }
 
-    func testRejectsWrongStatusLengthProtocolVersionAndPage() {
+    func testRejectsWrongStatusLengthMagicAndPage() {
         XCTAssertThrowsError(try HardwareMonitorBLEProtocol.decodeStatus(Data([0x54]))) { error in
             XCTAssertEqual(error as? HardwareMonitorBLEProtocolError, .invalidStatusLength(1))
         }
         XCTAssertThrowsError(
             try HardwareMonitorBLEProtocol.decodeStatus(
-                Data([0x54, 0x52, 0x4D, 0x03, 0x00, 0x05, 0x00, 0x0F, 0x00])
+                Data([0x00, 0x52, 0x4D, 0x04, 0x00, 0x07, 0x00, 0x0F, 0x00])
             )
         ) { error in
-            XCTAssertEqual(error as? HardwareMonitorBLEProtocolError, .unsupportedProtocolVersion(3))
+            XCTAssertEqual(error as? HardwareMonitorBLEProtocolError, .invalidMagic)
         }
         XCTAssertThrowsError(
             try HardwareMonitorBLEProtocol.decodeStatus(
-                Data([0x54, 0x52, 0x4D, 0x02, 0x00, 0x05, 0x00, 0x0F, 0xFF])
+                Data([0x54, 0x52, 0x4D, 0x04, 0x00, 0x07, 0x00, 0x0F, 0xFF])
             )
         ) { error in
             XCTAssertEqual(error as? HardwareMonitorBLEProtocolError, .unsupportedPage(0xFF))
@@ -320,7 +354,9 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
 
     private func quotaAccountWithID(
         _ id: Int64,
-        basedOn source: OpenAIAccountQuota
+        basedOn source: OpenAIAccountQuota,
+        fiveHourRemainingSeconds: Int? = nil,
+        sevenDayRemainingSeconds: Int? = nil
     ) -> OpenAIAccountQuota {
         OpenAIAccountQuota(
             account: AccountSummary(
@@ -340,7 +376,26 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
                 errorMessage: "",
                 rateLimitResetAt: nil
             ),
-            usage: source.usage
+            usage: AccountUsageInfo(
+                updatedAt: source.usage.updatedAt,
+                fiveHour: source.usage.fiveHour.map { progress in
+                    UsageProgress(
+                        utilization: progress.utilization,
+                        resetsAt: progress.resetsAt,
+                        remainingSeconds: fiveHourRemainingSeconds ?? progress.remainingSeconds,
+                        windowStats: progress.windowStats
+                    )
+                },
+                sevenDay: source.usage.sevenDay.map { progress in
+                    UsageProgress(
+                        utilization: progress.utilization,
+                        resetsAt: progress.resetsAt,
+                        remainingSeconds: sevenDayRemainingSeconds ?? progress.remainingSeconds,
+                        windowStats: progress.windowStats
+                    )
+                },
+                quotaAutoPaused: source.usage.quotaAutoPaused
+            )
         )
     }
 

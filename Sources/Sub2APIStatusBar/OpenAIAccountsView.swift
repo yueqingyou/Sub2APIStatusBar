@@ -23,8 +23,7 @@ struct OpenAIAccountsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 PanelPageHeader(
-                    title: strings.phrase("账号", "Accounts"),
-                    subtitle: "OpenAI OAuth"
+                    title: strings.phrase("OpenAI 账号", "OpenAI Accounts")
                 )
 
                 if let error = model.snapshot.openAIQuotaError {
@@ -357,12 +356,7 @@ private struct OpenAIQuotaProgressRow: View {
             }
             GlassProgressBar(value: progress.normalizedPercentage, tint: progressTint)
             HStack {
-                if progress.remainingSeconds > 0 {
-                    Text(strings.phrase(
-                        "\(quotaResetDuration(progress.remainingSeconds, language: .zhHans)) 后重置",
-                        "Resets in \(quotaResetDuration(progress.remainingSeconds, language: .en))"
-                    ))
-                }
+                Text(resetText)
                 Spacer()
                 if let stats = progress.windowStats {
                     Text(StatusFormatters.preciseCurrency(stats.standardCost))
@@ -375,6 +369,18 @@ private struct OpenAIQuotaProgressRow: View {
 
     private var usedText: String {
         String(format: "%.0f%%", progress.utilization)
+    }
+
+    private var resetText: String {
+        let chinese = StatusFormatters.quotaResetDuration(
+            seconds: progress.remainingSeconds,
+            language: .zhHans
+        )
+        let english = StatusFormatters.quotaResetDuration(
+            seconds: progress.remainingSeconds,
+            language: .en
+        )
+        return strings.phrase("\(chinese) 后重置", "Resets in \(english)")
     }
 
     private var progressTint: Color {
@@ -403,19 +409,6 @@ private enum OpenAIAccountFormatters {
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         return formatter
     }()
-}
-
-private func quotaResetDuration(_ seconds: Int, language: AppLanguage) -> String {
-    let days = seconds / 86_400
-    let hours = seconds % 86_400 / 3_600
-    let minutes = seconds % 3_600 / 60
-    let values = [(days, language == .en ? "d" : "天"), (hours, language == .en ? "h" : "小时"), (minutes, language == .en ? "m" : "分钟")]
-    let duration = values
-        .filter { $0.0 > 0 }
-        .prefix(2)
-        .map { "\($0.0)\($0.1)" }
-        .joined(separator: " ")
-    return duration.isEmpty ? (language == .en ? "<1m" : "不到 1 分钟") : duration
 }
 
 private struct OpenAIQuotaHistoryChart: View {

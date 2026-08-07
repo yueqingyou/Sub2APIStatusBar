@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-v0.1.35}"
+VERSION="${VERSION:-v0.1.36}"
 APP_NAME="Sub2APIStatusBar"
 BUNDLE_ID="${BUNDLE_ID:-com.geekywizkid.sub2api-statusbar}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
@@ -37,6 +37,7 @@ build_binary_for_architecture() {
 }
 
 cd "$ROOT_DIR"
+"$ROOT_DIR/scripts/verify-hardware-firmware.sh" >/dev/null
 "$ROOT_DIR/scripts/generate-icon.swift" >/dev/null
 
 case "$ARCHITECTURE" in
@@ -92,7 +93,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSBluetoothAlwaysUsageDescription</key>
-  <string>Connect to your optional ESP32 hardware monitor and transfer local status data.</string>
+  <string>Connect to your optional ESP32 hardware monitor, transfer local status data, and install firmware updates.</string>
   <key>NSSupportsAutomaticTermination</key>
   <true/>
   <key>NSSupportsSuddenTermination</key>

@@ -86,13 +86,17 @@ If the Mac is locked without sleeping, macOS or the network may still interrupt 
 
 Settings includes an optional **Hardware Monitor** switch for the Waveshare ESP32-S3-RLCD-4.2 companion. The switch is off by default, so Macs without the device are not asked for Bluetooth permission and do not scan in the background. When enabled, the app scans for the project service UUID, connects directly over BLE, subscribes to device status, and performs a versioned compatibility handshake. No router, hotspot, MQTT broker, or cloud relay is involved.
 
-The current `0.5.1-data-sync` firmware requires a physical long press to open a 60-second first-pairing window. It uses Bluetooth LE Secure Connections with an encrypted, persistent single-Mac bond; outside that window an unpaired device does not advertise the project service, while the bonded Mac can reconnect after either side restarts. The board has no passkey or numeric-confirmation input, so this is a Just Works bond without MITM authentication; the short physical pairing window is the deliberate authorization boundary.
+The current source candidate is firmware `0.7.0`. It requires a physical long press to open a 60-second first-pairing window and uses Bluetooth LE Secure Connections with an encrypted, persistent single-Mac bond. Outside that window an unpaired device does not advertise the project service, while the bonded Mac can reconnect after either side restarts. The board has no passkey or numeric-confirmation input, so this is a Just Works bond without MITM authentication; the short physical pairing window is the deliberate authorization boundary.
 
-After the encrypted protocol-2 handshake, the app sends sanitized summaries for Overview, Tasks, Quota, and Device. Settings provides an independent full-sync interval for each page and a separate lightweight offline check; only the page currently shown on the device receives full data, and switching pages refreshes it only when stale. New configurations default to 5 minutes for Overview and Tasks, 30 minutes for Quota, and 15 minutes for Device. The device keeps its last values, reports Mac, network, and TokenRouter availability separately, and avoids redrawing unchanged data.
+After the encrypted monitor-protocol-4 handshake, the app sends sanitized summaries for Overview, Tasks, Quota, and Device. Settings provides an independent full-sync interval for each page and a separate lightweight offline check; only the page currently shown on the device receives full data, and switching pages refreshes it only when stale. New configurations default to 5 minutes for Overview and Tasks, 30 minutes for Quota, and 15 minutes for Device. The device keeps its last values, reports Mac, network, and TokenRouter availability separately, and avoids redrawing unchanged data.
 
-The hardware is a low-frequency snapshot display, not a second realtime dashboard. Overview leads with today's accumulated cost, Tasks summarizes recent completed/error/stale results, Quota shows the five-hour and seven-day percentages plus normal account count, and Device uses one large Mac state followed by compact BLE, data-state, and firmware rows. Realtime concurrency and running, waiting, or active task counts are neither displayed nor sent over BLE because scheduled refresh latency would make them misleading. On the three metric pages, a tiny `SYNCED`, `STALE`, `OFFLINE`, or `NO DATA` marker shares the header with the page number instead of occupying a metric slot or showing relative time that would require periodic redraws; Device shows the same state once in its compact `DATA STATE` row. The four pages use separate information hierarchies instead of a repeated card grid; primary values sit near the top, while whitespace rather than decorative boxes and divider lines groups secondary information.
+The hardware is a low-frequency snapshot display, not a second realtime dashboard. Overview leads with today's accumulated cost, Tasks summarizes recent completed/error/stale results, and Quota shows the five-hour and seven-day remaining-capacity percentages with the earliest next-reset duration for each window; normal account count has been removed from the hardware page. Mac account rows and the ESP32 both retain all three duration components: `0天4小时59分钟` in Simplified Chinese, `0d 4h 59m` in English, and `0D 4H 59M` on the device. Device uses one large Mac state followed by compact BLE, data-state, and firmware rows. Reset durations are snapshots calculated by the Mac at each full Quota sync and do not count down or trigger periodic display redraws between syncs. Realtime concurrency and running, waiting, or active task counts are neither displayed nor sent over BLE because scheduled refresh latency would make them misleading. On the three metric pages, a tiny `SYNCED`, `STALE`, `OFFLINE`, or `NO DATA` marker occupies the header without a permanent page counter; Device shows the same state once in its compact `DATA STATE` row. Permanent key instructions and duplicate connection footers have also been removed. The four pages use separate information hierarchies instead of a repeated card grid; primary values sit near the top, while whitespace rather than decorative boxes and divider lines groups secondary information.
 
-Real-device checks cover pairing, encrypted reconnect, reboot recovery, all four page switches, real overview and quota values, independent and page-cycle fallback offline detection, recovery without dropping BLE, two reproducible builds, and Flash readback. No TokenRouter password, token, Codex secret, account identity, or raw API response is sent to the screen. Battery measurement, RTC sleep scheduling, enclosure work, and the 30-day endurance test remain future hardware milestones. Firmware, hardware decisions, and build instructions are under [`硬件开发/ESP32-S3-RLCD-4.2/`](硬件开发/ESP32-S3-RLCD-4.2/).
+Firmware `0.7.0` adds BLE delivery using a separately versioned update protocol. App releases embed the firmware image and a manifest containing its model, versions, size, and SHA-256. After updating and restarting the macOS app through **Settings > Updates**, connect the already bonded screen, then use the **Firmware** action in Hardware Monitor settings. The app can enter update-only mode even when the device uses an older monitor-data protocol, transfers the image with acknowledged BLE writes, and confirms the target version after the device restarts and reconnects. The device verifies the full-file SHA-256, ESP image structure, project name, and target version before selecting the inactive OTA slot.
+
+Existing firmware without the OTA characteristic needs one USB initialization. That operation writes the rollback-capable bootloader, dual-OTA partition table, factory application, and initial OTA metadata without erasing the NVS partition that stores the Bluetooth bond. Once initialized, routine firmware updates use BLE only. ESP-IDF rollback remains armed until the new firmware has initialized both the display and BLE; a failed first boot returns to the previous slot. Secure Boot and Flash Encryption are not enabled on the current prototype, so these checks provide transport integrity and recovery but are not hardware-rooted publisher authentication.
+
+The preceding `0.5.1-data-sync` release candidate passed real-device checks for pairing, encrypted reconnect, reboot recovery, all four page switches, real overview and quota values, independent and page-cycle fallback offline detection, recovery without dropping BLE, two reproducible builds, and Flash readback. Firmware `0.7.0` has now also passed its one-time USB migration without erasing NVS, refresh of an already bonded Mac's cached GATT table, a real acknowledged BLE upgrade from `0.6.9`, device-side verification, restart, encrypted reconnect, and target-version confirmation. A readback of OTA 0 matched the app's 630,560-byte image exactly, and OTA metadata recorded the image as `VALID` after repeated boots. No TokenRouter password, token, Codex secret, account identity, or raw API response is sent to the screen. Battery measurement, RTC sleep scheduling, enclosure work, destructive fault-injection checks, and the 30-day endurance test remain future hardware milestones. Firmware, hardware decisions, and build instructions are under [`硬件开发/ESP32-S3-RLCD-4.2/`](硬件开发/ESP32-S3-RLCD-4.2/).
 
 ## Run From Source
 
@@ -143,7 +147,7 @@ Admin accounts can additionally enable realtime concurrency, normal account coun
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.35 ./scripts/build-app.sh
+VERSION=v0.1.36 ./scripts/build-app.sh
 ```
 
 Output:
@@ -152,21 +156,21 @@ Output:
 dist/Sub2APIStatusBar.app
 ```
 
-The build script generates the app icon, copies bundle resources, and applies ad-hoc signing by default. This is suitable for GitHub-only distribution when you do not need Apple notarization.
+The build script verifies and embeds the ESP32 firmware manifest and image, generates the app icon, copies the remaining bundle resources, and applies ad-hoc signing by default. The build fails if the firmware model, versions, size, or SHA-256 does not match the checked-in source contract. This is suitable for GitHub-only distribution when you do not need Apple notarization.
 
 Release builds are host-native by default. Building on an Intel Mac without an architecture override produces an `x86_64` app bundle.
 
 Set `ARCHITECTURE` to build a specific target or a Universal 2 app. Supported values are `x86_64`, `arm64`, and `universal`; `native` remains the default.
 
 ```bash
-VERSION=v0.1.35 ARCHITECTURE=universal ./scripts/build-app.sh
+VERSION=v0.1.36 ARCHITECTURE=universal ./scripts/build-app.sh
 ```
 
 Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.35 \
+VERSION=v0.1.36 \
 ./scripts/build-app.sh
 ```
 
@@ -174,16 +178,16 @@ VERSION=v0.1.35 \
 
 ```bash
 for ARCHITECTURE in x86_64 arm64 universal; do
-  VERSION=v0.1.35 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
+  VERSION=v0.1.36 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
 done
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.35-macOS-x86_64.zip
-dist/Sub2APIStatusBar-0.1.35-macOS-arm64.zip
-dist/Sub2APIStatusBar-0.1.35-macOS-universal.zip
+dist/Sub2APIStatusBar-0.1.36-macOS-x86_64.zip
+dist/Sub2APIStatusBar-0.1.36-macOS-arm64.zip
+dist/Sub2APIStatusBar-0.1.36-macOS-universal.zip
 ```
 
 Each ZIP has a matching `.sha256` file. The checksum manifest references the archive by file name only, so downloaded assets can be verified together from any directory with `shasum -a 256 -c <archive>.sha256`.
@@ -192,7 +196,7 @@ By default, `package-release.sh` creates an ad-hoc signed archive. You can pass 
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.35 \
+VERSION=v0.1.36 \
 ARCHITECTURE=universal \
 ./scripts/package-release.sh
 ```
@@ -208,13 +212,13 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.35 \
+VERSION=v0.1.36 \
 ./scripts/notarize-release.sh
 ```
 
 ## Updates
 
-The app checks GitHub Releases once on launch and lets users check manually from Settings > Updates. When a newer release is available, the popover shows a small update banner with an Install Update action. The updater selects the current process architecture first (`x86_64` or `arm64`), falls back to Universal 2, and then supports legacy architecture-neutral archive names. It validates the downloaded app's Mach-O architecture, bundle identifier, and version before replacing the current bundle and restarting. The GitHub release link remains available as a manual fallback.
+The app checks GitHub Releases once on launch and lets users check manually from Settings > Updates. When a newer release is available, the popover shows a small update banner with an Install Update action. The updater selects the current process architecture first (`x86_64` or `arm64`), falls back to Universal 2, and then supports legacy architecture-neutral archive names. It validates the downloaded app's Mach-O architecture, bundle identifier, version, and bundled ESP32 firmware before replacing the current bundle and restarting. The GitHub release link remains available as a manual fallback. Hardware firmware installation is deliberately offered by the restarted new app, not by the old app during its own replacement.
 
 GitHub only exposes published releases through the public latest-release API. Draft releases are intentionally not shown to users.
 

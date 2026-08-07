@@ -5,18 +5,22 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "host/ble_gatt.h"
 #include "host/ble_hs.h"
 #include "host/ble_sm.h"
 #include "host/ble_store.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
-#define BLE_PROTOCOL_VERSION 2
-#define BLE_STATUS_PAYLOAD_LENGTH 9
+#include "firmware_update.h"
+
+#define BLE_PROTOCOL_VERSION 4
+#define BLE_STATUS_PAYLOAD_LENGTH 16
 #define BLE_MAX_BONDS 1
 #define BLE_PACKET_HEADER_LENGTH 5
 #define BLE_COMMON_PREFIX_LENGTH 5
@@ -24,8 +28,12 @@
 #define BLE_HEARTBEAT_PACKET_LENGTH 10
 #define BLE_OVERVIEW_PACKET_LENGTH 35
 #define BLE_TASKS_PACKET_LENGTH 18
-#define BLE_QUOTA_PACKET_LENGTH 23
+#define BLE_QUOTA_PACKET_LENGTH 27
 #define BLE_DEVICE_PACKET_LENGTH 10
+#define BLE_FIRMWARE_UPDATE_START_PACKET_LENGTH 44
+#define BLE_FIRMWARE_UPDATE_COMMAND_PACKET_LENGTH 5
+#define BLE_FIRMWARE_DATA_MAX_LENGTH 240
+#define BLE_GATT_SCHEMA_VERSION 2
 
 #define BLE_MESSAGE_HELLO 0x01
 #define BLE_MESSAGE_HEARTBEAT 0x02
@@ -34,8 +42,14 @@
 #define BLE_MESSAGE_QUOTA 0x12
 #define BLE_MESSAGE_DEVICE 0x13
 
+#define BLE_FIRMWARE_UPDATE_COMMAND_START 0x01
+#define BLE_FIRMWARE_UPDATE_COMMAND_FINISH 0x02
+#define BLE_FIRMWARE_UPDATE_COMMAND_ABORT 0x03
+
 static const char *kTag = "ble_link";
 static const char *kDeviceName = "TokenRouter Monitor";
+static const ble_uuid16_t kGattServiceUuid = BLE_UUID16_INIT(0x1801);
+static const ble_uuid16_t kServiceChangedCharacteristicUuid = BLE_UUID16_INIT(0x2a05);
 
 /* BFB75D90-76B2-4BBF-803D-3A8DDE689207 */
 static const ble_uuid128_t kServiceUuid = BLE_UUID128_INIT(
@@ -51,6 +65,11 @@ static const ble_uuid128_t kCommandCharacteristicUuid = BLE_UUID128_INIT(
 static const ble_uuid128_t kStatusCharacteristicUuid = BLE_UUID128_INIT(
     0x2f, 0xbf, 0xdc, 0x6b, 0xfd, 0xd2, 0x37, 0x97,
     0xba, 0x4f, 0xfd, 0x9a, 0x14, 0xd5, 0xe4, 0xfe);
+
+/* 0299C897-440C-4466-BFF3-934103A8601C */
+static const ble_uuid128_t kFirmwareDataCharacteristicUuid = BLE_UUID128_INIT(
+    0x1c, 0x60, 0xa8, 0x03, 0x41, 0x93, 0xf3, 0xbf,
+    0x66, 0x44, 0x0c, 0x44, 0x97, 0xc8, 0x99, 0x02);
 
 static portMUX_TYPE s_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static ble_link_snapshot_t s_snapshot = {
@@ -69,8 +88,72 @@ static uint16_t s_status_value_handle;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static int64_t s_pairing_deadline_us;
 static bool s_host_synced;
+static bool s_gatt_schema_change_pending;
+static uint16_t s_gatt_service_changed_handle;
 
 void ble_store_config_init(void);
+
+static void load_gatt_schema_state(void)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t result = nvs_open("ble_schema", NVS_READWRITE, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGW(kTag, "GATT schema state unavailable: %s", esp_err_to_name(result));
+        s_gatt_schema_change_pending = true;
+        return;
+    }
+
+    uint8_t stored_version = 0;
+    result = nvs_get_u8(handle, "gatt_db", &stored_version);
+    nvs_close(handle);
+    if (result != ESP_OK && result != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(kTag, "GATT schema state read failed: %s", esp_err_to_name(result));
+    }
+    s_gatt_schema_change_pending = result != ESP_OK || stored_version != BLE_GATT_SCHEMA_VERSION;
+}
+
+static void persist_gatt_schema_version(void)
+{
+    nvs_handle_t handle = 0;
+    esp_err_t result = nvs_open("ble_schema", NVS_READWRITE, &handle);
+    if (result == ESP_OK) {
+        result = nvs_set_u8(handle, "gatt_db", BLE_GATT_SCHEMA_VERSION);
+    }
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
+    if (result == ESP_OK) {
+        s_gatt_schema_change_pending = false;
+        ESP_LOGI(kTag, "GATT schema version persisted: %u", (unsigned int)BLE_GATT_SCHEMA_VERSION);
+    } else {
+        ESP_LOGW(kTag, "GATT schema version persist failed: %s", esp_err_to_name(result));
+    }
+    if (handle != 0) {
+        nvs_close(handle);
+    }
+}
+
+static void notify_gatt_schema_changed(void)
+{
+    if (!s_gatt_schema_change_pending) {
+        return;
+    }
+    ble_svc_gatt_changed(0x0001, 0xffff);
+    ESP_LOGI(kTag, "GATT service change announced: schema=%u", (unsigned int)BLE_GATT_SCHEMA_VERSION);
+}
+
+static void resolve_gatt_service_changed_handle(void)
+{
+    const int result = ble_gatts_find_chr(
+        &kGattServiceUuid.u,
+        &kServiceChangedCharacteristicUuid.u,
+        NULL,
+        &s_gatt_service_changed_handle);
+    if (result != 0) {
+        ESP_LOGW(kTag, "GATT service change handle unavailable: rc=%d", result);
+        s_gatt_service_changed_handle = 0;
+    }
+}
 
 static void set_state(
     ble_link_state_t state,
@@ -271,21 +354,26 @@ static int apply_monitor_packet(const uint8_t *packet, uint16_t length)
         const uint8_t availability = packet[10];
         const bool five_hour_valid = (availability & 0x01) != 0;
         const bool seven_day_valid = (availability & 0x02) != 0;
-        const bool normal_accounts_valid = (availability & 0x04) != 0;
+        const bool five_hour_reset_valid = (availability & 0x04) != 0;
+        const bool seven_day_reset_valid = (availability & 0x08) != 0;
         changed = changed
             || s_monitor_data.page_updated_us[2] == 0
             || s_monitor_data.quota_five_hour_valid != five_hour_valid
             || s_monitor_data.quota_seven_day_valid != seven_day_valid
-            || s_monitor_data.quota_normal_accounts_valid != normal_accounts_valid
+            || s_monitor_data.quota_five_hour_reset_valid != five_hour_reset_valid
+            || s_monitor_data.quota_seven_day_reset_valid != seven_day_reset_valid
             || s_monitor_data.quota_five_hour_basis_points != read_u32_le(&packet[11])
             || s_monitor_data.quota_seven_day_basis_points != read_u32_le(&packet[15])
-            || s_monitor_data.quota_normal_accounts != read_u32_le(&packet[19]);
+            || s_monitor_data.quota_five_hour_reset_seconds != read_u32_le(&packet[19])
+            || s_monitor_data.quota_seven_day_reset_seconds != read_u32_le(&packet[23]);
         s_monitor_data.quota_five_hour_valid = five_hour_valid;
         s_monitor_data.quota_seven_day_valid = seven_day_valid;
-        s_monitor_data.quota_normal_accounts_valid = normal_accounts_valid;
+        s_monitor_data.quota_five_hour_reset_valid = five_hour_reset_valid;
+        s_monitor_data.quota_seven_day_reset_valid = seven_day_reset_valid;
         s_monitor_data.quota_five_hour_basis_points = read_u32_le(&packet[11]);
         s_monitor_data.quota_seven_day_basis_points = read_u32_le(&packet[15]);
-        s_monitor_data.quota_normal_accounts = read_u32_le(&packet[19]);
+        s_monitor_data.quota_five_hour_reset_seconds = read_u32_le(&packet[19]);
+        s_monitor_data.quota_seven_day_reset_seconds = read_u32_le(&packet[23]);
         s_monitor_data.page_updated_us[2] = received_us;
         break;
     }
@@ -380,6 +468,7 @@ static bool connection_is_bonded_and_encrypted(uint16_t conn_handle)
 static int append_status_payload(struct os_mbuf *output)
 {
     const ble_link_snapshot_t snapshot = ble_link_snapshot();
+    const firmware_update_snapshot_t update = firmware_update_snapshot();
     uint8_t flags = 0;
     if (snapshot.connected) {
         flags |= 0x01;
@@ -396,7 +485,7 @@ static int append_status_payload(struct os_mbuf *output)
     if (snapshot.pairing_window_open) {
         flags |= 0x10;
     }
-    const uint8_t payload[BLE_STATUS_PAYLOAD_LENGTH] = {
+    uint8_t payload[BLE_STATUS_PAYLOAD_LENGTH] = {
         'T',
         'R',
         'M',
@@ -406,8 +495,37 @@ static int append_status_payload(struct os_mbuf *output)
         MONITOR_FIRMWARE_VERSION_PATCH,
         flags,
         snapshot.current_page,
+        FIRMWARE_UPDATE_PROTOCOL_VERSION,
+        (uint8_t)update.state,
+        (uint8_t)update.error,
+        0,
+        0,
+        0,
+        0,
     };
+    payload[12] = (uint8_t)update.received_bytes;
+    payload[13] = (uint8_t)(update.received_bytes >> 8);
+    payload[14] = (uint8_t)(update.received_bytes >> 16);
+    payload[15] = (uint8_t)(update.received_bytes >> 24);
     return os_mbuf_append(output, payload, sizeof(payload));
+}
+
+static bool packet_has_magic(const uint8_t *packet, const char *magic)
+{
+    return packet[0] == (uint8_t)magic[0]
+        && packet[1] == (uint8_t)magic[1]
+        && packet[2] == (uint8_t)magic[2];
+}
+
+static int firmware_update_result(esp_err_t result)
+{
+    if (result == ESP_OK) {
+        return 0;
+    }
+    if (s_status_value_handle != 0) {
+        ble_gatts_chr_updated(s_status_value_handle);
+    }
+    return BLE_ATT_ERR_UNLIKELY;
 }
 
 static int gatt_access(
@@ -422,6 +540,30 @@ static int gatt_access(
         return append_status_payload(context->om) == 0
             ? 0
             : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+
+    if (context->op == BLE_GATT_ACCESS_OP_WRITE_CHR
+        && ble_uuid_cmp(context->chr->uuid, &kFirmwareDataCharacteristicUuid.u) == 0) {
+        if (!connection_is_bonded_and_encrypted(conn_handle)) {
+            ESP_LOGW(kTag, "firmware data rejected: current peer is not bonded and encrypted");
+            return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        }
+
+        const uint16_t packet_length = OS_MBUF_PKTLEN(context->om);
+        if (packet_length == 0 || packet_length > BLE_FIRMWARE_DATA_MAX_LENGTH) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        uint8_t packet[BLE_FIRMWARE_DATA_MAX_LENGTH];
+        uint16_t length = 0;
+        const int flatten_result = ble_hs_mbuf_to_flat(
+            context->om,
+            packet,
+            sizeof(packet),
+            &length);
+        if (flatten_result != 0 || length != packet_length) {
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+        return firmware_update_result(firmware_update_write(packet, length));
     }
 
     if (context->op == BLE_GATT_ACCESS_OP_WRITE_CHR
@@ -442,8 +584,53 @@ static int gatt_access(
         if (result != 0 || length != packet_length) {
             return BLE_ATT_ERR_UNLIKELY;
         }
-        if (packet[0] != 'T' || packet[1] != 'R' || packet[2] != 'M'
-            || packet[3] != BLE_PROTOCOL_VERSION) {
+        if (packet_has_magic(packet, "TRU")) {
+            if (packet[3] != FIRMWARE_UPDATE_PROTOCOL_VERSION) {
+                ESP_LOGW(kTag,
+                         "firmware update rejected: protocol=%u",
+                         (unsigned int)packet[3]);
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            esp_err_t update_result;
+            switch (packet[4]) {
+            case BLE_FIRMWARE_UPDATE_COMMAND_START:
+                if (packet_length != BLE_FIRMWARE_UPDATE_START_PACKET_LENGTH) {
+                    return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+                }
+                update_result = firmware_update_start(
+                    read_u32_le(&packet[5]),
+                    packet[9],
+                    packet[10],
+                    packet[11],
+                    &packet[12]);
+                if (s_status_value_handle != 0) {
+                    ble_gatts_chr_updated(s_status_value_handle);
+                }
+                return firmware_update_result(update_result);
+            case BLE_FIRMWARE_UPDATE_COMMAND_FINISH:
+                if (packet_length != BLE_FIRMWARE_UPDATE_COMMAND_PACKET_LENGTH) {
+                    return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+                }
+                update_result = firmware_update_finish();
+                if (s_status_value_handle != 0) {
+                    ble_gatts_chr_updated(s_status_value_handle);
+                }
+                return firmware_update_result(update_result);
+            case BLE_FIRMWARE_UPDATE_COMMAND_ABORT:
+                if (packet_length != BLE_FIRMWARE_UPDATE_COMMAND_PACKET_LENGTH) {
+                    return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+                }
+                firmware_update_abort(FIRMWARE_UPDATE_ERROR_INVALID_STATE);
+                if (s_status_value_handle != 0) {
+                    ble_gatts_chr_updated(s_status_value_handle);
+                }
+                return 0;
+            default:
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+        }
+
+        if (!packet_has_magic(packet, "TRM") || packet[3] != BLE_PROTOCOL_VERSION) {
             ESP_LOGW(kTag, "secure write rejected: protocol=%u", (unsigned int)packet[3]);
             return BLE_ATT_ERR_UNLIKELY;
         }
@@ -466,6 +653,10 @@ static int gatt_access(
         if (!snapshot.handshake_ready) {
             ESP_LOGW(kTag, "monitor data rejected: handshake is not ready");
             return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
+        }
+        if (firmware_update_is_active()) {
+            ESP_LOGW(kTag, "monitor data rejected: firmware update is active");
+            return BLE_ATT_ERR_UNLIKELY;
         }
         const int packet_result = apply_monitor_packet(packet, packet_length);
         if (packet_result == 0) {
@@ -495,6 +686,11 @@ static const struct ble_gatt_chr_def kCharacteristics[] = {
             | BLE_GATT_CHR_F_NOTIFY
             | BLE_GATT_CHR_F_NOTIFY_INDICATE_ENC,
         .val_handle = &s_status_value_handle,
+    },
+    {
+        .uuid = &kFirmwareDataCharacteristicUuid.u,
+        .access_cb = gatt_access,
+        .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC,
     },
     {0},
 };
@@ -647,6 +843,9 @@ static int gap_event(struct ble_gap_event *event, void *argument)
                  (unsigned int)event->enc_change.conn_handle,
                  paired ? 1U : 0U,
                  pairing ? 1U : 0U);
+        if (paired && s_gatt_schema_change_pending) {
+            notify_gatt_schema_changed();
+        }
         return 0;
     }
     case BLE_GAP_EVENT_IDENTITY_RESOLVED: {
@@ -683,6 +882,7 @@ static int gap_event(struct ble_gap_event *event, void *argument)
     }
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(kTag, "disconnected: reason=%d", event->disconnect.reason);
+        firmware_update_abort(FIRMWARE_UPDATE_ERROR_DISCONNECTED);
         set_connection_handle(BLE_HS_CONN_HANDLE_NONE);
         mark_mac_offline();
         advertise();
@@ -699,6 +899,21 @@ static int gap_event(struct ble_gap_event *event, void *argument)
                  (unsigned int)event->subscribe.reason,
                  (unsigned int)event->subscribe.cur_notify,
                  (unsigned int)event->subscribe.cur_indicate);
+        if (s_gatt_schema_change_pending
+            && s_gatt_service_changed_handle != 0
+            && event->subscribe.attr_handle == s_gatt_service_changed_handle
+            && event->subscribe.cur_indicate) {
+            notify_gatt_schema_changed();
+        }
+        return 0;
+    case BLE_GAP_EVENT_NOTIFY_TX:
+        if (s_gatt_schema_change_pending
+            && s_gatt_service_changed_handle != 0
+            && event->notify_tx.attr_handle == s_gatt_service_changed_handle
+            && event->notify_tx.indication
+            && event->notify_tx.status == BLE_HS_EDONE) {
+            persist_gatt_schema_version();
+        }
         return 0;
     case BLE_GAP_EVENT_MTU:
         ESP_LOGI(kTag,
@@ -734,6 +949,8 @@ static void on_sync(void)
         return;
     }
     set_host_synced(true);
+    resolve_gatt_service_changed_handle();
+    notify_gatt_schema_changed();
     advertise();
 }
 
@@ -760,6 +977,7 @@ esp_err_t ble_link_start(void)
         set_state(BLE_LINK_STATE_ERROR, false, false, false, false, false, result);
         return result;
     }
+    load_gatt_schema_state();
 
     result = nimble_port_init();
     if (result != ESP_OK) {
@@ -821,6 +1039,9 @@ esp_err_t ble_link_open_pairing_window(uint32_t duration_seconds)
     if (duration_seconds == 0 || duration_seconds > 300) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (firmware_update_is_active()) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     const bool paired = has_stored_bond();
     set_pairing_deadline(esp_timer_get_time() + ((int64_t)duration_seconds * 1000000));
@@ -848,6 +1069,7 @@ esp_err_t ble_link_open_pairing_window(uint32_t duration_seconds)
 
 void ble_link_tick(void)
 {
+    firmware_update_tick();
     const int64_t now_us = esp_timer_get_time();
     bool offline_expired = false;
     portENTER_CRITICAL(&s_state_lock);

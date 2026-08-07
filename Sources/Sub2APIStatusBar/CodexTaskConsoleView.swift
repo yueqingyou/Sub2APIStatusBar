@@ -91,8 +91,7 @@ struct CodexTaskConsoleView: View {
         HStack(spacing: 12) {
             if showsPageHeader {
                 PanelPageHeader(
-                    title: strings.phrase("任务", "Tasks"),
-                    subtitle: strings.phrase("Codex hooks 实时状态", "Live Codex hook status")
+                    title: strings.phrase("Codex 任务", "Codex Tasks")
                 )
             }
             Spacer()

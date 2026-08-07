@@ -17,8 +17,7 @@ struct CodexWorkspaceView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center) {
                     PanelPageHeader(
-                        title: strings.phrase("任务", "Tasks"),
-                        subtitle: strings.phrase("Codex 任务与节点", "Codex tasks and nodes")
+                        title: strings.phrase("任务", "Tasks")
                     )
                     Spacer()
                     if selection == .activity, !model.codexNodes.isEmpty {

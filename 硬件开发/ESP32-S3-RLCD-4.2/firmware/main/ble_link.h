@@ -9,10 +9,12 @@
 extern "C" {
 #endif
 
+#ifndef MONITOR_FIRMWARE_VERSION_MAJOR
 #define MONITOR_FIRMWARE_VERSION_MAJOR 0
-#define MONITOR_FIRMWARE_VERSION_MINOR 5
-#define MONITOR_FIRMWARE_VERSION_PATCH 1
-#define MONITOR_FIRMWARE_VERSION_STRING "0.5.1"
+#define MONITOR_FIRMWARE_VERSION_MINOR 7
+#define MONITOR_FIRMWARE_VERSION_PATCH 0
+#define MONITOR_FIRMWARE_VERSION_STRING "0.7.0"
+#endif
 
 #define BLE_LINK_PAGE_COUNT 4
 
@@ -54,10 +56,12 @@ typedef struct {
     uint16_t tasks_stale;
     bool quota_five_hour_valid;
     bool quota_seven_day_valid;
-    bool quota_normal_accounts_valid;
+    bool quota_five_hour_reset_valid;
+    bool quota_seven_day_reset_valid;
     uint32_t quota_five_hour_basis_points;
     uint32_t quota_seven_day_basis_points;
-    uint32_t quota_normal_accounts;
+    uint32_t quota_five_hour_reset_seconds;
+    uint32_t quota_seven_day_reset_seconds;
     uint32_t offline_timeout_seconds;
     int64_t last_signal_us;
     int64_t page_updated_us[BLE_LINK_PAGE_COUNT];

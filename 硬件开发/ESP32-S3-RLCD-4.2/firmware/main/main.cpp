@@ -10,6 +10,7 @@
 
 #include "board_config.h"
 #include "ble_link.h"
+#include "firmware_update.h"
 #include "u8g2_st7305.h"
 
 namespace {
@@ -195,6 +196,19 @@ void FormatPercentage(uint32_t basis_points, char *output, size_t output_size)
         static_cast<unsigned long long>(rounded_percent));
 }
 
+void FormatResetDuration(uint32_t seconds, char *output, size_t output_size)
+{
+    const uint32_t days = seconds / 86'400U;
+    const uint32_t hours = (seconds % 86'400U) / 3'600U;
+    const uint32_t minutes = (seconds % 3'600U) / 60U;
+    std::snprintf(output,
+                  output_size,
+                  "%luD %luH %luM",
+                  static_cast<unsigned long>(days),
+                  static_cast<unsigned long>(hours),
+                  static_cast<unsigned long>(minutes));
+}
+
 const char *PageDataStatus(Page page, const ble_link_monitor_data_t &data)
 {
     if (data.page_updated_us[static_cast<uint8_t>(page)] <= 0) {
@@ -214,20 +228,14 @@ void DrawHeader(
     u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
     u8g2_DrawStr(u8g2, 16, 25, PageDisplayName(page));
 
-    char page_text[32];
+    char page_text[16];
     if (page != Page::kDevice) {
         std::snprintf(page_text,
                       sizeof(page_text),
-                      "%s  %u / %u",
-                      PageDataStatus(page, data),
-                      static_cast<unsigned int>(page) + 1U,
-                      static_cast<unsigned int>(Page::kCount));
+                      "%s",
+                      PageDataStatus(page, data));
     } else {
-        std::snprintf(page_text,
-                      sizeof(page_text),
-                      "%u / %u",
-                      static_cast<unsigned int>(page) + 1U,
-                      static_cast<unsigned int>(Page::kCount));
+        page_text[0] = '\0';
     }
     u8g2_SetFont(u8g2, u8g2_font_5x8_tf);
     const int page_width = static_cast<int>(u8g2_GetStrWidth(u8g2, page_text));
@@ -238,19 +246,19 @@ const char *BleFooterStatus(const ble_link_snapshot_t &link)
 {
     switch (link.state) {
     case BLE_LINK_STATE_STARTING:
-        return "BLE STARTING";
+        return "STARTING";
     case BLE_LINK_STATE_UNPAIRED:
         return "HOLD KEY TO PAIR";
     case BLE_LINK_STATE_ADVERTISING:
-        return "BLE ADVERTISING";
+        return "WAITING FOR MAC";
     case BLE_LINK_STATE_PAIRING:
         return "PAIRING OPEN";
     case BLE_LINK_STATE_SECURING:
-        return "SECURING LINK";
+        return "SECURING";
     case BLE_LINK_STATE_CONNECTED:
-        return "MAC CONNECTED";
+        return "HANDSHAKING";
     case BLE_LINK_STATE_READY:
-        return "MAC LINK READY";
+        return "";
     case BLE_LINK_STATE_ERROR:
         return "BLE ERROR";
     }
@@ -314,15 +322,12 @@ const char *BleSecurityStatus(const ble_link_snapshot_t &link)
 
 void DrawFooter(u8g2_t *u8g2, const ble_link_snapshot_t &link)
 {
-    u8g2_SetFont(u8g2, u8g2_font_6x12_tf);
-    u8g2_DrawStr(u8g2, 16, 284, "KEY NEXT  HOLD PAIR");
-
     if (link.state == BLE_LINK_STATE_READY) {
         return;
     }
+    u8g2_SetFont(u8g2, u8g2_font_6x12_tf);
     const char *status = BleFooterStatus(link);
-    const int status_width = static_cast<int>(u8g2_GetStrWidth(u8g2, status));
-    u8g2_DrawStr(u8g2, board::kDisplayWidth - 16 - status_width, 284, status);
+    DrawTextCentered(u8g2, 16, 368, 284, status);
 }
 
 void DrawOverviewPage(
@@ -421,11 +426,6 @@ void DrawTasksPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         has_data ? u8g2_font_logisoso42_tn : u8g2_font_helvB24_tf,
         u8g2_font_helvB24_tf);
 
-    if (!has_data) {
-        u8g2_SetFont(u8g2, u8g2_font_5x8_tf);
-        DrawTextCentered(u8g2, 16, 368, 137, "WAITING FOR TASK DATA");
-    }
-
     DrawLabeledValue(
         u8g2, 16, 116, 181, 223, "DONE", done_text, u8g2_font_helvB24_tf);
     DrawLabeledValue(
@@ -438,6 +438,8 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
 {
     char five_hour[20];
     char seven_day[20];
+    char five_hour_reset[20];
+    char seven_day_reset[20];
     if (data.quota_five_hour_valid) {
         FormatPercentage(data.quota_five_hour_basis_points, five_hour, sizeof(five_hour));
     } else {
@@ -448,16 +450,21 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
     } else {
         std::snprintf(seven_day, sizeof(seven_day), "--");
     }
-
-    char normal_accounts[20];
-    if (data.quota_normal_accounts_valid) {
-        std::snprintf(
-            normal_accounts,
-            sizeof(normal_accounts),
-            "%lu",
-            static_cast<unsigned long>(data.quota_normal_accounts));
+    if (data.quota_five_hour_reset_valid) {
+        FormatResetDuration(
+            data.quota_five_hour_reset_seconds,
+            five_hour_reset,
+            sizeof(five_hour_reset));
     } else {
-        std::snprintf(normal_accounts, sizeof(normal_accounts), "--");
+        std::snprintf(five_hour_reset, sizeof(five_hour_reset), "--");
+    }
+    if (data.quota_seven_day_reset_valid) {
+        FormatResetDuration(
+            data.quota_seven_day_reset_seconds,
+            seven_day_reset,
+            sizeof(seven_day_reset));
+    } else {
+        std::snprintf(seven_day_reset, sizeof(seven_day_reset), "--");
     }
 
     DrawLabeledValue(
@@ -466,7 +473,7 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         178,
         53,
         104,
-        "5 HOUR REMAINING",
+        "5H LEFT",
         five_hour,
         data.quota_five_hour_valid ? u8g2_font_inb30_mf : u8g2_font_helvB24_tf,
         u8g2_font_helvB24_tf);
@@ -476,13 +483,31 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         178,
         53,
         104,
-        "7 DAY REMAINING",
+        "7D LEFT",
         seven_day,
         data.quota_seven_day_valid ? u8g2_font_inb30_mf : u8g2_font_helvB24_tf,
         u8g2_font_helvB24_tf);
 
     DrawLabeledValue(
-        u8g2, 111, 178, 160, 202, "NORMAL ACCOUNTS", normal_accounts, u8g2_font_helvB24_tf);
+        u8g2,
+        16,
+        178,
+        154,
+        198,
+        "RESET",
+        five_hour_reset,
+        u8g2_font_helvB18_tf,
+        u8g2_font_helvB14_tf);
+    DrawLabeledValue(
+        u8g2,
+        206,
+        178,
+        154,
+        198,
+        "RESET",
+        seven_day_reset,
+        u8g2_font_helvB18_tf,
+        u8g2_font_helvB14_tf);
 }
 
 void DrawDevicePage(
@@ -492,13 +517,11 @@ void DrawDevicePage(
 {
     const char *mac_status = MacConnectionStatus(link, data);
 
-    u8g2_SetFont(u8g2, u8g2_font_6x12_tf);
-    DrawTextCentered(u8g2, 16, 368, 54, "MAC STATUS");
     DrawTextCenteredWithFallback(
         u8g2,
         16,
         368,
-        99,
+        88,
         mac_status,
         u8g2_font_helvB24_tf,
         u8g2_font_helvB18_tf);
@@ -517,6 +540,66 @@ void DrawDevicePage(
     u8g2_DrawStr(u8g2, 24, 247, "FIRMWARE");
     u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
     DrawTextRightAligned(u8g2, 376, 247, kFirmwareVersion);
+}
+
+void DrawFirmwareUpdatePage(
+    u8g2_t *u8g2,
+    const firmware_update_snapshot_t &update)
+{
+    u8g2_ClearBuffer(u8g2);
+    u8g2_SetDrawColor(u8g2, 1);
+    u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
+    u8g2_DrawStr(u8g2, 16, 25, "FIRMWARE");
+
+    const char *state_text = "UNKNOWN";
+    switch (update.state) {
+    case FIRMWARE_UPDATE_STATE_RECEIVING:
+        state_text = "UPDATING";
+        break;
+    case FIRMWARE_UPDATE_STATE_VERIFYING:
+        state_text = "VERIFYING";
+        break;
+    case FIRMWARE_UPDATE_STATE_RESTARTING:
+        state_text = "RESTARTING";
+        break;
+    case FIRMWARE_UPDATE_STATE_FAILED:
+        state_text = "UPDATE FAILED";
+        break;
+    case FIRMWARE_UPDATE_STATE_IDLE:
+        state_text = "READY";
+        break;
+    }
+
+    u8g2_SetFont(u8g2, u8g2_font_helvB24_tf);
+    DrawTextCentered(u8g2, 16, 368, 99, state_text);
+
+    if (update.state == FIRMWARE_UPDATE_STATE_RECEIVING) {
+        char progress_text[8];
+        std::snprintf(
+            progress_text,
+            sizeof(progress_text),
+            "%u%%",
+            static_cast<unsigned int>(update.progress_percent));
+        u8g2_SetFont(u8g2, u8g2_font_inb30_mf);
+        DrawTextCentered(u8g2, 16, 368, 184, progress_text);
+    } else if (update.state == FIRMWARE_UPDATE_STATE_FAILED) {
+        char error_text[24];
+        std::snprintf(
+            error_text,
+            sizeof(error_text),
+            "ERROR %u",
+            static_cast<unsigned int>(update.error));
+        u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
+        DrawTextCentered(u8g2, 16, 368, 174, error_text);
+    }
+
+    u8g2_SetFont(u8g2, u8g2_font_6x12_tf);
+    const char *detail = update.state == FIRMWARE_UPDATE_STATE_FAILED
+        ? "RETRY FROM MAC"
+        : "KEEP POWER CONNECTED";
+    DrawTextCentered(u8g2, 16, 368, 260, detail);
+    u8g2_SendBuffer(u8g2);
+    ++g_screen_refreshes;
 }
 
 void DrawPage(
@@ -551,6 +634,20 @@ void DrawPage(
     ++g_screen_refreshes;
 }
 
+void DrawCurrentScreen(
+    u8g2_t *u8g2,
+    Page page,
+    const ble_link_snapshot_t &link,
+    const ble_link_monitor_data_t &data,
+    const firmware_update_snapshot_t &update)
+{
+    if (update.state != FIRMWARE_UPDATE_STATE_IDLE) {
+        DrawFirmwareUpdatePage(u8g2, update);
+        return;
+    }
+    DrawPage(u8g2, page, link, data);
+}
+
 void InitKey()
 {
     gpio_config_t config = {};
@@ -568,7 +665,7 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(kTag, "TokenRouter Monitor firmware starting");
     ESP_LOGI(kTag,
-             "version=%s-data-sync data_link=ble_protocol_2_secure_pages",
+             "version=%s data_link=ble_protocol_4_secure_pages firmware_update=ble_ota_1",
              kFirmwareVersion);
 
     u8g2_st7305_config_t display_config = u8g2_st7305_default_config();
@@ -590,7 +687,8 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ble_link_set_current_page(static_cast<uint8_t>(page)));
     ble_link_snapshot_t link = ble_link_snapshot();
     ble_link_monitor_data_t monitor_data = ble_link_monitor_data();
-    DrawPage(u8g2, page, link, monitor_data);
+    firmware_update_snapshot_t firmware_update = firmware_update_snapshot();
+    DrawCurrentScreen(u8g2, page, link, monitor_data, firmware_update);
     ESP_LOGI(kTag,
              "page=%s rendered: screen=%dx%d psram=%u bytes screen_refreshes=%lu",
              PageName(page),
@@ -606,6 +704,7 @@ extern "C" void app_main(void)
     const int64_t started_us = raw_changed_us;
     int64_t next_heartbeat_us = started_us + kHeartbeatIntervalUs;
     uint32_t heartbeat = 0;
+    bool running_image_confirmation_attempted = false;
 
     while (true) {
         vTaskDelay(kKeyPollInterval);
@@ -624,13 +723,16 @@ extern "C" void app_main(void)
             } else if (pressed_us != 0) {
                 const int64_t press_duration_us = now_us - pressed_us;
                 pressed_us = 0;
-                if (press_duration_us < kLongPressIntervalUs) {
+                if (firmware_update_is_active()) {
+                    ESP_LOGI(kTag, "key ignored while firmware update is active");
+                } else if (press_duration_us < kLongPressIntervalUs) {
                     page = NextPage(page);
                     ESP_ERROR_CHECK_WITHOUT_ABORT(
                         ble_link_set_current_page(static_cast<uint8_t>(page)));
                     link = ble_link_snapshot();
                     monitor_data = ble_link_monitor_data();
-                    DrawPage(u8g2, page, link, monitor_data);
+                    firmware_update = firmware_update_snapshot();
+                    DrawCurrentScreen(u8g2, page, link, monitor_data, firmware_update);
                     ESP_LOGI(kTag,
                              "key=short page=%s screen_refreshes=%lu",
                              PageName(page),
@@ -653,6 +755,18 @@ extern "C" void app_main(void)
         ble_link_tick();
         const ble_link_snapshot_t next_link = ble_link_snapshot();
         const ble_link_monitor_data_t next_monitor_data = ble_link_monitor_data();
+        const firmware_update_snapshot_t next_firmware_update = firmware_update_snapshot();
+        if (!running_image_confirmation_attempted
+            && next_link.state != BLE_LINK_STATE_STARTING
+            && next_link.state != BLE_LINK_STATE_ERROR) {
+            running_image_confirmation_attempted = true;
+            const esp_err_t confirmation_result = firmware_update_confirm_running_image();
+            if (confirmation_result != ESP_OK) {
+                ESP_LOGE(kTag,
+                         "running image confirmation failed: %s",
+                         esp_err_to_name(confirmation_result));
+            }
+        }
         if (next_link.state != link.state
             || next_link.connected != link.connected
             || next_link.handshake_ready != link.handshake_ready
@@ -661,12 +775,14 @@ extern "C" void app_main(void)
             || next_link.pairing_window_open != link.pairing_window_open
             || next_link.current_page != link.current_page
             || next_link.last_error != link.last_error
-            || next_monitor_data.revision != monitor_data.revision) {
+            || next_monitor_data.revision != monitor_data.revision
+            || next_firmware_update.revision != firmware_update.revision) {
             link = next_link;
             monitor_data = next_monitor_data;
-            DrawPage(u8g2, page, link, monitor_data);
+            firmware_update = next_firmware_update;
+            DrawCurrentScreen(u8g2, page, link, monitor_data, firmware_update);
             ESP_LOGI(kTag,
-                     "ble_state=%s connected=%u encrypted=%u bonded=%u handshake_ready=%u pairing_window=%u mac_online=%u network=%u tokenrouter=%u data_revision=%lu error=%d page=%s screen_refreshes=%lu",
+                     "ble_state=%s connected=%u encrypted=%u bonded=%u handshake_ready=%u pairing_window=%u mac_online=%u network=%u tokenrouter=%u data_revision=%lu update_state=%s update_progress=%u update_error=%u error=%d page=%s screen_refreshes=%lu",
                      ble_link_state_name(link.state),
                      link.connected ? 1U : 0U,
                      link.encrypted ? 1U : 0U,
@@ -677,6 +793,9 @@ extern "C" void app_main(void)
                      monitor_data.network_online ? 1U : 0U,
                      monitor_data.tokenrouter_online ? 1U : 0U,
                      static_cast<unsigned long>(monitor_data.revision),
+                     firmware_update_state_name(firmware_update.state),
+                     static_cast<unsigned int>(firmware_update.progress_percent),
+                     static_cast<unsigned int>(firmware_update.error),
                      link.last_error,
                      PageName(page),
                      static_cast<unsigned long>(g_screen_refreshes));

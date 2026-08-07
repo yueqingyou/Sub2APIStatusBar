@@ -94,4 +94,4 @@ EMBEDDED_PROJECT="$(/bin/dd if="$IMAGE" bs=1 skip=80 count=32 2>/dev/null | /usr
   exit 1
 }
 
-echo "硬件固件已验证：$FIRMWARE_VERSION，$ACTUAL_SIZE 字节，SHA-256 $ACTUAL_SHA256"
+echo "硬件固件已验证：${FIRMWARE_VERSION}，${ACTUAL_SIZE} 字节，SHA-256 ${ACTUAL_SHA256}"

@@ -1,11 +1,13 @@
 idf_component_register(
     SRCS
+        "battery_monitor.cpp"
         "ble_link.c"
         "firmware_update.c"
         "main.cpp"
     REQUIRES
         app_update
         bt
+        esp_adc
         esp_app_format
         esp_partition
         esp_system

@@ -13,5 +13,6 @@ inline constexpr gpio_num_t kDisplayClockPin = GPIO_NUM_11;
 inline constexpr gpio_num_t kDisplayMosiPin = GPIO_NUM_12;
 inline constexpr gpio_num_t kDisplayResetPin = GPIO_NUM_41;
 inline constexpr gpio_num_t kKeyPin = GPIO_NUM_18;
+inline constexpr gpio_num_t kBatteryADCPin = GPIO_NUM_4;
 
 }  // namespace board

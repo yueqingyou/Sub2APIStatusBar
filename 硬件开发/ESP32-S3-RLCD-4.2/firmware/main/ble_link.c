@@ -19,17 +19,18 @@
 
 #include "firmware_update.h"
 
-#define BLE_PROTOCOL_VERSION 4
+#define BLE_PROTOCOL_VERSION 5
 #define BLE_STATUS_PAYLOAD_LENGTH 16
 #define BLE_MAX_BONDS 1
 #define BLE_PACKET_HEADER_LENGTH 5
-#define BLE_COMMON_PREFIX_LENGTH 5
+#define BLE_COMMON_PREFIX_LENGTH 9
+#define BLE_PAGE_PAYLOAD_OFFSET (BLE_PACKET_HEADER_LENGTH + BLE_COMMON_PREFIX_LENGTH)
 #define BLE_HELLO_PACKET_LENGTH 5
-#define BLE_HEARTBEAT_PACKET_LENGTH 10
-#define BLE_OVERVIEW_PACKET_LENGTH 35
-#define BLE_TASKS_PACKET_LENGTH 18
-#define BLE_QUOTA_PACKET_LENGTH 27
-#define BLE_DEVICE_PACKET_LENGTH 10
+#define BLE_HEARTBEAT_PACKET_LENGTH 14
+#define BLE_OVERVIEW_PACKET_LENGTH 39
+#define BLE_TASKS_PACKET_LENGTH 22
+#define BLE_QUOTA_PACKET_LENGTH 31
+#define BLE_DEVICE_PACKET_LENGTH 14
 #define BLE_FIRMWARE_UPDATE_START_PACKET_LENGTH 44
 #define BLE_FIRMWARE_UPDATE_COMMAND_PACKET_LENGTH 5
 #define BLE_FIRMWARE_DATA_MAX_LENGTH 240
@@ -83,6 +84,8 @@ static ble_link_snapshot_t s_snapshot = {
     .last_error = 0,
 };
 static ble_link_monitor_data_t s_monitor_data;
+static uint32_t s_battery_sample_interval_seconds =
+    BLE_LINK_BATTERY_SAMPLE_INTERVAL_DEFAULT_SECONDS;
 static uint8_t s_own_addr_type;
 static uint16_t s_status_value_handle;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -241,6 +244,15 @@ ble_link_monitor_data_t ble_link_monitor_data(void)
     return data;
 }
 
+uint32_t ble_link_battery_sample_interval_seconds(void)
+{
+    uint32_t interval_seconds;
+    portENTER_CRITICAL(&s_state_lock);
+    interval_seconds = s_battery_sample_interval_seconds;
+    portEXIT_CRITICAL(&s_state_lock);
+    return interval_seconds;
+}
+
 static uint16_t read_u16_le(const uint8_t *bytes)
 {
     return (uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8);
@@ -263,7 +275,10 @@ static uint64_t read_u64_le(const uint8_t *bytes)
     return value;
 }
 
-static bool apply_common_monitor_data(const uint8_t *common, int64_t received_us)
+static bool apply_common_monitor_data(
+    const uint8_t *common,
+    int64_t received_us,
+    bool *battery_interval_changed)
 {
     const uint8_t flags = common[0];
     const bool network_online = (flags & 0x01) != 0;
@@ -271,6 +286,7 @@ static bool apply_common_monitor_data(const uint8_t *common, int64_t received_us
     const bool data_stale = (flags & 0x04) != 0;
     const bool admin_mode = (flags & 0x08) != 0;
     const uint32_t offline_timeout_seconds = read_u32_le(&common[1]);
+    const uint32_t battery_sample_interval_seconds = read_u32_le(&common[5]);
 
     bool changed = !s_monitor_data.mac_online
         || s_monitor_data.network_online != network_online
@@ -285,6 +301,9 @@ static bool apply_common_monitor_data(const uint8_t *common, int64_t received_us
     s_monitor_data.admin_mode = admin_mode;
     s_monitor_data.offline_timeout_seconds = offline_timeout_seconds;
     s_monitor_data.last_signal_us = received_us;
+    *battery_interval_changed =
+        s_battery_sample_interval_seconds != battery_sample_interval_seconds;
+    s_battery_sample_interval_seconds = battery_sample_interval_seconds;
     return changed;
 }
 
@@ -315,11 +334,22 @@ static int apply_monitor_packet(const uint8_t *packet, uint16_t length)
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
 
+    const uint32_t battery_sample_interval_seconds = read_u32_le(
+        &packet[BLE_PACKET_HEADER_LENGTH + 5]);
+    if (battery_sample_interval_seconds < BLE_LINK_BATTERY_SAMPLE_INTERVAL_MIN_SECONDS
+        || battery_sample_interval_seconds > BLE_LINK_BATTERY_SAMPLE_INTERVAL_MAX_SECONDS) {
+        return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+    }
+
     const int64_t received_us = esp_timer_get_time();
     bool changed;
+    bool battery_interval_changed;
 
     portENTER_CRITICAL(&s_state_lock);
-    changed = apply_common_monitor_data(&packet[BLE_PACKET_HEADER_LENGTH], received_us);
+    changed = apply_common_monitor_data(
+        &packet[BLE_PACKET_HEADER_LENGTH],
+        received_us,
+        &battery_interval_changed);
 
     switch (message_type) {
     case BLE_MESSAGE_HEARTBEAT:
@@ -327,31 +357,37 @@ static int apply_monitor_packet(const uint8_t *packet, uint16_t length)
     case BLE_MESSAGE_OVERVIEW:
         changed = changed
             || s_monitor_data.page_updated_us[0] == 0
-            || s_monitor_data.overview_valid != (packet[10] != 0)
-            || s_monitor_data.overview_cost_microdollars != read_u64_le(&packet[11])
-            || s_monitor_data.overview_requests != read_u64_le(&packet[19])
-            || s_monitor_data.overview_tokens != read_u64_le(&packet[27]);
-        s_monitor_data.overview_valid = packet[10] != 0;
-        s_monitor_data.overview_cost_microdollars = read_u64_le(&packet[11]);
-        s_monitor_data.overview_requests = read_u64_le(&packet[19]);
-        s_monitor_data.overview_tokens = read_u64_le(&packet[27]);
+            || s_monitor_data.overview_valid != (packet[BLE_PAGE_PAYLOAD_OFFSET] != 0)
+            || s_monitor_data.overview_cost_microdollars
+                != read_u64_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 1])
+            || s_monitor_data.overview_requests
+                != read_u64_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 9])
+            || s_monitor_data.overview_tokens
+                != read_u64_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 17]);
+        s_monitor_data.overview_valid = packet[BLE_PAGE_PAYLOAD_OFFSET] != 0;
+        s_monitor_data.overview_cost_microdollars =
+            read_u64_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 1]);
+        s_monitor_data.overview_requests =
+            read_u64_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 9]);
+        s_monitor_data.overview_tokens =
+            read_u64_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 17]);
         s_monitor_data.page_updated_us[0] = received_us;
         break;
     case BLE_MESSAGE_TASKS:
         changed = changed
             || s_monitor_data.page_updated_us[1] == 0
-            || s_monitor_data.tasks_total != read_u16_le(&packet[10])
-            || s_monitor_data.tasks_done != read_u16_le(&packet[12])
-            || s_monitor_data.tasks_error != read_u16_le(&packet[14])
-            || s_monitor_data.tasks_stale != read_u16_le(&packet[16]);
-        s_monitor_data.tasks_total = read_u16_le(&packet[10]);
-        s_monitor_data.tasks_done = read_u16_le(&packet[12]);
-        s_monitor_data.tasks_error = read_u16_le(&packet[14]);
-        s_monitor_data.tasks_stale = read_u16_le(&packet[16]);
+            || s_monitor_data.tasks_total != read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET])
+            || s_monitor_data.tasks_done != read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 2])
+            || s_monitor_data.tasks_error != read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 4])
+            || s_monitor_data.tasks_stale != read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 6]);
+        s_monitor_data.tasks_total = read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET]);
+        s_monitor_data.tasks_done = read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 2]);
+        s_monitor_data.tasks_error = read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 4]);
+        s_monitor_data.tasks_stale = read_u16_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 6]);
         s_monitor_data.page_updated_us[1] = received_us;
         break;
     case BLE_MESSAGE_QUOTA: {
-        const uint8_t availability = packet[10];
+        const uint8_t availability = packet[BLE_PAGE_PAYLOAD_OFFSET];
         const bool five_hour_valid = (availability & 0x01) != 0;
         const bool seven_day_valid = (availability & 0x02) != 0;
         const bool five_hour_reset_valid = (availability & 0x04) != 0;
@@ -362,18 +398,26 @@ static int apply_monitor_packet(const uint8_t *packet, uint16_t length)
             || s_monitor_data.quota_seven_day_valid != seven_day_valid
             || s_monitor_data.quota_five_hour_reset_valid != five_hour_reset_valid
             || s_monitor_data.quota_seven_day_reset_valid != seven_day_reset_valid
-            || s_monitor_data.quota_five_hour_basis_points != read_u32_le(&packet[11])
-            || s_monitor_data.quota_seven_day_basis_points != read_u32_le(&packet[15])
-            || s_monitor_data.quota_five_hour_reset_seconds != read_u32_le(&packet[19])
-            || s_monitor_data.quota_seven_day_reset_seconds != read_u32_le(&packet[23]);
+            || s_monitor_data.quota_five_hour_basis_points
+                != read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 1])
+            || s_monitor_data.quota_seven_day_basis_points
+                != read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 5])
+            || s_monitor_data.quota_five_hour_reset_seconds
+                != read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 9])
+            || s_monitor_data.quota_seven_day_reset_seconds
+                != read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 13]);
         s_monitor_data.quota_five_hour_valid = five_hour_valid;
         s_monitor_data.quota_seven_day_valid = seven_day_valid;
         s_monitor_data.quota_five_hour_reset_valid = five_hour_reset_valid;
         s_monitor_data.quota_seven_day_reset_valid = seven_day_reset_valid;
-        s_monitor_data.quota_five_hour_basis_points = read_u32_le(&packet[11]);
-        s_monitor_data.quota_seven_day_basis_points = read_u32_le(&packet[15]);
-        s_monitor_data.quota_five_hour_reset_seconds = read_u32_le(&packet[19]);
-        s_monitor_data.quota_seven_day_reset_seconds = read_u32_le(&packet[23]);
+        s_monitor_data.quota_five_hour_basis_points =
+            read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 1]);
+        s_monitor_data.quota_seven_day_basis_points =
+            read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 5]);
+        s_monitor_data.quota_five_hour_reset_seconds =
+            read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 9]);
+        s_monitor_data.quota_seven_day_reset_seconds =
+            read_u32_le(&packet[BLE_PAGE_PAYLOAD_OFFSET + 13]);
         s_monitor_data.page_updated_us[2] = received_us;
         break;
     }
@@ -390,6 +434,12 @@ static int apply_monitor_packet(const uint8_t *packet, uint16_t length)
         ++s_monitor_data.revision;
     }
     portEXIT_CRITICAL(&s_state_lock);
+    if (battery_interval_changed) {
+        ESP_LOGI(
+            kTag,
+            "电量采样间隔已更新：%lu 秒",
+            (unsigned long)battery_sample_interval_seconds);
+    }
     return 0;
 }
 

@@ -105,12 +105,12 @@ final class HardwareFirmwareUpdateTests: XCTestCase {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let image = makeFirmwareImage(version: "0.8.0")
+        let image = makeFirmwareImage(version: "0.8.4")
         let digest = Data(SHA256.hash(data: image))
         let manifest = HardwareFirmwareManifest(
             schemaVersion: 1,
             hardwareModel: HardwareFirmwarePackage.hardwareModel,
-            firmwareVersion: "0.8.0",
+            firmwareVersion: "0.8.4",
             monitorProtocolVersion: HardwareMonitorBLEProtocol.protocolVersion + 1,
             updateProtocolVersion: HardwareFirmwareUpdateProtocol.protocolVersion + 1,
             fileName: "tokenrouter_monitor.bin",
@@ -135,7 +135,7 @@ final class HardwareFirmwareUpdateTests: XCTestCase {
             from: directory,
             requiresCurrentProtocolVersions: false
         )
-        XCTAssertEqual(package.version.description, "0.8.0")
+        XCTAssertEqual(package.version.description, "0.8.4")
         XCTAssertEqual(package.sha256, digest)
     }
 

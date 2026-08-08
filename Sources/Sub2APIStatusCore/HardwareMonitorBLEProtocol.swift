@@ -10,11 +10,13 @@ public enum HardwareMonitorPage: UInt8, CaseIterable, Codable, Hashable, Sendabl
 public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
     public static let pageIntervalRange: ClosedRange<Double> = 5...86_400
     public static let offlineCheckIntervalRange: ClosedRange<Double> = 5...300
+    public static let batterySampleIntervalRange: ClosedRange<Double> = 300...86_400
 
     public var overviewIntervalSeconds: Double
     public var tasksIntervalSeconds: Double
     public var quotaIntervalSeconds: Double
     public var deviceIntervalSeconds: Double
+    public var batterySampleIntervalSeconds: Double
     public var offlineCheckIntervalSeconds: Double?
 
     public init(
@@ -22,12 +24,14 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         tasksIntervalSeconds: Double = 300,
         quotaIntervalSeconds: Double = 1_800,
         deviceIntervalSeconds: Double = 900,
+        batterySampleIntervalSeconds: Double = 900,
         offlineCheckIntervalSeconds: Double? = 30
     ) {
         self.overviewIntervalSeconds = overviewIntervalSeconds
         self.tasksIntervalSeconds = tasksIntervalSeconds
         self.quotaIntervalSeconds = quotaIntervalSeconds
         self.deviceIntervalSeconds = deviceIntervalSeconds
+        self.batterySampleIntervalSeconds = batterySampleIntervalSeconds
         self.offlineCheckIntervalSeconds = offlineCheckIntervalSeconds
         normalize()
     }
@@ -37,6 +41,7 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         case tasksIntervalSeconds
         case quotaIntervalSeconds
         case deviceIntervalSeconds
+        case batterySampleIntervalSeconds
         case offlineCheckIntervalSeconds
     }
 
@@ -46,6 +51,10 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         tasksIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .tasksIntervalSeconds) ?? 300
         quotaIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .quotaIntervalSeconds) ?? 1_800
         deviceIntervalSeconds = try container.decodeIfPresent(Double.self, forKey: .deviceIntervalSeconds) ?? 900
+        batterySampleIntervalSeconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .batterySampleIntervalSeconds
+        ) ?? 900
         if container.contains(.offlineCheckIntervalSeconds) {
             offlineCheckIntervalSeconds = try container.decodeIfPresent(
                 Double.self,
@@ -63,6 +72,7 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         try container.encode(tasksIntervalSeconds, forKey: .tasksIntervalSeconds)
         try container.encode(quotaIntervalSeconds, forKey: .quotaIntervalSeconds)
         try container.encode(deviceIntervalSeconds, forKey: .deviceIntervalSeconds)
+        try container.encode(batterySampleIntervalSeconds, forKey: .batterySampleIntervalSeconds)
         if let offlineCheckIntervalSeconds {
             try container.encode(offlineCheckIntervalSeconds, forKey: .offlineCheckIntervalSeconds)
         } else {
@@ -75,6 +85,10 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         tasksIntervalSeconds = Self.clampPageInterval(tasksIntervalSeconds)
         quotaIntervalSeconds = Self.clampPageInterval(quotaIntervalSeconds)
         deviceIntervalSeconds = Self.clampPageInterval(deviceIntervalSeconds)
+        batterySampleIntervalSeconds = min(
+            max(batterySampleIntervalSeconds, Self.batterySampleIntervalRange.lowerBound),
+            Self.batterySampleIntervalRange.upperBound
+        )
         if let offlineCheckIntervalSeconds {
             self.offlineCheckIntervalSeconds = min(
                 max(offlineCheckIntervalSeconds, Self.offlineCheckIntervalRange.lowerBound),
@@ -102,6 +116,10 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         return UInt32(min(timeout.rounded(.up), Double(UInt32.max)))
     }
 
+    public var batterySampleIntervalWholeSeconds: UInt32 {
+        UInt32(batterySampleIntervalSeconds.rounded())
+    }
+
     private static func clampPageInterval(_ value: Double) -> Double {
         min(max(value, pageIntervalRange.lowerBound), pageIntervalRange.upperBound)
     }
@@ -121,7 +139,7 @@ public enum HardwareMonitorBLEProtocol {
     public static let serviceUUIDString = "BFB75D90-76B2-4BBF-803D-3A8DDE689207"
     public static let commandCharacteristicUUIDString = "EC17F230-4F00-4BFD-903D-66B5EFBB92F0"
     public static let statusCharacteristicUUIDString = "FEE4D514-9AFD-4FBA-9737-D2FD6BDCBF2F"
-    public static let protocolVersion: UInt8 = 4
+    public static let protocolVersion: UInt8 = 5
     public static let minimumStatusPayloadLength = 9
     public static let firmwareUpdateStatusPayloadLength = 16
 
@@ -149,7 +167,8 @@ public enum HardwareMonitorBLEProtocol {
         let common: (HardwareMonitorPage) -> [UInt8] = { page in
             commonPacketPrefix(
                 flags: flags,
-                timeoutSeconds: syncSettings.offlineTimeoutSeconds(for: page)
+                timeoutSeconds: syncSettings.offlineTimeoutSeconds(for: page),
+                batterySampleIntervalSeconds: syncSettings.batterySampleIntervalWholeSeconds
             )
         }
         let taskCounts = Dictionary(grouping: snapshot.codexTaskActivities, by: \.status)
@@ -274,9 +293,14 @@ public enum HardwareMonitorBLEProtocol {
         magic + [protocolVersion, type.rawValue]
     }
 
-    private static func commonPacketPrefix(flags: UInt8, timeoutSeconds: UInt32) -> [UInt8] {
+    private static func commonPacketPrefix(
+        flags: UInt8,
+        timeoutSeconds: UInt32,
+        batterySampleIntervalSeconds: UInt32
+    ) -> [UInt8] {
         var bytes = [flags]
         appendUInt32(timeoutSeconds, to: &bytes)
+        appendUInt32(batterySampleIntervalSeconds, to: &bytes)
         return bytes
     }
 

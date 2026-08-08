@@ -6,20 +6,20 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
     func testHelloPayloadContainsMagicVersionAndMessageType() {
         XCTAssertEqual(
             HardwareMonitorBLEProtocol.helloPayload,
-            Data([0x54, 0x52, 0x4D, 0x04, 0x01])
+            Data([0x54, 0x52, 0x4D, 0x05, 0x01])
         )
     }
 
     func testDecodesReadyDeviceStatusAndCurrentPage() throws {
         let status = try HardwareMonitorBLEProtocol.decodeStatus(
             Data([
-                0x54, 0x52, 0x4D, 0x04, 0x00, 0x07, 0x00, 0x0F, 0x02,
+                0x54, 0x52, 0x4D, 0x05, 0x00, 0x08, 0x04, 0x0F, 0x02,
                 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ])
         )
 
-        XCTAssertEqual(status.protocolVersion, 4)
-        XCTAssertEqual(status.firmwareVersion, "0.7.0")
+        XCTAssertEqual(status.protocolVersion, 5)
+        XCTAssertEqual(status.firmwareVersion, "0.8.4")
         XCTAssertEqual(status.currentPage, .quota)
         XCTAssertTrue(status.isLinkConnected)
         XCTAssertTrue(status.isHandshakeReady)
@@ -80,20 +80,43 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             payloads.heartbeats[.overview]?.bytes,
-            [0x54, 0x52, 0x4D, 0x04, 0x02, 0x03, 90, 0, 0, 0]
+            [0x54, 0x52, 0x4D, 0x05, 0x02, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0]
         )
-        XCTAssertEqual(Array(overview.prefix(11)), [0x54, 0x52, 0x4D, 0x04, 0x10, 0x03, 90, 0, 0, 0, 1])
-        XCTAssertEqual(readUInt64(overview, at: 11), 1_250_000)
-        XCTAssertEqual(readUInt64(overview, at: 19), 42)
-        XCTAssertEqual(readUInt64(overview, at: 27), 123_456)
-        XCTAssertEqual(overview.count, 35)
+        XCTAssertEqual(
+            Array(overview.prefix(15)),
+            [0x54, 0x52, 0x4D, 0x05, 0x10, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0, 1]
+        )
+        XCTAssertEqual(readUInt64(overview, at: 15), 1_250_000)
+        XCTAssertEqual(readUInt64(overview, at: 23), 42)
+        XCTAssertEqual(readUInt64(overview, at: 31), 123_456)
+        XCTAssertEqual(overview.count, 39)
 
-        XCTAssertEqual(Array(tasks.prefix(10)), [0x54, 0x52, 0x4D, 0x04, 0x11, 0x03, 90, 0, 0, 0])
-        XCTAssertEqual(readUInt16(tasks, at: 10), 1)
-        XCTAssertEqual(readUInt16(tasks, at: 12), 1)
-        XCTAssertEqual(readUInt16(tasks, at: 14), 0)
-        XCTAssertEqual(readUInt16(tasks, at: 16), 0)
-        XCTAssertEqual(tasks.count, 18)
+        XCTAssertEqual(
+            Array(tasks.prefix(14)),
+            [0x54, 0x52, 0x4D, 0x05, 0x11, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0]
+        )
+        XCTAssertEqual(readUInt16(tasks, at: 14), 1)
+        XCTAssertEqual(readUInt16(tasks, at: 16), 1)
+        XCTAssertEqual(readUInt16(tasks, at: 18), 0)
+        XCTAssertEqual(readUInt16(tasks, at: 20), 0)
+        XCTAssertEqual(tasks.count, 22)
+    }
+
+    func testEncodesBatterySampleIntervalInEveryMonitorPayload() throws {
+        let payloads = HardwareMonitorBLEProtocol.payloads(
+            snapshot: .idle(mode: .user),
+            networkAvailable: false,
+            syncSettings: HardwareMonitorSyncSettings(
+                batterySampleIntervalSeconds: 3_600
+            )
+        )
+
+        for page in HardwareMonitorPage.allCases {
+            let heartbeat = try XCTUnwrap(payloads.heartbeats[page]).bytes
+            let pagePayload = try XCTUnwrap(payloads.pages[page]).bytes
+            XCTAssertEqual(Array(heartbeat[10..<14]), [0x10, 0x0E, 0x00, 0x00])
+            XCTAssertEqual(Array(pagePayload[10..<14]), [0x10, 0x0E, 0x00, 0x00])
+        }
     }
 
     func testBuildsAdminQuotaPayloadWithCapacityAboveOneHundredPercentWithoutRealtimeFields() throws {
@@ -175,12 +198,15 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             syncSettings: HardwareMonitorSyncSettings(offlineCheckIntervalSeconds: nil)
         ).pages[.quota]).bytes
 
-        XCTAssertEqual(Array(quota.prefix(11)), [0x54, 0x52, 0x4D, 0x04, 0x12, 0x0F, 0x18, 0x15, 0x00, 0x00, 0x0F])
-        XCTAssertEqual(readUInt32(quota, at: 11), 16_000)
-        XCTAssertEqual(readUInt32(quota, at: 15), 10_000)
-        XCTAssertEqual(readUInt32(quota, at: 19), 500)
-        XCTAssertEqual(readUInt32(quota, at: 23), 2_000)
-        XCTAssertEqual(quota.count, 27)
+        XCTAssertEqual(
+            Array(quota.prefix(15)),
+            [0x54, 0x52, 0x4D, 0x05, 0x12, 0x0F, 0x18, 0x15, 0x00, 0x00, 0x84, 0x03, 0, 0, 0x0F]
+        )
+        XCTAssertEqual(readUInt32(quota, at: 15), 16_000)
+        XCTAssertEqual(readUInt32(quota, at: 19), 10_000)
+        XCTAssertEqual(readUInt32(quota, at: 23), 500)
+        XCTAssertEqual(readUInt32(quota, at: 27), 2_000)
+        XCTAssertEqual(quota.count, 31)
     }
 
     func testOverviewPayloadClampsExtremeFiniteCostWithoutOverflowing() throws {
@@ -205,7 +231,7 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             syncSettings: HardwareMonitorSyncSettings()
         ).pages[.overview]).bytes
 
-        XCTAssertEqual(readUInt64(overview, at: 11), UInt64.max)
+        XCTAssertEqual(readUInt64(overview, at: 15), UInt64.max)
     }
 
     func testPageDataAvailabilityDetectsFirstUsableOverviewAndQuotaValues() {
@@ -241,6 +267,7 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             tasksIntervalSeconds: 15,
             quotaIntervalSeconds: 200_000,
             deviceIntervalSeconds: 300,
+            batterySampleIntervalSeconds: 1,
             offlineCheckIntervalSeconds: 2
         )
 
@@ -248,8 +275,15 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertEqual(settings.interval(for: .tasks), 15)
         XCTAssertEqual(settings.interval(for: .quota), 86_400)
         XCTAssertEqual(settings.interval(for: .device), 300)
+        XCTAssertEqual(settings.batterySampleIntervalSeconds, 300)
+        XCTAssertEqual(settings.batterySampleIntervalWholeSeconds, 300)
         XCTAssertEqual(settings.offlineCheckIntervalSeconds, 5)
         XCTAssertEqual(settings.offlineTimeoutSeconds(for: .overview), 15)
+
+        settings.batterySampleIntervalSeconds = 200_000
+        settings.normalize()
+        XCTAssertEqual(settings.batterySampleIntervalSeconds, 86_400)
+        XCTAssertEqual(settings.batterySampleIntervalWholeSeconds, 86_400)
 
         settings.offlineCheckIntervalSeconds = nil
         settings.normalize()
@@ -273,12 +307,14 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertEqual(defaults.tasksIntervalSeconds, 300)
         XCTAssertEqual(defaults.quotaIntervalSeconds, 1_800)
         XCTAssertEqual(defaults.deviceIntervalSeconds, 900)
+        XCTAssertEqual(defaults.batterySampleIntervalSeconds, 900)
         XCTAssertEqual(defaults.offlineCheckIntervalSeconds, 30)
         XCTAssertEqual(missing.offlineCheckIntervalSeconds, 30)
         XCTAssertEqual(missing.overviewIntervalSeconds, 30)
         XCTAssertEqual(missing.tasksIntervalSeconds, 300)
         XCTAssertEqual(missing.quotaIntervalSeconds, 1_800)
         XCTAssertEqual(missing.deviceIntervalSeconds, 900)
+        XCTAssertEqual(missing.batterySampleIntervalSeconds, 900)
         XCTAssertNil(disabled.offlineCheckIntervalSeconds)
     }
 
@@ -321,6 +357,7 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             tasksIntervalSeconds: 5,
             quotaIntervalSeconds: 3_600,
             deviceIntervalSeconds: 600,
+            batterySampleIntervalSeconds: 21_600,
             offlineCheckIntervalSeconds: nil
         )
 

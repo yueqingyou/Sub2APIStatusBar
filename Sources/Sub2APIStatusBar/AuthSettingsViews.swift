@@ -204,6 +204,7 @@ struct SettingsView: View {
     private static let maxAdminUserPickerOptions = 20
     private static let hardwareMonitorPageIntervalOptions: [Double] = [5, 15, 30, 60, 300, 900, 1_800, 3_600, 21_600, 86_400]
     private static let hardwareMonitorOfflineIntervalOptions: [Double] = [5, 15, 30, 60, 120, 300]
+    private static let hardwareMonitorBatteryIntervalOptions: [Double] = [300, 900, 1_800, 3_600, 21_600, 86_400]
 
     init(model: MonitorViewModel) {
         self.model = model
@@ -381,6 +382,18 @@ struct SettingsView: View {
                         strings.phrase("设备页", "Device"),
                         binding: hardwareMonitorPageIntervalBinding(\.deviceIntervalSeconds)
                     )
+                    hardwareMonitorIntervalRow(
+                        strings.phrase("电量刷新", "Battery"),
+                        binding: hardwareMonitorPageIntervalBinding(\.batterySampleIntervalSeconds),
+                        options: Self.hardwareMonitorBatteryIntervalOptions
+                    )
+                    Text(strings.phrase(
+                        "仅控制板载电量采样；显示值不变时不会刷新屏幕。",
+                        "Controls only onboard battery sampling; unchanged values do not refresh the screen."
+                    ))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                     GlassCheckbox(
                         isOn: hardwareMonitorOfflineCheckEnabledBinding,

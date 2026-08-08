@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "battery_monitor.h"
 #include "board_config.h"
 #include "ble_link.h"
 #include "firmware_update.h"
@@ -223,23 +224,43 @@ const char *PageDataStatus(Page page, const ble_link_monitor_data_t &data)
 void DrawHeader(
     u8g2_t *u8g2,
     Page page,
-    const ble_link_monitor_data_t &data)
+    const ble_link_monitor_data_t &data,
+    const battery_monitor::Snapshot &battery)
 {
     u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
     u8g2_DrawStr(u8g2, 16, 25, PageDisplayName(page));
 
-    char page_text[16];
+    char battery_text[16];
+    switch (battery.state) {
+    case battery_monitor::State::kAvailable:
+        std::snprintf(
+            battery_text,
+            sizeof(battery_text),
+            "BAT %u%%",
+            static_cast<unsigned int>(battery.percentage));
+        break;
+    case battery_monitor::State::kNotPresent:
+        std::snprintf(battery_text, sizeof(battery_text), "BAT NONE");
+        break;
+    case battery_monitor::State::kUnavailable:
+        std::snprintf(battery_text, sizeof(battery_text), "BAT N/A");
+        break;
+    }
+
+    u8g2_SetFont(u8g2, u8g2_font_5x8_tf);
+    const int battery_width = static_cast<int>(u8g2_GetStrWidth(u8g2, battery_text));
+    const int battery_x = board::kDisplayWidth - 16 - battery_width;
+    u8g2_DrawStr(u8g2, battery_x, 22, battery_text);
+
     if (page != Page::kDevice) {
+        char page_text[16];
         std::snprintf(page_text,
                       sizeof(page_text),
                       "%s",
                       PageDataStatus(page, data));
-    } else {
-        page_text[0] = '\0';
+        const int page_width = static_cast<int>(u8g2_GetStrWidth(u8g2, page_text));
+        u8g2_DrawStr(u8g2, battery_x - 12 - page_width, 22, page_text);
     }
-    u8g2_SetFont(u8g2, u8g2_font_5x8_tf);
-    const int page_width = static_cast<int>(u8g2_GetStrWidth(u8g2, page_text));
-    u8g2_DrawStr(u8g2, board::kDisplayWidth - 16 - page_width, 22, page_text);
 }
 
 const char *BleFooterStatus(const ble_link_snapshot_t &link)
@@ -327,7 +348,7 @@ void DrawFooter(u8g2_t *u8g2, const ble_link_snapshot_t &link)
     }
     u8g2_SetFont(u8g2, u8g2_font_6x12_tf);
     const char *status = BleFooterStatus(link);
-    DrawTextCentered(u8g2, 16, 368, 284, status);
+    DrawTextCentered(u8g2, 16, 368, 292, status);
 }
 
 void DrawOverviewPage(
@@ -352,24 +373,24 @@ void DrawOverviewPage(
         u8g2,
         16,
         368,
-        52,
-        96,
+        68,
+        120,
         "TODAY COST",
         cost_text,
         data.overview_valid ? u8g2_font_inb30_mf : u8g2_font_helvB24_tf,
         u8g2_font_helvB24_tf);
 
     DrawLabeledValue(
-        u8g2, 16, 178, 132, 169, "REQUESTS", request_text, u8g2_font_helvB24_tf);
+        u8g2, 16, 178, 162, 206, "REQUESTS", request_text, u8g2_font_helvB24_tf);
     DrawLabeledValue(
-        u8g2, 206, 178, 132, 169, "TOKENS", token_text, u8g2_font_helvB24_tf);
+        u8g2, 206, 178, 162, 206, "TOKENS", token_text, u8g2_font_helvB24_tf);
 
     DrawLabeledValue(
         u8g2,
         16,
         116,
-        210,
-        238,
+        248,
+        276,
         "MAC",
         MacConnectionStatus(link, data),
         u8g2_font_helvB10_tf,
@@ -378,8 +399,8 @@ void DrawOverviewPage(
         u8g2,
         142,
         116,
-        210,
-        238,
+        248,
+        276,
         "NETWORK",
         NetworkStatus(data),
         u8g2_font_helvB10_tf,
@@ -388,8 +409,8 @@ void DrawOverviewPage(
         u8g2,
         268,
         116,
-        210,
-        238,
+        248,
+        276,
         "ROUTER",
         TokenRouterStatus(data),
         u8g2_font_helvB10_tf,
@@ -419,19 +440,40 @@ void DrawTasksPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         u8g2,
         16,
         368,
-        55,
-        112,
+        71,
+        141,
         "RECENT RESULTS",
         total_text,
         has_data ? u8g2_font_logisoso42_tn : u8g2_font_helvB24_tf,
         u8g2_font_helvB24_tf);
 
     DrawLabeledValue(
-        u8g2, 16, 116, 181, 223, "DONE", done_text, u8g2_font_helvB24_tf);
+        u8g2,
+        16,
+        116,
+        197,
+        255,
+        "DONE",
+        done_text,
+        u8g2_font_helvB24_tf);
     DrawLabeledValue(
-        u8g2, 142, 116, 181, 223, "ERROR", error_text, u8g2_font_helvB24_tf);
+        u8g2,
+        142,
+        116,
+        197,
+        255,
+        "ERROR",
+        error_text,
+        u8g2_font_helvB24_tf);
     DrawLabeledValue(
-        u8g2, 268, 116, 181, 223, "STALE", stale_text, u8g2_font_helvB24_tf);
+        u8g2,
+        268,
+        116,
+        197,
+        255,
+        "STALE",
+        stale_text,
+        u8g2_font_helvB24_tf);
 }
 
 void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
@@ -471,8 +513,8 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         u8g2,
         16,
         178,
-        53,
-        104,
+        69,
+        128,
         "5H LEFT",
         five_hour,
         data.quota_five_hour_valid ? u8g2_font_inb30_mf : u8g2_font_helvB24_tf,
@@ -481,8 +523,8 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         u8g2,
         206,
         178,
-        53,
-        104,
+        69,
+        128,
         "7D LEFT",
         seven_day,
         data.quota_seven_day_valid ? u8g2_font_inb30_mf : u8g2_font_helvB24_tf,
@@ -492,9 +534,9 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         u8g2,
         16,
         178,
-        154,
-        198,
-        "RESET",
+        200,
+        257,
+        "NEXT RESET",
         five_hour_reset,
         u8g2_font_helvB18_tf,
         u8g2_font_helvB14_tf);
@@ -502,9 +544,9 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
         u8g2,
         206,
         178,
-        154,
-        198,
-        "RESET",
+        200,
+        257,
+        "NEXT RESET",
         seven_day_reset,
         u8g2_font_helvB18_tf,
         u8g2_font_helvB14_tf);
@@ -513,33 +555,58 @@ void DrawQuotaPage(u8g2_t *u8g2, const ble_link_monitor_data_t &data)
 void DrawDevicePage(
     u8g2_t *u8g2,
     const ble_link_snapshot_t &link,
-    const ble_link_monitor_data_t &data)
+    const ble_link_monitor_data_t &data,
+    const battery_monitor::Snapshot &battery)
 {
-    const char *mac_status = MacConnectionStatus(link, data);
+    char battery_voltage[16];
+    switch (battery.state) {
+    case battery_monitor::State::kAvailable: {
+        const unsigned int volts = battery.voltage_millivolts / 1'000U;
+        const unsigned int centivolts = (battery.voltage_millivolts % 1'000U) / 10U;
+        std::snprintf(
+            battery_voltage,
+            sizeof(battery_voltage),
+            "%u.%02uV",
+            volts,
+            centivolts);
+        break;
+    }
+    case battery_monitor::State::kNotPresent:
+        std::snprintf(battery_voltage, sizeof(battery_voltage), "NO BATTERY");
+        break;
+    case battery_monitor::State::kUnavailable:
+        std::snprintf(battery_voltage, sizeof(battery_voltage), "UNAVAILABLE");
+        break;
+    }
 
     DrawTextCenteredWithFallback(
         u8g2,
         16,
         368,
-        88,
-        mac_status,
+        103,
+        MacConnectionStatus(link, data),
         u8g2_font_helvB24_tf,
         u8g2_font_helvB18_tf);
 
     u8g2_SetFont(u8g2, u8g2_font_helvR12_tf);
-    u8g2_DrawStr(u8g2, 24, 151, "BLE LINK");
+    u8g2_DrawStr(u8g2, 24, 153, "BATTERY VOLTAGE");
     u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
-    DrawTextRightAligned(u8g2, 376, 151, BleSecurityStatus(link));
+    DrawTextRightAligned(u8g2, 376, 153, battery_voltage);
 
     u8g2_SetFont(u8g2, u8g2_font_helvR12_tf);
-    u8g2_DrawStr(u8g2, 24, 199, "DATA STATE");
+    u8g2_DrawStr(u8g2, 24, 191, "BLE LINK");
     u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
-    DrawTextRightAligned(u8g2, 376, 199, PageDataStatus(Page::kDevice, data));
+    DrawTextRightAligned(u8g2, 376, 191, BleSecurityStatus(link));
 
     u8g2_SetFont(u8g2, u8g2_font_helvR12_tf);
-    u8g2_DrawStr(u8g2, 24, 247, "FIRMWARE");
+    u8g2_DrawStr(u8g2, 24, 229, "DATA STATE");
     u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
-    DrawTextRightAligned(u8g2, 376, 247, kFirmwareVersion);
+    DrawTextRightAligned(u8g2, 376, 229, PageDataStatus(Page::kDevice, data));
+
+    u8g2_SetFont(u8g2, u8g2_font_helvR12_tf);
+    u8g2_DrawStr(u8g2, 24, 267, "FIRMWARE");
+    u8g2_SetFont(u8g2, u8g2_font_helvB14_tf);
+    DrawTextRightAligned(u8g2, 376, 267, kFirmwareVersion);
 }
 
 void DrawFirmwareUpdatePage(
@@ -606,11 +673,12 @@ void DrawPage(
     u8g2_t *u8g2,
     Page page,
     const ble_link_snapshot_t &link,
-    const ble_link_monitor_data_t &data)
+    const ble_link_monitor_data_t &data,
+    const battery_monitor::Snapshot &battery)
 {
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);
-    DrawHeader(u8g2, page, data);
+    DrawHeader(u8g2, page, data, battery);
 
     switch (page) {
     case Page::kOverview:
@@ -623,7 +691,7 @@ void DrawPage(
         DrawQuotaPage(u8g2, data);
         break;
     case Page::kDevice:
-        DrawDevicePage(u8g2, link, data);
+        DrawDevicePage(u8g2, link, data, battery);
         break;
     case Page::kCount:
         return;
@@ -639,13 +707,14 @@ void DrawCurrentScreen(
     Page page,
     const ble_link_snapshot_t &link,
     const ble_link_monitor_data_t &data,
+    const battery_monitor::Snapshot &battery,
     const firmware_update_snapshot_t &update)
 {
     if (update.state != FIRMWARE_UPDATE_STATE_IDLE) {
         DrawFirmwareUpdatePage(u8g2, update);
         return;
     }
-    DrawPage(u8g2, page, link, data);
+    DrawPage(u8g2, page, link, data, battery);
 }
 
 void InitKey()
@@ -659,13 +728,33 @@ void InitKey()
     ESP_ERROR_CHECK(gpio_config(&config));
 }
 
+void SampleBatteryAndLog()
+{
+    const esp_err_t result = battery_monitor::Sample();
+    if (result != ESP_OK) {
+        ESP_LOGW(kTag, "电池采样不可用：%s", esp_err_to_name(result));
+        return;
+    }
+
+    const battery_monitor::Snapshot battery = battery_monitor::GetSnapshot();
+    if (battery.state == battery_monitor::State::kAvailable) {
+        ESP_LOGI(
+            kTag,
+            "电池=%u%% 电压=%u mV 来源=adc1_gpio4",
+            static_cast<unsigned int>(battery.percentage),
+            static_cast<unsigned int>(battery.voltage_millivolts));
+    } else {
+        ESP_LOGI(kTag, "未检测到电池，来源=adc1_gpio4");
+    }
+}
+
 }  // namespace
 
 extern "C" void app_main(void)
 {
     ESP_LOGI(kTag, "TokenRouter Monitor firmware starting");
     ESP_LOGI(kTag,
-             "version=%s data_link=ble_protocol_4_secure_pages firmware_update=ble_ota_1",
+             "version=%s data_link=ble_protocol_5_secure_pages firmware_update=ble_ota_1",
              kFirmwareVersion);
 
     u8g2_st7305_config_t display_config = u8g2_st7305_default_config();
@@ -687,8 +776,9 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ble_link_set_current_page(static_cast<uint8_t>(page)));
     ble_link_snapshot_t link = ble_link_snapshot();
     ble_link_monitor_data_t monitor_data = ble_link_monitor_data();
+    battery_monitor::Snapshot battery = battery_monitor::GetSnapshot();
     firmware_update_snapshot_t firmware_update = firmware_update_snapshot();
-    DrawCurrentScreen(u8g2, page, link, monitor_data, firmware_update);
+    DrawCurrentScreen(u8g2, page, link, monitor_data, battery, firmware_update);
     ESP_LOGI(kTag,
              "page=%s rendered: screen=%dx%d psram=%u bytes screen_refreshes=%lu",
              PageName(page),
@@ -705,6 +795,7 @@ extern "C" void app_main(void)
     int64_t next_heartbeat_us = started_us + kHeartbeatIntervalUs;
     uint32_t heartbeat = 0;
     bool running_image_confirmation_attempted = false;
+    int64_t last_battery_sample_attempt_us = 0;
 
     while (true) {
         vTaskDelay(kKeyPollInterval);
@@ -731,8 +822,15 @@ extern "C" void app_main(void)
                         ble_link_set_current_page(static_cast<uint8_t>(page)));
                     link = ble_link_snapshot();
                     monitor_data = ble_link_monitor_data();
+                    battery = battery_monitor::GetSnapshot();
                     firmware_update = firmware_update_snapshot();
-                    DrawCurrentScreen(u8g2, page, link, monitor_data, firmware_update);
+                    DrawCurrentScreen(
+                        u8g2,
+                        page,
+                        link,
+                        monitor_data,
+                        battery,
+                        firmware_update);
                     ESP_LOGI(kTag,
                              "key=short page=%s screen_refreshes=%lu",
                              PageName(page),
@@ -753,8 +851,17 @@ extern "C" void app_main(void)
         }
 
         ble_link_tick();
+        const int64_t battery_sample_interval_us =
+            static_cast<int64_t>(ble_link_battery_sample_interval_seconds()) * 1'000'000LL;
+        if (!firmware_update_is_active()
+            && (last_battery_sample_attempt_us == 0
+                || now_us - last_battery_sample_attempt_us >= battery_sample_interval_us)) {
+            last_battery_sample_attempt_us = now_us;
+            SampleBatteryAndLog();
+        }
         const ble_link_snapshot_t next_link = ble_link_snapshot();
         const ble_link_monitor_data_t next_monitor_data = ble_link_monitor_data();
+        const battery_monitor::Snapshot next_battery = battery_monitor::GetSnapshot();
         const firmware_update_snapshot_t next_firmware_update = firmware_update_snapshot();
         if (!running_image_confirmation_attempted
             && next_link.state != BLE_LINK_STATE_STARTING
@@ -776,11 +883,19 @@ extern "C" void app_main(void)
             || next_link.current_page != link.current_page
             || next_link.last_error != link.last_error
             || next_monitor_data.revision != monitor_data.revision
+            || next_battery.revision != battery.revision
             || next_firmware_update.revision != firmware_update.revision) {
             link = next_link;
             monitor_data = next_monitor_data;
+            battery = next_battery;
             firmware_update = next_firmware_update;
-            DrawCurrentScreen(u8g2, page, link, monitor_data, firmware_update);
+            DrawCurrentScreen(
+                u8g2,
+                page,
+                link,
+                monitor_data,
+                battery,
+                firmware_update);
             ESP_LOGI(kTag,
                      "ble_state=%s connected=%u encrypted=%u bonded=%u handshake_ready=%u pairing_window=%u mac_online=%u network=%u tokenrouter=%u data_revision=%lu update_state=%s update_progress=%u update_error=%u error=%d page=%s screen_refreshes=%lu",
                      ble_link_state_name(link.state),

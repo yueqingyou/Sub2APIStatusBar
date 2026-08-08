@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.37
+
+- Added a firmware-local battery estimate from calibrated one-shot GPIO4 ADC samples, with the percentage fixed in the same header position on all four pages and measured voltage retained on Device.
+- Added an independent 5-minute-to-1-day battery sampling interval to macOS Settings, carried it in every monitor-protocol-5 packet, and kept interval-only or unchanged-value updates from redrawing the reflective screen.
+- Rebalanced Overview, Tasks, and Quota across the full 400×300 canvas by vertically distributing their existing snapshot values while preserving the established type hierarchy, without adding realtime or continuously changing fields.
+- Kept display startup ahead of battery sampling and treated ADC initialization failures as a visible unavailable state instead of a fatal startup error.
+- Embedded the reproducible `0.8.4` ESP32 firmware after real encrypted BLE upgrades, restart, bonded reconnect, interval-delivery checks, continuous-heartbeat checks, and physical-screen acceptance.
+
 ## v0.1.36
 
 - Added an independently versioned, encrypted BLE firmware-update path for the ESP32-S3-RLCD-4.2, including acknowledged transfer progress, image identity and SHA-256 validation, dual OTA partitions, restart verification, and ESP-IDF rollback.

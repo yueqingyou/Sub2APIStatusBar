@@ -11,6 +11,9 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
     public static let pageIntervalRange: ClosedRange<Double> = 5...86_400
     public static let offlineCheckIntervalRange: ClosedRange<Double> = 5...300
     public static let batterySampleIntervalRange: ClosedRange<Double> = 300...86_400
+    public static let nightSleepMinuteRange: ClosedRange<Int> = 0...1_439
+    public static let defaultNightSleepStartMinute = 23 * 60 + 30
+    public static let defaultNightSleepEndMinute = 7 * 60 + 30
 
     public var overviewIntervalSeconds: Double
     public var tasksIntervalSeconds: Double
@@ -18,6 +21,9 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
     public var deviceIntervalSeconds: Double
     public var batterySampleIntervalSeconds: Double
     public var offlineCheckIntervalSeconds: Double?
+    public var nightSleepEnabled: Bool
+    public var nightSleepStartMinute: Int
+    public var nightSleepEndMinute: Int
 
     public init(
         overviewIntervalSeconds: Double = 300,
@@ -25,7 +31,10 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         quotaIntervalSeconds: Double = 1_800,
         deviceIntervalSeconds: Double = 900,
         batterySampleIntervalSeconds: Double = 900,
-        offlineCheckIntervalSeconds: Double? = 30
+        offlineCheckIntervalSeconds: Double? = 30,
+        nightSleepEnabled: Bool = true,
+        nightSleepStartMinute: Int = Self.defaultNightSleepStartMinute,
+        nightSleepEndMinute: Int = Self.defaultNightSleepEndMinute
     ) {
         self.overviewIntervalSeconds = overviewIntervalSeconds
         self.tasksIntervalSeconds = tasksIntervalSeconds
@@ -33,6 +42,9 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         self.deviceIntervalSeconds = deviceIntervalSeconds
         self.batterySampleIntervalSeconds = batterySampleIntervalSeconds
         self.offlineCheckIntervalSeconds = offlineCheckIntervalSeconds
+        self.nightSleepEnabled = nightSleepEnabled
+        self.nightSleepStartMinute = nightSleepStartMinute
+        self.nightSleepEndMinute = nightSleepEndMinute
         normalize()
     }
 
@@ -43,6 +55,9 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         case deviceIntervalSeconds
         case batterySampleIntervalSeconds
         case offlineCheckIntervalSeconds
+        case nightSleepEnabled
+        case nightSleepStartMinute
+        case nightSleepEndMinute
     }
 
     public init(from decoder: Decoder) throws {
@@ -63,6 +78,18 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         } else {
             offlineCheckIntervalSeconds = 30
         }
+        nightSleepEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .nightSleepEnabled
+        ) ?? true
+        nightSleepStartMinute = try container.decodeIfPresent(
+            Int.self,
+            forKey: .nightSleepStartMinute
+        ) ?? Self.defaultNightSleepStartMinute
+        nightSleepEndMinute = try container.decodeIfPresent(
+            Int.self,
+            forKey: .nightSleepEndMinute
+        ) ?? Self.defaultNightSleepEndMinute
         normalize()
     }
 
@@ -78,6 +105,9 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         } else {
             try container.encodeNil(forKey: .offlineCheckIntervalSeconds)
         }
+        try container.encode(nightSleepEnabled, forKey: .nightSleepEnabled)
+        try container.encode(nightSleepStartMinute, forKey: .nightSleepStartMinute)
+        try container.encode(nightSleepEndMinute, forKey: .nightSleepEndMinute)
     }
 
     public mutating func normalize() {
@@ -94,6 +124,18 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
                 max(offlineCheckIntervalSeconds, Self.offlineCheckIntervalRange.lowerBound),
                 Self.offlineCheckIntervalRange.upperBound
             )
+        }
+        nightSleepStartMinute = min(
+            max(nightSleepStartMinute, Self.nightSleepMinuteRange.lowerBound),
+            Self.nightSleepMinuteRange.upperBound
+        )
+        nightSleepEndMinute = min(
+            max(nightSleepEndMinute, Self.nightSleepMinuteRange.lowerBound),
+            Self.nightSleepMinuteRange.upperBound
+        )
+        if nightSleepStartMinute == nightSleepEndMinute {
+            nightSleepStartMinute = Self.defaultNightSleepStartMinute
+            nightSleepEndMinute = Self.defaultNightSleepEndMinute
         }
     }
 
@@ -120,6 +162,29 @@ public struct HardwareMonitorSyncSettings: Codable, Equatable, Sendable {
         UInt32(batterySampleIntervalSeconds.rounded())
     }
 
+    public func isNightSleepWindowActive(at date: Date = Date()) -> Bool {
+        guard nightSleepEnabled else {
+            return false
+        }
+        let minute = Self.beijingMinuteOfDay(at: date)
+        if nightSleepStartMinute < nightSleepEndMinute {
+            return minute >= nightSleepStartMinute && minute < nightSleepEndMinute
+        }
+        return minute >= nightSleepStartMinute || minute < nightSleepEndMinute
+    }
+
+    public static func beijingMinuteOfDay(at date: Date) -> Int {
+        let components = beijingCalendar.dateComponents([.hour, .minute], from: date)
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    public static var beijingCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")
+            ?? TimeZone(secondsFromGMT: 8 * 3_600)!
+        return calendar
+    }
+
     private static func clampPageInterval(_ value: Double) -> Double {
         min(max(value, pageIntervalRange.lowerBound), pageIntervalRange.upperBound)
     }
@@ -135,17 +200,27 @@ public struct HardwareMonitorBLEPayloadSet: Equatable, Sendable {
     }
 }
 
+public enum HardwareMonitorNightSleepWakeReason: UInt8, Equatable, Sendable {
+    case unknown = 0
+    case timer = 1
+    case rtcInterrupt = 2
+    case key = 3
+    case other = 4
+}
+
 public enum HardwareMonitorBLEProtocol {
     public static let serviceUUIDString = "BFB75D90-76B2-4BBF-803D-3A8DDE689207"
     public static let commandCharacteristicUUIDString = "EC17F230-4F00-4BFD-903D-66B5EFBB92F0"
     public static let statusCharacteristicUUIDString = "FEE4D514-9AFD-4FBA-9737-D2FD6BDCBF2F"
-    public static let protocolVersion: UInt8 = 5
+    public static let protocolVersion: UInt8 = 6
     public static let minimumStatusPayloadLength = 9
     public static let firmwareUpdateStatusPayloadLength = 16
+    public static let powerScheduleStatusPayloadLength = 20
 
     public enum MessageType: UInt8, Sendable {
         case hello = 0x01
         case heartbeat = 0x02
+        case powerSchedule = 0x03
         case overview = 0x10
         case tasks = 0x11
         case quota = 0x12
@@ -156,6 +231,31 @@ public enum HardwareMonitorBLEProtocol {
 
     public static var helloPayload: Data {
         Data(magic + [protocolVersion, MessageType.hello.rawValue])
+    }
+
+    public static func powerSchedulePayload(
+        syncSettings: HardwareMonitorSyncSettings,
+        at date: Date = Date()
+    ) -> Data {
+        var normalizedSettings = syncSettings
+        normalizedSettings.normalize()
+        let components = HardwareMonitorSyncSettings.beijingCalendar.dateComponents(
+            [.year, .month, .day, .weekday, .hour, .minute, .second],
+            from: date
+        )
+        var bytes = packetHeader(type: .powerSchedule)
+        bytes.append(normalizedSettings.nightSleepEnabled ? 0x01 : 0x00)
+        appendUInt16(UInt16(normalizedSettings.nightSleepStartMinute), to: &bytes)
+        appendUInt16(UInt16(normalizedSettings.nightSleepEndMinute), to: &bytes)
+        let year = min(max(components.year ?? 2_000, 2_000), 2_099)
+        appendUInt16(UInt16(year), to: &bytes)
+        bytes.append(UInt8(clamping: components.month ?? 1))
+        bytes.append(UInt8(clamping: components.day ?? 1))
+        bytes.append(UInt8(clamping: max(0, (components.weekday ?? 1) - 1)))
+        bytes.append(UInt8(clamping: components.hour ?? 0))
+        bytes.append(UInt8(clamping: components.minute ?? 0))
+        bytes.append(UInt8(clamping: components.second ?? 0))
+        return Data(bytes)
     }
 
     public static func payloads(
@@ -264,8 +364,16 @@ public enum HardwareMonitorBLEProtocol {
         guard let currentPage = HardwareMonitorPage(rawValue: bytes[8]) else {
             throw HardwareMonitorBLEProtocolError.unsupportedPage(bytes[8])
         }
+        if bytes[3] == protocolVersion, bytes.count < powerScheduleStatusPayloadLength {
+            throw HardwareMonitorBLEProtocolError.invalidStatusLength(bytes.count)
+        }
 
         let hasFirmwareUpdateStatus = bytes.count >= firmwareUpdateStatusPayloadLength
+        let hasPowerScheduleStatus = bytes[3] == protocolVersion
+            && bytes.count >= powerScheduleStatusPayloadLength
+        let packedPowerSchedule = hasPowerScheduleStatus
+            ? readUInt24(bytes, at: 17)
+            : nil
 
         return HardwareMonitorBLEDeviceStatus(
             protocolVersion: bytes[3],
@@ -285,7 +393,17 @@ public enum HardwareMonitorBLEProtocol {
             firmwareUpdateErrorCode: hasFirmwareUpdateStatus ? bytes[11] : nil,
             firmwareUpdateReceivedBytes: hasFirmwareUpdateStatus
                 ? readUInt32(bytes, at: 12)
-                : nil
+                : nil,
+            nightSleepEnabled: hasPowerScheduleStatus ? bytes[16] & 0x01 != 0 : nil,
+            nightSleepClockSynchronized: hasPowerScheduleStatus ? bytes[16] & 0x02 != 0 : nil,
+            nightSleepManualOverride: hasPowerScheduleStatus ? bytes[16] & 0x04 != 0 : nil,
+            nightSleepLastWakeReason: hasPowerScheduleStatus
+                ? HardwareMonitorNightSleepWakeReason(rawValue: (bytes[16] >> 3) & 0x07)
+                : nil,
+            nightSleepRTCFallbackActive: hasPowerScheduleStatus ? bytes[16] & 0x40 != 0 : nil,
+            nightSleepBootSequenceParity: hasPowerScheduleStatus ? bytes[16] & 0x80 != 0 : nil,
+            nightSleepStartMinute: packedPowerSchedule.map { UInt16($0 & 0x07FF) },
+            nightSleepEndMinute: packedPowerSchedule.map { UInt16(($0 >> 11) & 0x07FF) }
         )
     }
 
@@ -385,6 +503,12 @@ public enum HardwareMonitorBLEProtocol {
             value | (UInt32(bytes[offset + byteOffset]) << UInt32(byteOffset * 8))
         }
     }
+
+    private static func readUInt24(_ bytes: [UInt8], at offset: Int) -> UInt32 {
+        UInt32(bytes[offset])
+            | (UInt32(bytes[offset + 1]) << 8)
+            | (UInt32(bytes[offset + 2]) << 16)
+    }
 }
 
 public struct HardwareMonitorBLEDeviceStatus: Equatable, Sendable {
@@ -402,6 +526,14 @@ public struct HardwareMonitorBLEDeviceStatus: Equatable, Sendable {
     public let firmwareUpdateState: HardwareFirmwareUpdateDeviceState?
     public let firmwareUpdateErrorCode: UInt8?
     public let firmwareUpdateReceivedBytes: UInt32?
+    public let nightSleepEnabled: Bool?
+    public let nightSleepClockSynchronized: Bool?
+    public let nightSleepManualOverride: Bool?
+    public let nightSleepLastWakeReason: HardwareMonitorNightSleepWakeReason?
+    public let nightSleepRTCFallbackActive: Bool?
+    public let nightSleepBootSequenceParity: Bool?
+    public let nightSleepStartMinute: UInt16?
+    public let nightSleepEndMinute: UInt16?
 
     public var firmwareVersion: String {
         "\(firmwareMajor).\(firmwareMinor).\(firmwarePatch)"

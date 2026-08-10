@@ -18,14 +18,17 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 #include "firmware_update.h"
+#include "monitor_events.h"
+#include "night_sleep.h"
 
-#define BLE_PROTOCOL_VERSION 5
-#define BLE_STATUS_PAYLOAD_LENGTH 16
+#define BLE_PROTOCOL_VERSION 6
+#define BLE_STATUS_PAYLOAD_LENGTH 20
 #define BLE_MAX_BONDS 1
 #define BLE_PACKET_HEADER_LENGTH 5
 #define BLE_COMMON_PREFIX_LENGTH 9
 #define BLE_PAGE_PAYLOAD_OFFSET (BLE_PACKET_HEADER_LENGTH + BLE_COMMON_PREFIX_LENGTH)
 #define BLE_HELLO_PACKET_LENGTH 5
+#define BLE_POWER_SCHEDULE_PACKET_LENGTH 18
 #define BLE_HEARTBEAT_PACKET_LENGTH 14
 #define BLE_OVERVIEW_PACKET_LENGTH 39
 #define BLE_TASKS_PACKET_LENGTH 22
@@ -38,6 +41,7 @@
 
 #define BLE_MESSAGE_HELLO 0x01
 #define BLE_MESSAGE_HEARTBEAT 0x02
+#define BLE_MESSAGE_POWER_SCHEDULE 0x03
 #define BLE_MESSAGE_OVERVIEW 0x10
 #define BLE_MESSAGE_TASKS 0x11
 #define BLE_MESSAGE_QUOTA 0x12
@@ -46,6 +50,14 @@
 #define BLE_FIRMWARE_UPDATE_COMMAND_START 0x01
 #define BLE_FIRMWARE_UPDATE_COMMAND_FINISH 0x02
 #define BLE_FIRMWARE_UPDATE_COMMAND_ABORT 0x03
+#define BLE_ADV_FAST_DURATION_MILLISECONDS 30000
+#define BLE_ADV_FAST_INTERVAL_UNITS 32
+#define BLE_ADV_SLOW_INTERVAL_UNITS 1636
+
+_Static_assert(BLE_STATUS_PAYLOAD_LENGTH <= 20,
+               "状态通知必须适配默认ATT MTU");
+_Static_assert(BLE_POWER_SCHEDULE_PACKET_LENGTH <= 20,
+               "休眠计划写入必须适配默认ATT MTU");
 
 static const char *kTag = "ble_link";
 static const char *kDeviceName = "TokenRouter Monitor";
@@ -93,6 +105,15 @@ static int64_t s_pairing_deadline_us;
 static bool s_host_synced;
 static bool s_gatt_schema_change_pending;
 static uint16_t s_gatt_service_changed_handle;
+
+typedef enum {
+    BLE_ADV_PHASE_NONE = 0,
+    BLE_ADV_PHASE_PAIRING,
+    BLE_ADV_PHASE_FAST,
+    BLE_ADV_PHASE_SLOW,
+} ble_adv_phase_t;
+
+static ble_adv_phase_t s_adv_phase;
 
 void ble_store_config_init(void);
 
@@ -167,7 +188,15 @@ static void set_state(
     bool pairing_window_open,
     int last_error)
 {
+    bool changed;
     portENTER_CRITICAL(&s_state_lock);
+    changed = s_snapshot.state != state
+        || s_snapshot.connected != connected
+        || s_snapshot.handshake_ready != handshake_ready
+        || s_snapshot.encrypted != encrypted
+        || s_snapshot.bonded != bonded
+        || s_snapshot.pairing_window_open != pairing_window_open
+        || s_snapshot.last_error != last_error;
     s_snapshot.state = state;
     s_snapshot.connected = connected;
     s_snapshot.handshake_ready = handshake_ready;
@@ -176,6 +205,9 @@ static void set_state(
     s_snapshot.pairing_window_open = pairing_window_open;
     s_snapshot.last_error = last_error;
     portEXIT_CRITICAL(&s_state_lock);
+    if (changed) {
+        monitor_events_notify();
+    }
 }
 
 static void set_connection_handle(uint16_t conn_handle)
@@ -519,6 +551,7 @@ static int append_status_payload(struct os_mbuf *output)
 {
     const ble_link_snapshot_t snapshot = ble_link_snapshot();
     const firmware_update_snapshot_t update = firmware_update_snapshot();
+    const night_sleep_snapshot_t sleep = night_sleep_snapshot();
     uint8_t flags = 0;
     if (snapshot.connected) {
         flags |= 0x01;
@@ -557,6 +590,17 @@ static int append_status_payload(struct os_mbuf *output)
     payload[13] = (uint8_t)(update.received_bytes >> 8);
     payload[14] = (uint8_t)(update.received_bytes >> 16);
     payload[15] = (uint8_t)(update.received_bytes >> 24);
+    payload[16] = (sleep.enabled ? 0x01 : 0x00)
+        | (sleep.clock_synchronized ? 0x02 : 0x00)
+        | (sleep.manual_override ? 0x04 : 0x00)
+        | (((uint8_t)sleep.last_wakeup_reason & 0x07U) << 3U)
+        | (sleep.rtc_wake_fallback ? 0x40 : 0x00)
+        | (sleep.boot_sequence_parity ? 0x80 : 0x00);
+    const uint32_t packed_schedule = (uint32_t)sleep.start_minute
+        | ((uint32_t)sleep.end_minute << 11U);
+    payload[17] = (uint8_t)packed_schedule;
+    payload[18] = (uint8_t)(packed_schedule >> 8U);
+    payload[19] = (uint8_t)(packed_schedule >> 16U);
     return os_mbuf_append(output, payload, sizeof(payload));
 }
 
@@ -708,6 +752,33 @@ static int gatt_access(
             ESP_LOGW(kTag, "monitor data rejected: firmware update is active");
             return BLE_ATT_ERR_UNLIKELY;
         }
+        if (packet[4] == BLE_MESSAGE_POWER_SCHEDULE) {
+            if (packet_length != BLE_POWER_SCHEDULE_PACKET_LENGTH) {
+                return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+            }
+            if ((packet[5] & 0xFEU) != 0) {
+                return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+            }
+            const esp_err_t sleep_result = night_sleep_apply_schedule(
+                (packet[5] & 0x01U) != 0,
+                read_u16_le(&packet[6]),
+                read_u16_le(&packet[8]),
+                read_u16_le(&packet[10]),
+                packet[12],
+                packet[13],
+                packet[14],
+                packet[15],
+                packet[16],
+                packet[17]);
+            if (sleep_result == ESP_ERR_INVALID_ARG) {
+                return BLE_ATT_ERR_VALUE_NOT_ALLOWED;
+            }
+            if (sleep_result != ESP_OK) {
+                return BLE_ATT_ERR_UNLIKELY;
+            }
+            ble_gatts_chr_updated(s_status_value_handle);
+            return 0;
+        }
         const int packet_result = apply_monitor_packet(packet, packet_length);
         if (packet_result == 0) {
             ESP_LOGI(kTag,
@@ -715,6 +786,7 @@ static int gatt_access(
                      (unsigned int)packet[4],
                      (unsigned int)packet_length,
                      (unsigned long)ble_link_monitor_data().revision);
+            monitor_events_notify();
         }
         return packet_result;
     }
@@ -756,12 +828,28 @@ static const struct ble_gatt_svc_def kServices[] = {
 
 static int gap_event(struct ble_gap_event *event, void *argument);
 
-static void advertise(void)
+static const char *advertising_phase_name(ble_adv_phase_t phase)
+{
+    switch (phase) {
+    case BLE_ADV_PHASE_PAIRING:
+        return "pairing_fast";
+    case BLE_ADV_PHASE_FAST:
+        return "reconnect_fast";
+    case BLE_ADV_PHASE_SLOW:
+        return "reconnect_slow";
+    case BLE_ADV_PHASE_NONE:
+        return "none";
+    }
+    return "unknown";
+}
+
+static void advertise_phase(ble_adv_phase_t phase)
 {
     const bool paired = has_stored_bond();
     const bool pairing = pairing_window_is_open();
     if (!paired && !pairing) {
         set_state(BLE_LINK_STATE_UNPAIRED, false, false, false, false, false, 0);
+        s_adv_phase = BLE_ADV_PHASE_NONE;
         ESP_LOGI(kTag, "not advertising: hold KEY to open pairing window");
         return;
     }
@@ -796,14 +884,24 @@ static void advertise(void)
     memset(&parameters, 0, sizeof(parameters));
     parameters.conn_mode = BLE_GAP_CONN_MODE_UND;
     parameters.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    const uint16_t interval = phase == BLE_ADV_PHASE_SLOW
+        ? BLE_ADV_SLOW_INTERVAL_UNITS
+        : BLE_ADV_FAST_INTERVAL_UNITS;
+    parameters.itvl_min = interval;
+    parameters.itvl_max = interval;
+    const int32_t duration = phase == BLE_ADV_PHASE_FAST
+        ? BLE_ADV_FAST_DURATION_MILLISECONDS
+        : BLE_HS_FOREVER;
+    s_adv_phase = phase;
     result = ble_gap_adv_start(
         s_own_addr_type,
         NULL,
-        BLE_HS_FOREVER,
+        duration,
         &parameters,
         gap_event,
         NULL);
     if (result != 0) {
+        s_adv_phase = BLE_ADV_PHASE_NONE;
         ESP_LOGE(kTag, "advertising start failed: rc=%d", result);
         set_state(BLE_LINK_STATE_ERROR, false, false, false, paired, pairing, result);
         return;
@@ -818,11 +916,22 @@ static void advertise(void)
         pairing,
         0);
     ESP_LOGI(kTag,
-             "advertising: name=%s protocol=%u paired=%u pairing_window=%u",
+             "advertising: name=%s protocol=%u paired=%u pairing_window=%u phase=%s interval_units=%u",
              kDeviceName,
              BLE_PROTOCOL_VERSION,
              paired ? 1U : 0U,
-             pairing ? 1U : 0U);
+             pairing ? 1U : 0U,
+             advertising_phase_name(phase),
+             (unsigned int)interval);
+}
+
+static void advertise(void)
+{
+    if (pairing_window_is_open()) {
+        advertise_phase(BLE_ADV_PHASE_PAIRING);
+        return;
+    }
+    advertise_phase(BLE_ADV_PHASE_FAST);
 }
 
 static int gap_event(struct ble_gap_event *event, void *argument)
@@ -853,12 +962,16 @@ static int gap_event(struct ble_gap_event *event, void *argument)
         }
 
         set_connection_handle(event->connect.conn_handle);
+        s_adv_phase = BLE_ADV_PHASE_NONE;
         set_state(BLE_LINK_STATE_SECURING, true, false, false, known_peer, pairing, 0);
         ESP_LOGI(kTag,
-                 "connected; securing: conn_handle=%u known_peer=%u pairing_window=%u",
+                 "connected; securing: conn_handle=%u known_peer=%u pairing_window=%u interval_us=%u latency=%u supervision_ms=%u",
                  (unsigned int)event->connect.conn_handle,
                  known_peer ? 1U : 0U,
-                 pairing ? 1U : 0U);
+                 pairing ? 1U : 0U,
+                 (unsigned int)description.conn_itvl * 1250U,
+                 (unsigned int)description.conn_latency,
+                 (unsigned int)description.supervision_timeout * 10U);
 
         result = ble_gap_security_initiate(event->connect.conn_handle);
         if (result != 0 && result != BLE_HS_EALREADY) {
@@ -934,13 +1047,34 @@ static int gap_event(struct ble_gap_event *event, void *argument)
         ESP_LOGI(kTag, "disconnected: reason=%d", event->disconnect.reason);
         firmware_update_abort(FIRMWARE_UPDATE_ERROR_DISCONNECTED);
         set_connection_handle(BLE_HS_CONN_HANDLE_NONE);
+        s_adv_phase = BLE_ADV_PHASE_NONE;
         mark_mac_offline();
         advertise();
         return 0;
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(kTag, "advertising completed: reason=%d", event->adv_complete.reason);
-        advertise();
+        if (s_adv_phase == BLE_ADV_PHASE_FAST
+            && has_stored_bond()
+            && !pairing_window_is_open()) {
+            advertise_phase(BLE_ADV_PHASE_SLOW);
+        } else {
+            advertise();
+        }
         return 0;
+    case BLE_GAP_EVENT_CONN_UPDATE: {
+        struct ble_gap_conn_desc description;
+        const int result = ble_gap_conn_find(event->conn_update.conn_handle, &description);
+        if (result == 0) {
+            ESP_LOGI(kTag,
+                     "connection parameters updated: interval_us=%u latency=%u supervision_ms=%u",
+                     (unsigned int)description.conn_itvl * 1250U,
+                     (unsigned int)description.conn_latency,
+                     (unsigned int)description.supervision_timeout * 10U);
+        } else {
+            ESP_LOGW(kTag, "connection parameter lookup failed: rc=%d", result);
+        }
+        return 0;
+    }
     case BLE_GAP_EVENT_SUBSCRIBE:
         ESP_LOGI(kTag,
                  "subscription: conn_handle=%u attr_handle=%u reason=%u notify=%u indicate=%u",
@@ -1029,6 +1163,13 @@ esp_err_t ble_link_start(void)
     }
     load_gatt_schema_state();
 
+    const esp_err_t sleep_result = night_sleep_initialize();
+    if (sleep_result != ESP_OK) {
+        ESP_LOGW(kTag,
+                 "night sleep initialization incomplete: %s",
+                 esp_err_to_name(sleep_result));
+    }
+
     result = nimble_port_init();
     if (result != ESP_OK) {
         set_state(BLE_LINK_STATE_ERROR, false, false, false, false, false, result);
@@ -1080,6 +1221,9 @@ esp_err_t ble_link_set_current_page(uint8_t page)
 
     if (changed && s_status_value_handle != 0) {
         ble_gatts_chr_updated(s_status_value_handle);
+    }
+    if (changed) {
+        monitor_events_notify();
     }
     return ESP_OK;
 }
@@ -1135,6 +1279,7 @@ void ble_link_tick(void)
     portEXIT_CRITICAL(&s_state_lock);
     if (offline_expired) {
         ESP_LOGW(kTag, "Mac signal timeout expired");
+        monitor_events_notify();
     }
 
     const ble_link_snapshot_t snapshot = ble_link_snapshot();
@@ -1162,17 +1307,25 @@ void ble_link_tick(void)
             snapshot.last_error);
         return;
     }
-    if (!paired && ble_gap_adv_active()) {
-        ble_gap_adv_stop();
+    if (ble_gap_adv_active()) {
+        const int result = ble_gap_adv_stop();
+        if (result != 0) {
+            ESP_LOGW(kTag, "pairing advertising stop failed: rc=%d", result);
+        }
         return;
     }
 
+    s_adv_phase = BLE_ADV_PHASE_NONE;
+    if (paired) {
+        advertise();
+        return;
+    }
     set_state(
-        paired ? BLE_LINK_STATE_ADVERTISING : BLE_LINK_STATE_UNPAIRED,
+        BLE_LINK_STATE_UNPAIRED,
         false,
         false,
         false,
-        paired,
+        false,
         false,
         0);
 }

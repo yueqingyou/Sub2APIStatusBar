@@ -12,7 +12,7 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-set(MONITOR_FIRMWARE_VERSION "0.8.4" CACHE STRING "Hardware monitor firmware version")
+set(MONITOR_FIRMWARE_VERSION "0.9.4" CACHE STRING "Hardware monitor firmware version")
 if(NOT MONITOR_FIRMWARE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR
         "MONITOR_FIRMWARE_VERSION must contain three numeric components: ${MONITOR_FIRMWARE_VERSION}")

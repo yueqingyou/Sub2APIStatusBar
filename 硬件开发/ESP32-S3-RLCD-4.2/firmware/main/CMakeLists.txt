@@ -2,14 +2,21 @@ idf_component_register(
     SRCS
         "battery_monitor.cpp"
         "ble_link.c"
+        "board_power.cpp"
         "firmware_update.c"
         "main.cpp"
+        "monitor_events.cpp"
+        "night_sleep.cpp"
+        "pcf85063.cpp"
+        "power_manager.cpp"
     REQUIRES
         app_update
         bt
+        esp_driver_i2c
         esp_adc
         esp_app_format
         esp_partition
+        esp_pm
         esp_system
         esp_timer
         heap

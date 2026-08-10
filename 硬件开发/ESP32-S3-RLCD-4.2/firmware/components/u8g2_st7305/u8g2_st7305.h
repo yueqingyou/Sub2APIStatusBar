@@ -51,6 +51,7 @@ typedef struct {
 
 u8g2_st7305_config_t u8g2_st7305_default_config(void);
 esp_err_t u8g2_st7305_init(u8g2_st7305_t *dev, const u8g2_st7305_config_t *config);
+esp_err_t u8g2_st7305_enter_sleep(u8g2_st7305_t *dev);
 void u8g2_st7305_deinit(u8g2_st7305_t *dev);
 
 static inline u8g2_t *u8g2_st7305_get_u8g2(u8g2_st7305_t *dev)

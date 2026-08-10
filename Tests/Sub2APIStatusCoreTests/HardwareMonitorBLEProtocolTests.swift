@@ -6,20 +6,21 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
     func testHelloPayloadContainsMagicVersionAndMessageType() {
         XCTAssertEqual(
             HardwareMonitorBLEProtocol.helloPayload,
-            Data([0x54, 0x52, 0x4D, 0x05, 0x01])
+            Data([0x54, 0x52, 0x4D, 0x06, 0x01])
         )
     }
 
     func testDecodesReadyDeviceStatusAndCurrentPage() throws {
         let status = try HardwareMonitorBLEProtocol.decodeStatus(
             Data([
-                0x54, 0x52, 0x4D, 0x05, 0x00, 0x08, 0x04, 0x0F, 0x02,
+                0x54, 0x52, 0x4D, 0x06, 0x00, 0x09, 0x00, 0x0F, 0x02,
                 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0xD3, 0x82, 0x15, 0x0E,
             ])
         )
 
-        XCTAssertEqual(status.protocolVersion, 5)
-        XCTAssertEqual(status.firmwareVersion, "0.8.4")
+        XCTAssertEqual(status.protocolVersion, 6)
+        XCTAssertEqual(status.firmwareVersion, "0.9.0")
         XCTAssertEqual(status.currentPage, .quota)
         XCTAssertTrue(status.isLinkConnected)
         XCTAssertTrue(status.isHandshakeReady)
@@ -31,6 +32,14 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertEqual(status.firmwareUpdateState, .idle)
         XCTAssertEqual(status.firmwareUpdateErrorCode, 0)
         XCTAssertEqual(status.firmwareUpdateReceivedBytes, 0)
+        XCTAssertEqual(status.nightSleepEnabled, true)
+        XCTAssertEqual(status.nightSleepClockSynchronized, true)
+        XCTAssertEqual(status.nightSleepManualOverride, false)
+        XCTAssertEqual(status.nightSleepLastWakeReason, .rtcInterrupt)
+        XCTAssertEqual(status.nightSleepRTCFallbackActive, true)
+        XCTAssertEqual(status.nightSleepBootSequenceParity, true)
+        XCTAssertEqual(status.nightSleepStartMinute, 1_410)
+        XCTAssertEqual(status.nightSleepEndMinute, 450)
     }
 
     func testDecodesOlderMonitorStatusForFirmwareUpdateCompatibility() throws {
@@ -46,6 +55,69 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertEqual(status.firmwareVersion, "0.6.0")
         XCTAssertEqual(status.firmwareUpdateState, .receiving)
         XCTAssertEqual(status.firmwareUpdateReceivedBytes, 240)
+        XCTAssertNil(status.nightSleepEnabled)
+        XCTAssertNil(status.nightSleepClockSynchronized)
+        XCTAssertNil(status.nightSleepManualOverride)
+        XCTAssertNil(status.nightSleepLastWakeReason)
+        XCTAssertNil(status.nightSleepRTCFallbackActive)
+        XCTAssertNil(status.nightSleepBootSequenceParity)
+    }
+
+    func testRejectsTruncatedCurrentProtocolStatus() {
+        XCTAssertThrowsError(try HardwareMonitorBLEProtocol.decodeStatus(Data([
+            0x54, 0x52, 0x4D, 0x06, 0x00, 0x09, 0x00, 0x0F, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ]))) { error in
+            XCTAssertEqual(
+                error as? HardwareMonitorBLEProtocolError,
+                .invalidStatusLength(16)
+            )
+        }
+    }
+
+    func testEncodesBeijingClockAndNightSleepSchedule() throws {
+        let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-10T15:31:42Z"))
+        let settings = HardwareMonitorSyncSettings(
+            nightSleepEnabled: true,
+            nightSleepStartMinute: 1_410,
+            nightSleepEndMinute: 450
+        )
+
+        XCTAssertEqual(
+            HardwareMonitorBLEProtocol.powerSchedulePayload(
+                syncSettings: settings,
+                at: date
+            ).bytes,
+            [
+                0x54, 0x52, 0x4D, 0x06, 0x03,
+                0x01, 0x82, 0x05, 0xC2, 0x01,
+                0xEA, 0x07, 0x08, 0x0A, 0x01, 0x17, 0x1F, 0x2A,
+            ]
+        )
+    }
+
+    func testBeijingNightSleepWindowCrossesMidnight() throws {
+        let settings = HardwareMonitorSyncSettings()
+        let formatter = ISO8601DateFormatter()
+
+        XCTAssertTrue(settings.isNightSleepWindowActive(
+            at: try XCTUnwrap(formatter.date(from: "2026-08-10T15:30:00Z"))
+        ))
+        XCTAssertTrue(settings.isNightSleepWindowActive(
+            at: try XCTUnwrap(formatter.date(from: "2026-08-10T23:29:59Z"))
+        ))
+        XCTAssertFalse(settings.isNightSleepWindowActive(
+            at: try XCTUnwrap(formatter.date(from: "2026-08-10T23:30:00Z"))
+        ))
+        XCTAssertFalse(settings.isNightSleepWindowActive(
+            at: try XCTUnwrap(formatter.date(from: "2026-08-10T04:00:00Z"))
+        ))
+
+        var disabled = settings
+        disabled.nightSleepEnabled = false
+        XCTAssertFalse(disabled.isNightSleepWindowActive(
+            at: try XCTUnwrap(formatter.date(from: "2026-08-10T15:30:00Z"))
+        ))
     }
 
     func testBuildsSanitizedOverviewAndTaskPayloadsWithoutRealtimeCounts() throws {
@@ -80,11 +152,11 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             payloads.heartbeats[.overview]?.bytes,
-            [0x54, 0x52, 0x4D, 0x05, 0x02, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0]
+            [0x54, 0x52, 0x4D, 0x06, 0x02, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0]
         )
         XCTAssertEqual(
             Array(overview.prefix(15)),
-            [0x54, 0x52, 0x4D, 0x05, 0x10, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0, 1]
+            [0x54, 0x52, 0x4D, 0x06, 0x10, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0, 1]
         )
         XCTAssertEqual(readUInt64(overview, at: 15), 1_250_000)
         XCTAssertEqual(readUInt64(overview, at: 23), 42)
@@ -93,7 +165,7 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             Array(tasks.prefix(14)),
-            [0x54, 0x52, 0x4D, 0x05, 0x11, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0]
+            [0x54, 0x52, 0x4D, 0x06, 0x11, 0x03, 90, 0, 0, 0, 0x84, 0x03, 0, 0]
         )
         XCTAssertEqual(readUInt16(tasks, at: 14), 1)
         XCTAssertEqual(readUInt16(tasks, at: 16), 1)
@@ -200,7 +272,7 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             Array(quota.prefix(15)),
-            [0x54, 0x52, 0x4D, 0x05, 0x12, 0x0F, 0x18, 0x15, 0x00, 0x00, 0x84, 0x03, 0, 0, 0x0F]
+            [0x54, 0x52, 0x4D, 0x06, 0x12, 0x0F, 0x18, 0x15, 0x00, 0x00, 0x84, 0x03, 0, 0, 0x0F]
         )
         XCTAssertEqual(readUInt32(quota, at: 15), 16_000)
         XCTAssertEqual(readUInt32(quota, at: 19), 10_000)
@@ -268,7 +340,9 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             quotaIntervalSeconds: 200_000,
             deviceIntervalSeconds: 300,
             batterySampleIntervalSeconds: 1,
-            offlineCheckIntervalSeconds: 2
+            offlineCheckIntervalSeconds: 2,
+            nightSleepStartMinute: -1,
+            nightSleepEndMinute: 2_000
         )
 
         XCTAssertEqual(settings.interval(for: .overview), 5)
@@ -279,6 +353,14 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertEqual(settings.batterySampleIntervalWholeSeconds, 300)
         XCTAssertEqual(settings.offlineCheckIntervalSeconds, 5)
         XCTAssertEqual(settings.offlineTimeoutSeconds(for: .overview), 15)
+        XCTAssertEqual(settings.nightSleepStartMinute, 0)
+        XCTAssertEqual(settings.nightSleepEndMinute, 1_439)
+
+        settings.nightSleepStartMinute = 600
+        settings.nightSleepEndMinute = 600
+        settings.normalize()
+        XCTAssertEqual(settings.nightSleepStartMinute, 1_410)
+        XCTAssertEqual(settings.nightSleepEndMinute, 450)
 
         settings.batterySampleIntervalSeconds = 200_000
         settings.normalize()
@@ -309,12 +391,18 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
         XCTAssertEqual(defaults.deviceIntervalSeconds, 900)
         XCTAssertEqual(defaults.batterySampleIntervalSeconds, 900)
         XCTAssertEqual(defaults.offlineCheckIntervalSeconds, 30)
+        XCTAssertTrue(defaults.nightSleepEnabled)
+        XCTAssertEqual(defaults.nightSleepStartMinute, 1_410)
+        XCTAssertEqual(defaults.nightSleepEndMinute, 450)
         XCTAssertEqual(missing.offlineCheckIntervalSeconds, 30)
         XCTAssertEqual(missing.overviewIntervalSeconds, 30)
         XCTAssertEqual(missing.tasksIntervalSeconds, 300)
         XCTAssertEqual(missing.quotaIntervalSeconds, 1_800)
         XCTAssertEqual(missing.deviceIntervalSeconds, 900)
         XCTAssertEqual(missing.batterySampleIntervalSeconds, 900)
+        XCTAssertTrue(missing.nightSleepEnabled)
+        XCTAssertEqual(missing.nightSleepStartMinute, 1_410)
+        XCTAssertEqual(missing.nightSleepEndMinute, 450)
         XCTAssertNil(disabled.offlineCheckIntervalSeconds)
     }
 
@@ -358,7 +446,10 @@ final class HardwareMonitorBLEProtocolTests: XCTestCase {
             quotaIntervalSeconds: 3_600,
             deviceIntervalSeconds: 600,
             batterySampleIntervalSeconds: 21_600,
-            offlineCheckIntervalSeconds: nil
+            offlineCheckIntervalSeconds: nil,
+            nightSleepEnabled: true,
+            nightSleepStartMinute: 1_320,
+            nightSleepEndMinute: 480
         )
 
         try store.save(AppConfig(

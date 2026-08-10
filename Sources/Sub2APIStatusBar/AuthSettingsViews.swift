@@ -1,4 +1,5 @@
 import Combine
+import Foundation
 import SwiftUI
 import Sub2APIStatusCore
 
@@ -414,6 +415,34 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                     }
+
+                    GlassCheckbox(
+                        isOn: hardwareMonitorNightSleepEnabledBinding,
+                        title: strings.phrase("启用北京时间夜间休眠", "Enable Beijing-time night sleep")
+                    )
+                    if renderState.draft.hardwareMonitorSyncSettings.nightSleepEnabled {
+                        settingsRow(strings.phrase("休眠时段", "Sleep window")) {
+                            HStack(spacing: 8) {
+                                hardwareMonitorTimePicker(
+                                    minuteOfDay: hardwareMonitorNightSleepStartBinding,
+                                    title: strings.phrase("休眠开始", "Sleep starts")
+                                )
+                                Text(strings.phrase("至", "to"))
+                                    .foregroundStyle(.secondary)
+                                hardwareMonitorTimePicker(
+                                    minuteOfDay: hardwareMonitorNightSleepEndBinding,
+                                    title: strings.phrase("休眠结束", "Sleep ends")
+                                )
+                            }
+                        }
+                        Text(strings.phrase(
+                            "该时段按北京时间执行，屏幕、蓝牙同步和固件升级均会离线；按屏幕 KEY 可提前唤醒。休眠期间修改的设置会在设备下次连接后生效。",
+                            "This window follows Beijing time. The screen, Bluetooth sync, and firmware update are offline; press the screen's KEY to wake early. Changes made while asleep apply after the next connection."
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -725,6 +754,82 @@ struct SettingsView: View {
         )
     }
 
+    private var hardwareMonitorNightSleepEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { renderState.draft.hardwareMonitorSyncSettings.nightSleepEnabled },
+            set: { enabled in
+                model.applySettingsChange(refreshAfterSave: false) {
+                    $0.hardwareMonitorSyncSettings.nightSleepEnabled = enabled
+                }
+            }
+        )
+    }
+
+    private var hardwareMonitorNightSleepStartBinding: Binding<Int> {
+        hardwareMonitorNightSleepMinuteBinding(\.nightSleepStartMinute)
+    }
+
+    private var hardwareMonitorNightSleepEndBinding: Binding<Int> {
+        hardwareMonitorNightSleepMinuteBinding(\.nightSleepEndMinute)
+    }
+
+    private func hardwareMonitorNightSleepMinuteBinding(
+        _ keyPath: WritableKeyPath<HardwareMonitorSyncSettings, Int>
+    ) -> Binding<Int> {
+        Binding(
+            get: { renderState.draft.hardwareMonitorSyncSettings[keyPath: keyPath] },
+            set: { value in
+                let otherMinute = keyPath == \.nightSleepStartMinute
+                    ? renderState.draft.hardwareMonitorSyncSettings.nightSleepEndMinute
+                    : renderState.draft.hardwareMonitorSyncSettings.nightSleepStartMinute
+                let adjustedValue: Int
+                if value == otherMinute {
+                    adjustedValue = keyPath == \.nightSleepStartMinute
+                        ? (value + 1_439) % 1_440
+                        : (value + 1) % 1_440
+                } else {
+                    adjustedValue = value
+                }
+                model.applySettingsChange(refreshAfterSave: false) {
+                    $0.hardwareMonitorSyncSettings[keyPath: keyPath] = adjustedValue
+                }
+            }
+        )
+    }
+
+    private func hardwareMonitorTimePicker(
+        minuteOfDay: Binding<Int>,
+        title: String
+    ) -> some View {
+        let hour = Binding<Int>(
+            get: { minuteOfDay.wrappedValue / 60 },
+            set: { minuteOfDay.wrappedValue = $0 * 60 + minuteOfDay.wrappedValue % 60 }
+        )
+        let minute = Binding<Int>(
+            get: { minuteOfDay.wrappedValue % 60 },
+            set: { minuteOfDay.wrappedValue = (minuteOfDay.wrappedValue / 60) * 60 + $0 }
+        )
+        return HStack(spacing: 2) {
+            Picker("\(title) · \(strings.phrase("小时", "Hour"))", selection: hour) {
+                ForEach(0..<24, id: \.self) { value in
+                    Text(String(format: "%02d", value)).tag(value)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            Text(":")
+                .monospacedDigit()
+            Picker("\(title) · \(strings.phrase("分钟", "Minute"))", selection: minute) {
+                ForEach(0..<60, id: \.self) { value in
+                    Text(String(format: "%02d", value)).tag(value)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+        }
+        .monospacedDigit()
+    }
+
     private func hardwareMonitorIntervalRow(
         _ title: String,
         binding: Binding<Double>,
@@ -771,6 +876,11 @@ struct SettingsView: View {
                 "正在扫描；首次连接请长按屏幕 KEY 进入配对",
                 "Scanning; hold the screen's KEY to pair for the first time"
             )
+        case let .scheduledSleep(wakeMinute):
+            return strings.phrase(
+                "夜间休眠时段 · 设备预计于北京时间 \(hardwareMonitorClockLabel(wakeMinute)) 唤醒",
+                "Night sleep window · Expected wake at \(hardwareMonitorClockLabel(wakeMinute)) Beijing time"
+            )
         case let .connecting(deviceName):
             return strings.phrase("正在连接 \(deviceName)", "Connecting to \(deviceName)")
         case let .connected(deviceName):
@@ -798,6 +908,8 @@ struct SettingsView: View {
             return "checkmark.circle.fill"
         case .firmwareUpdateOnly:
             return "arrow.triangle.2.circlepath"
+        case .scheduledSleep:
+            return "moon.fill"
         case .connecting, .connected, .scanning, .waitingForBluetooth:
             return "antenna.radiowaves.left.and.right"
         case .unavailable, .failed:
@@ -813,11 +925,17 @@ struct SettingsView: View {
             return .green
         case .firmwareUpdateOnly:
             return .orange
+        case .scheduledSleep:
+            return .blue
         case .unavailable, .failed:
             return .orange
         default:
             return .secondary
         }
+    }
+
+    private func hardwareMonitorClockLabel(_ minuteOfDay: Int) -> String {
+        String(format: "%02d:%02d", minuteOfDay / 60, minuteOfDay % 60)
     }
 
     private var languageItems: [GlassSegmentedItem<AppLanguage>] {

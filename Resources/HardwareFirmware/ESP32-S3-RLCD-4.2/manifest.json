@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "hardware_model": "ESP32-S3-RLCD-4.2",
-  "firmware_version": "0.8.4",
-  "monitor_protocol_version": 5,
+  "firmware_version": "0.9.4",
+  "monitor_protocol_version": 6,
   "update_protocol_version": 1,
   "file_name": "tokenrouter_monitor.bin",
-  "size": 643504,
-  "sha256": "e5d230dd852a3ef88f8a12ce709f76a78a1406dd24f3d98d8eb31cd9ee34fa33"
+  "size": 693696,
+  "sha256": "9ac18db3ac2f6978bb22fcd2623b839c29d9f0b5e51af28eaa7c5c80b36e283a"
 }

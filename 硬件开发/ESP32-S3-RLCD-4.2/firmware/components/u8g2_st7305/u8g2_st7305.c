@@ -151,8 +151,10 @@ static void st7305_full_init(u8g2_st7305_t *dev)
     ESP_ERROR_CHECK_WITHOUT_ABORT(st7305_write_cmd_data(dev, 0x2B, win_b, sizeof(win_b)));
     ESP_ERROR_CHECK_WITHOUT_ABORT(st7305_write_cmd_data(dev, 0x35, m35, sizeof(m35)));
     ESP_ERROR_CHECK_WITHOUT_ABORT(st7305_write_cmd_data(dev, 0xD0, d0, sizeof(d0)));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(st7305_write_cmd(dev, 0x38));
+    ESP_ERROR_CHECK_WITHOUT_ABORT(st7305_write_cmd(dev, 0x39));
+    vTaskDelay(pdMS_TO_TICKS(100));
     ESP_ERROR_CHECK_WITHOUT_ABORT(st7305_write_cmd(dev, 0x29));
+    ESP_LOGI(TAG, "display mode=LPM frame_rate=1Hz");
 }
 
 static uint8_t u8g2_st7305_byte_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
@@ -428,4 +430,22 @@ void u8g2_st7305_deinit(u8g2_st7305_t *dev)
     if (s_active_display == dev) {
         s_active_display = NULL;
     }
+}
+
+esp_err_t u8g2_st7305_enter_sleep(u8g2_st7305_t *dev)
+{
+    ESP_RETURN_ON_FALSE(dev != NULL && dev->spi != NULL,
+                        ESP_ERR_INVALID_ARG, TAG, "display is unavailable");
+
+    // ST7305 要求从 LPM 先回到 HPM，等待电压稳定后再进入 SLPIN。
+    esp_err_t result = st7305_write_cmd(dev, 0x38);
+    if (result == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        result = st7305_write_cmd(dev, 0x10);
+    }
+    if (result == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        ESP_LOGI(TAG, "display mode=SLPIN");
+    }
+    return result;
 }

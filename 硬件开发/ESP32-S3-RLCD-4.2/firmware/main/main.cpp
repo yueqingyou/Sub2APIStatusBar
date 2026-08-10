@@ -2,27 +2,35 @@
 #include <cstdio>
 
 #include "driver/gpio.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
+#include "esp_intr_alloc.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "battery_monitor.h"
 #include "board_config.h"
+#include "board_power.h"
 #include "ble_link.h"
 #include "firmware_update.h"
+#include "monitor_events.h"
+#include "night_sleep.h"
+#include "power_manager.h"
 #include "u8g2_st7305.h"
 
 namespace {
 
 constexpr char kTag[] = "monitor";
 constexpr char kFirmwareVersion[] = MONITOR_FIRMWARE_VERSION_STRING;
-constexpr int64_t kHeartbeatIntervalUs = 10'000'000;
+constexpr int64_t kHeartbeatIntervalUs = 60'000'000;
 constexpr int64_t kDebounceIntervalUs = 50'000;
 constexpr int64_t kLongPressIntervalUs = 1'500'000;
 constexpr uint32_t kPairingWindowSeconds = 60;
-constexpr TickType_t kKeyPollInterval = pdMS_TO_TICKS(20);
+constexpr uint32_t kIdleWaitMilliseconds = 1'000;
+constexpr uint32_t kFirmwareUpdateWaitMilliseconds = 50;
 
 enum class Page : uint8_t {
     kOverview,
@@ -717,15 +725,66 @@ void DrawCurrentScreen(
     DrawPage(u8g2, page, link, data, battery);
 }
 
-void InitKey()
+void IRAM_ATTR WakeInputISR(void *argument)
 {
-    gpio_config_t config = {};
-    config.pin_bit_mask = 1ULL << board::kKeyPin;
-    config.mode = GPIO_MODE_INPUT;
-    config.pull_up_en = GPIO_PULLUP_ENABLE;
-    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    config.intr_type = GPIO_INTR_DISABLE;
-    ESP_ERROR_CHECK(gpio_config(&config));
+    (void)argument;
+    monitor_events_notify_from_isr();
+}
+
+void InitWakeInputs()
+{
+    gpio_config_t key_config = {};
+    key_config.pin_bit_mask = 1ULL << board::kKeyPin;
+    key_config.mode = GPIO_MODE_INPUT;
+    key_config.pull_up_en = GPIO_PULLUP_ENABLE;
+    key_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    key_config.intr_type = GPIO_INTR_ANYEDGE;
+    ESP_ERROR_CHECK(gpio_config(&key_config));
+
+    gpio_config_t rtc_config = {};
+    rtc_config.pin_bit_mask = 1ULL << board::kRTCInterruptPin;
+    rtc_config.mode = GPIO_MODE_INPUT;
+    rtc_config.pull_up_en = GPIO_PULLUP_ENABLE;
+    rtc_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    rtc_config.intr_type = GPIO_INTR_NEGEDGE;
+    ESP_ERROR_CHECK(gpio_config(&rtc_config));
+
+    const esp_err_t service_result = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
+    if (service_result != ESP_OK && service_result != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(service_result);
+    }
+    ESP_ERROR_CHECK(gpio_isr_handler_add(board::kKeyPin, WakeInputISR, nullptr));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(board::kRTCInterruptPin, WakeInputISR, nullptr));
+
+    const uint64_t wakeup_mask = (1ULL << board::kKeyPin)
+        | (1ULL << board::kRTCInterruptPin);
+    ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup_io(
+        wakeup_mask,
+        ESP_EXT1_WAKEUP_ANY_LOW));
+}
+
+uint32_t MainLoopWaitMilliseconds(
+    bool raw_released,
+    bool stable_released,
+    int64_t raw_changed_us,
+    int64_t now_us)
+{
+    uint32_t wait_milliseconds = firmware_update_is_active()
+        ? kFirmwareUpdateWaitMilliseconds
+        : kIdleWaitMilliseconds;
+    if (raw_released == stable_released) {
+        return wait_milliseconds;
+    }
+
+    const int64_t debounce_remaining_us = kDebounceIntervalUs - (now_us - raw_changed_us);
+    if (debounce_remaining_us <= 0) {
+        return 1;
+    }
+    const uint32_t debounce_remaining_ms = static_cast<uint32_t>(
+        (debounce_remaining_us + 999) / 1'000);
+    return debounce_remaining_ms < wait_milliseconds
+        ? debounce_remaining_ms
+        : wait_milliseconds;
 }
 
 void SampleBatteryAndLog()
@@ -754,8 +813,17 @@ extern "C" void app_main(void)
 {
     ESP_LOGI(kTag, "TokenRouter Monitor firmware starting");
     ESP_LOGI(kTag,
-             "version=%s data_link=ble_protocol_5_secure_pages firmware_update=ble_ota_1",
+             "version=%s data_link=ble_protocol_6_secure_pages firmware_update=ble_ota_1",
              kFirmwareVersion);
+
+    monitor_events_initialize();
+    ESP_ERROR_CHECK(power_manager::ConfigureAlwaysConnectedMode());
+    const esp_err_t board_power_result = board_power::ConfigureUnusedPeripheralsForStandby();
+    if (board_power_result != ESP_OK) {
+        ESP_LOGW(kTag,
+                 "低功耗外设初始化未完全生效：%s",
+                 esp_err_to_name(board_power_result));
+    }
 
     u8g2_st7305_config_t display_config = u8g2_st7305_default_config();
     display_config.mosi_io = board::kDisplayMosiPin;
@@ -767,8 +835,8 @@ extern "C" void app_main(void)
     display_config.tile_buf_height = U8G2_ST7305_TILE_BUF_FULL;
 
     ESP_ERROR_CHECK(u8g2_st7305_init(&g_display, &display_config));
-    InitKey();
     ESP_ERROR_CHECK(ble_link_start());
+    InitWakeInputs();
 
     g_psram_bytes = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
     u8g2_t *u8g2 = u8g2_st7305_get_u8g2(&g_display);
@@ -795,10 +863,16 @@ extern "C" void app_main(void)
     int64_t next_heartbeat_us = started_us + kHeartbeatIntervalUs;
     uint32_t heartbeat = 0;
     bool running_image_confirmation_attempted = false;
+    bool running_image_confirmed = false;
     int64_t last_battery_sample_attempt_us = 0;
 
     while (true) {
-        vTaskDelay(kKeyPollInterval);
+        const uint32_t wait_milliseconds = MainLoopWaitMilliseconds(
+            raw_released,
+            stable_released,
+            raw_changed_us,
+            esp_timer_get_time());
+        monitor_events_wait(wait_milliseconds);
         const int64_t now_us = esp_timer_get_time();
         const bool next_raw_released = gpio_get_level(board::kKeyPin) != 0;
 
@@ -872,6 +946,25 @@ extern "C" void app_main(void)
                 ESP_LOGE(kTag,
                          "running image confirmation failed: %s",
                          esp_err_to_name(confirmation_result));
+            } else {
+                running_image_confirmed = true;
+            }
+        }
+        if (running_image_confirmed
+            && !firmware_update_is_active()
+            && !next_link.pairing_window_open
+            && night_sleep_should_enter()) {
+            const esp_err_t prepare_result = night_sleep_prepare_deep_sleep();
+            if (prepare_result != ESP_OK) {
+                ESP_LOGW(kTag, "夜间Deep-sleep准备失败：%s", esp_err_to_name(prepare_result));
+            } else {
+                const esp_err_t display_sleep_result = u8g2_st7305_enter_sleep(&g_display);
+                if (display_sleep_result != ESP_OK) {
+                    ESP_LOGW(kTag,
+                             "显示屏进入SLPIN失败，仍继续Deep-sleep：%s",
+                             esp_err_to_name(display_sleep_result));
+                }
+                night_sleep_start_deep_sleep();
             }
         }
         if (next_link.state != link.state

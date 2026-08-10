@@ -7,6 +7,7 @@ enum HardwareMonitorBLEConnectionState: Equatable {
     case disabled
     case waitingForBluetooth
     case scanning
+    case scheduledSleep(wakeMinute: Int)
     case connecting(deviceName: String)
     case connected(deviceName: String)
     case ready(deviceName: String, firmwareVersion: String)
@@ -43,6 +44,7 @@ final class HardwareMonitorBLEClient: NSObject {
 
     private enum WriteKind: Equatable {
         case hello
+        case powerSchedule
         case heartbeat(HardwareMonitorPage)
         case page(HardwareMonitorPage)
         case firmwareStart
@@ -61,6 +63,25 @@ final class HardwareMonitorBLEClient: NSObject {
         let destination: WriteDestination
     }
 
+    private struct DeviceNightSleepState {
+        let enabled: Bool
+        let clockSynchronized: Bool
+        let manualOverride: Bool
+        let startMinute: Int
+        let endMinute: Int
+
+        func isWindowActive(at date: Date) -> Bool {
+            guard clockSynchronized, !manualOverride else {
+                return false
+            }
+            return HardwareMonitorSyncSettings(
+                nightSleepEnabled: enabled,
+                nightSleepStartMinute: startMinute,
+                nightSleepEndMinute: endMinute
+            ).isNightSleepWindowActive(at: date)
+        }
+    }
+
     private let serviceUUID = CBUUID(string: HardwareMonitorBLEProtocol.serviceUUIDString)
     private let commandCharacteristicUUID = CBUUID(string: HardwareMonitorBLEProtocol.commandCharacteristicUUIDString)
     private let statusCharacteristicUUID = CBUUID(string: HardwareMonitorBLEProtocol.statusCharacteristicUUIDString)
@@ -71,6 +92,7 @@ final class HardwareMonitorBLEClient: NSObject {
         label: "sub2api-statusbar.hardware-monitor-network",
         qos: .utility
     )
+    private let powerScheduleResyncInterval: TimeInterval = 3_600
 
     private var centralManager: CBCentralManager?
     private var peripheral: CBPeripheral?
@@ -97,6 +119,7 @@ final class HardwareMonitorBLEClient: NSObject {
     private var currentPage = HardwareMonitorPage.overview
     private var lastPageSentAt: [HardwareMonitorPage: Date] = [:]
     private var lastSignalSentAt: Date?
+    private var lastPowerScheduleSentAt: Date?
     private var pendingWrites: [PendingWrite] = []
     private var writeInFlight: PendingWrite?
     private var firmwarePackage: HardwareFirmwarePackage?
@@ -107,11 +130,13 @@ final class HardwareMonitorBLEClient: NSObject {
     private var lastFirmwareProgress = -1
     private var awaitingFirmwareRestart = false
     private var firmwareRestartDisconnectObserved = false
+    private var lastKnownDeviceNightSleepState: DeviceNightSleepState?
 
     func start() {
         guard !isRunning else {
             return
         }
+        trace("client_start")
         isRunning = true
         loadFirmwarePackageIfNeeded()
         publish(.waitingForBluetooth)
@@ -127,6 +152,7 @@ final class HardwareMonitorBLEClient: NSObject {
     }
 
     func stop() {
+        trace("client_stop")
         isRunning = false
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
@@ -171,7 +197,7 @@ final class HardwareMonitorBLEClient: NSObject {
         }
         rebuildPayloads()
         if settingsChanged, isHandshakeReady {
-            enqueueCurrentPageState(heartbeatWhenFresh: true)
+            lastPowerScheduleSentAt = nil
         }
         performSync()
     }
@@ -266,13 +292,24 @@ final class HardwareMonitorBLEClient: NSObject {
     }
 
     private func performSync(now: Date = Date()) {
+        refreshScheduledSleepPresentation(at: now)
         guard isRunning,
               isHandshakeReady,
-              !firmwareUpdateState.isInProgress,
-              let payloads else {
+              !firmwareUpdateState.isInProgress else {
             return
         }
 
+        let isPowerScheduleDue = lastPowerScheduleSentAt.map {
+            now.timeIntervalSince($0) >= powerScheduleResyncInterval
+        } ?? true
+        if isPowerScheduleDue {
+            enqueuePowerSchedule(at: now)
+            return
+        }
+
+        guard let payloads else {
+            return
+        }
         let pageInterval = syncSettings.interval(for: currentPage)
         let isPageDue = lastPageSentAt[currentPage].map {
             now.timeIntervalSince($0) >= pageInterval
@@ -291,6 +328,19 @@ final class HardwareMonitorBLEClient: NSObject {
         if isHeartbeatDue, let heartbeat = payloads.heartbeats[currentPage] {
             enqueue(PendingWrite(kind: .heartbeat(currentPage), data: heartbeat, destination: .command))
         }
+    }
+
+    private func enqueuePowerSchedule(at date: Date) {
+        // 入队即开始节流，避免连续状态通知重复排队同一份计划。
+        lastPowerScheduleSentAt = date
+        enqueue(PendingWrite(
+            kind: .powerSchedule,
+            data: HardwareMonitorBLEProtocol.powerSchedulePayload(
+                syncSettings: syncSettings,
+                at: date
+            ),
+            destination: .command
+        ))
     }
 
     private func enqueueCurrentPageState(now: Date = Date(), heartbeatWhenFresh: Bool) {
@@ -378,7 +428,7 @@ final class HardwareMonitorBLEClient: NSObject {
         switch kind {
         case .firmwareStart, .firmwareChunk, .firmwareFinish:
             return true
-        case .hello, .heartbeat, .page:
+        case .hello, .powerSchedule, .heartbeat, .page:
             return false
         }
     }
@@ -410,6 +460,7 @@ final class HardwareMonitorBLEClient: NSObject {
 
     private func beginScan(after delay: TimeInterval = 0) {
         reconnectWorkItem?.cancel()
+        trace("scan_scheduled", "delay_seconds=\(delay)")
         let workItem = DispatchWorkItem { [weak self] in
             guard let self,
                   self.isRunning,
@@ -417,7 +468,8 @@ final class HardwareMonitorBLEClient: NSObject {
                 return
             }
             self.resetPeripheral()
-            self.publish(.scanning)
+            self.publishScanState(at: Date())
+            self.trace("scan_started")
             self.centralManager?.scanForPeripherals(
                 withServices: [self.serviceUUID],
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
@@ -441,6 +493,7 @@ final class HardwareMonitorBLEClient: NSObject {
         writeInFlight = nil
         lastPageSentAt.removeAll()
         lastSignalSentAt = nil
+        lastPowerScheduleSentAt = nil
         latestDeviceStatus = nil
     }
 
@@ -450,6 +503,7 @@ final class HardwareMonitorBLEClient: NSObject {
     }
 
     private func fail(_ detail: String, disconnect: Bool = true) {
+        trace("client_failure", "disconnect=\(disconnect) detail=\(detail)")
         publish(.failed(detail: detail))
         if disconnect, let peripheral {
             centralManager?.cancelPeripheralConnection(peripheral)
@@ -475,7 +529,91 @@ final class HardwareMonitorBLEClient: NSObject {
             return
         }
         state = next
+        trace("connection_state", String(describing: next))
         onStateChange?(next)
+    }
+
+    private func trace(_ event: String, _ detail: String = "") {
+        guard let path = ProcessInfo.processInfo.environment["SUB2API_HARDWARE_BLE_TRACE_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else {
+            return
+        }
+        let sanitize: (String) -> String = { value in
+            value.replacingOccurrences(of: "\t", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+        }
+        let timestamp = String(format: "%.3f", Date().timeIntervalSince1970)
+        let suffix = detail.isEmpty ? "" : "\t\(sanitize(detail))"
+        guard let data = "\(timestamp)\t\(sanitize(event))\(suffix)\n".data(using: .utf8) else {
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        let fileManager = FileManager.default
+        do {
+            try fileManager.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if !fileManager.fileExists(atPath: path) {
+                try data.write(to: url, options: .atomic)
+                return
+            }
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            try handle.close()
+        } catch {
+            fputs("Hardware monitor BLE trace failed: \(error)\n", stderr)
+        }
+    }
+
+    private func publishScanState(at date: Date) {
+        if let lastKnownDeviceNightSleepState {
+            if lastKnownDeviceNightSleepState.isWindowActive(at: date) {
+                publish(.scheduledSleep(wakeMinute: lastKnownDeviceNightSleepState.endMinute))
+            } else {
+                publish(.scanning)
+            }
+        } else if syncSettings.isNightSleepWindowActive(at: date) {
+            publish(.scheduledSleep(wakeMinute: syncSettings.nightSleepEndMinute))
+        } else {
+            publish(.scanning)
+        }
+    }
+
+    private func rememberDeviceNightSleepState(_ status: HardwareMonitorBLEDeviceStatus) {
+        guard let enabled = status.nightSleepEnabled,
+              let clockSynchronized = status.nightSleepClockSynchronized,
+              let manualOverride = status.nightSleepManualOverride,
+              let startMinute = status.nightSleepStartMinute,
+              let endMinute = status.nightSleepEndMinute else {
+            return
+        }
+        let validatedStartMinute = Int(startMinute)
+        let validatedEndMinute = Int(endMinute)
+        guard HardwareMonitorSyncSettings.nightSleepMinuteRange.contains(validatedStartMinute),
+              HardwareMonitorSyncSettings.nightSleepMinuteRange.contains(validatedEndMinute),
+              validatedStartMinute != validatedEndMinute else {
+            return
+        }
+        lastKnownDeviceNightSleepState = DeviceNightSleepState(
+            enabled: enabled,
+            clockSynchronized: clockSynchronized,
+            manualOverride: manualOverride,
+            startMinute: validatedStartMinute,
+            endMinute: validatedEndMinute
+        )
+    }
+
+    private func refreshScheduledSleepPresentation(at date: Date) {
+        switch state {
+        case .scanning, .scheduledSleep:
+            publishScanState(at: date)
+        default:
+            break
+        }
     }
 
     private func publishFirmwareUpdate(_ next: HardwareFirmwareUpdateState) {
@@ -483,6 +621,7 @@ final class HardwareMonitorBLEClient: NSObject {
             return
         }
         firmwareUpdateState = next
+        trace("firmware_update_state", String(describing: next))
         onFirmwareUpdateStateChange?(next)
     }
 
@@ -548,6 +687,7 @@ extension HardwareMonitorBLEClient: CBCentralManagerDelegate {
         guard isRunning else {
             return
         }
+        trace("central_state", "raw_value=\(central.state.rawValue)")
         switch central.state {
         case .poweredOn:
             beginScan()
@@ -575,6 +715,7 @@ extension HardwareMonitorBLEClient: CBCentralManagerDelegate {
         guard isRunning, self.peripheral == nil else {
             return
         }
+        trace("device_discovered", "rssi=\(RSSI)")
         central.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = self
@@ -589,6 +730,7 @@ extension HardwareMonitorBLEClient: CBCentralManagerDelegate {
         guard isRunning, peripheral === self.peripheral else {
             return
         }
+        trace("device_connected")
         publish(.connected(deviceName: deviceName(for: peripheral)))
         peripheral.discoverServices([serviceUUID])
     }
@@ -598,6 +740,7 @@ extension HardwareMonitorBLEClient: CBCentralManagerDelegate {
             return
         }
         let detail = error?.localizedDescription ?? "Could not connect to the hardware monitor."
+        trace("device_connect_failed", detail)
         resetPeripheral()
         if awaitingFirmwareRestart {
             beginScan(after: 1)
@@ -612,6 +755,10 @@ extension HardwareMonitorBLEClient: CBCentralManagerDelegate {
         }
         let updateWasInProgress = firmwareUpdateState.isInProgress
         let wasAwaitingFirmwareRestart = awaitingFirmwareRestart
+        trace(
+            "device_disconnected",
+            "update_in_progress=\(updateWasInProgress) awaiting_restart=\(wasAwaitingFirmwareRestart) error=\(error?.localizedDescription ?? "none")"
+        )
         resetPeripheral()
         guard isRunning else {
             return
@@ -642,6 +789,7 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
             failFirmwareUpdate("The hardware monitor service changed during the firmware update.")
             return
         }
+        trace("service_invalidated")
         commandCharacteristic = nil
         statusCharacteristic = nil
         firmwareDataCharacteristic = nil
@@ -668,6 +816,7 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
             fail("Hardware monitor BLE service was not found.")
             return
         }
+        trace("service_discovered")
         peripheral.discoverCharacteristics(
             [commandCharacteristicUUID, statusCharacteristicUUID, firmwareDataCharacteristicUUID],
             for: service
@@ -691,6 +840,10 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
             fail("Hardware monitor BLE characteristics were not found.")
             return
         }
+        trace(
+            "characteristics_discovered",
+            "firmware_data=\(firmwareDataCharacteristic != nil)"
+        )
         startSecurityProbeIfReady()
     }
 
@@ -705,6 +858,7 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
             return
         }
         notificationRequested = false
+        trace("notification_state", "enabled=\(characteristic.isNotifying)")
         if characteristic.isNotifying {
             peripheral.readValue(for: characteristic)
         }
@@ -728,6 +882,7 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
             firmwareUpdateTimeoutWorkItem = nil
         }
         if let error {
+            trace("write_failed", "kind=\(String(describing: completedWrite.kind)) detail=\(error.localizedDescription)")
             if isFirmwareWrite(completedWrite.kind) {
                 failFirmwareUpdate("Firmware transfer failed: \(error.localizedDescription)")
             } else {
@@ -736,12 +891,25 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
             return
         }
 
+        switch completedWrite.kind {
+        case .hello, .powerSchedule, .firmwareStart, .firmwareFinish:
+            trace("write_completed", "kind=\(String(describing: completedWrite.kind))")
+        case .firmwareChunk, .heartbeat, .page:
+            break
+        }
+
         let completedAt = Date()
         switch completedWrite.kind {
         case .hello:
             if let statusCharacteristic {
                 peripheral.readValue(for: statusCharacteristic)
             }
+        case .powerSchedule:
+            lastPowerScheduleSentAt = completedAt
+            if let statusCharacteristic {
+                peripheral.readValue(for: statusCharacteristic)
+            }
+            enqueueCurrentPageState(heartbeatWhenFresh: true)
         case .heartbeat:
             lastSignalSentAt = completedAt
         case let .page(page):
@@ -805,7 +973,12 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
         }
         do {
             let status = try HardwareMonitorBLEProtocol.decodeStatus(data)
+            trace(
+                "device_status",
+                "firmware=\(status.firmwareVersion) protocol=\(status.protocolVersion) link=\(status.isLinkConnected) encrypted=\(status.isLinkEncrypted) bonded=\(status.isBonded) handshake=\(status.isHandshakeReady) wake=\(status.nightSleepLastWakeReason.map(String.init(describing:)) ?? "unavailable") rtc_fallback=\(status.nightSleepRTCFallbackActive.map(String.init(describing:)) ?? "unavailable") boot_parity=\(status.nightSleepBootSequenceParity.map(String.init(describing:)) ?? "unavailable")"
+            )
             latestDeviceStatus = status
+            rememberDeviceNightSleepState(status)
             let pageChanged = currentPage != status.currentPage
             currentPage = status.currentPage
             let name = deviceName(for: peripheral)
@@ -847,7 +1020,7 @@ extension HardwareMonitorBLEClient: CBPeripheralDelegate {
             if status.isHandshakeReady {
                 isHandshakeReady = true
                 publish(.ready(deviceName: name, firmwareVersion: status.firmwareVersion))
-                if pageChanged {
+                if pageChanged, lastPowerScheduleSentAt != nil {
                     enqueueCurrentPageState(heartbeatWhenFresh: true)
                 }
                 performSync()

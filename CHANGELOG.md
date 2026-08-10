@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.1.38
+
+- Added a no-hardware-change low-power baseline using ST7305 1 Hz LPM, ESP32-S3 dynamic frequency scaling and automatic Light-sleep, NimBLE modem sleep, event-driven idle waits, an explicitly sleeping unused SHTC3, and disabled PCF85063 clock output.
+- Added two-stage reconnect advertising for bonded devices: a 20 ms interval for 30 seconds after disconnection, followed by a fixed 1022.5 ms interval, while preserving fast advertising throughout the physical first-pairing window.
+- Added configurable Beijing-time night Deep-sleep, enabled by default from 23:30 to 07:30, with Mac-supplied RTC time, an offline screen/BLE/update window, PCF85063 alarm wake, ESP timer fallback, and physical KEY early wake.
+- Upgraded the encrypted monitor data protocol to version 6 with a dedicated schedule packet and wake-state suffix while preserving the first 16 firmware-update status bytes and update protocol 1 compatibility.
+- Fixed repeated disconnect/reconnect cycles during scheduled sleep by reading wake pins through the RTC IO API after `rtc_gpio_init()`, and added opt-in local BLE lifecycle tracing that excludes identifiers, monitor payloads, and credentials.
+- Embedded reproducible firmware `0.9.4` after byte-identical independent builds, encrypted bonded BLE OTA, restart and target-version confirmation, plus a real single-disconnect Deep-sleep window that remained undiscoverable until an `rtcInterrupt` wake and encrypted reconnect.
+- Kept power and battery-life claims explicitly pending physical board-current measurement, a full overnight run, exact advertising-timing capture, and separate KEY/timer-fallback acceptance.
+
 ## v0.1.37
 
 - Added a firmware-local battery estimate from calibrated one-shot GPIO4 ADC samples, with the percentage fixed in the same header position on all four pages and measured voltage retained on Device.

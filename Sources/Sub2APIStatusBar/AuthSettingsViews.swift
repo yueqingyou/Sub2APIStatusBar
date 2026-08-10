@@ -6,6 +6,7 @@ import Sub2APIStatusCore
 struct LoginPanel: View {
     @ObservedObject var model: MonitorViewModel
     @FocusState private var focusedField: LoginField?
+    @State private var showsAdvancedOptions = false
 
     private var formState: LoginFormState {
         LoginFormState(
@@ -16,65 +17,160 @@ struct LoginPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(ClaudeTheme.elevatedCard)
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(ClaudeTheme.accent.opacity(0.08))
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
-                    Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
-                        .font(.system(size: 30, weight: .semibold))
-                        .foregroundStyle(ClaudeTheme.accent)
-                }
-                .frame(width: 56, height: 56)
-                .shadow(color: ClaudeTheme.glassShadow, radius: 7, y: 3)
+        VStack(spacing: 0) {
+            header
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("TokenRouter")
-                        .font(.system(size: 25, weight: .semibold, design: .rounded))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    loginPageHeader
+                    credentialsCard
+
+                    if let error = model.settingsError {
+                        MessageRow(message: error)
+                    }
+
+                    interfaceCard
+                    advancedOptionsCard
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 18)
             }
 
-            GlassCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(strings.phrase("语言", "Language"))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(ClaudeTheme.secondaryText)
-                        GlassSegmentedControl(
-                            selection: languageBinding,
-                            items: languageItems
-                        )
-                    }
+            footer
+        }
+        .environment(\.appLanguage, model.settingsDraft.language)
+    }
 
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(strings.phrase("外观", "Appearance"))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(ClaudeTheme.secondaryText)
-                        GlassSegmentedControl(
-                            selection: appearanceBinding,
-                            items: appearanceItems
-                        )
-                    }
+    private var header: some View {
+        HStack(spacing: 10) {
+            PanelBrandMark(statusTint: nil)
 
-                    TextField(strings.phrase("服务地址", "Server URL"), text: $model.settingsDraft.baseURL)
-                        .themedTextField()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("TokenRouter")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+            }
+
+            Spacer()
+
+            StatusPill(
+                title: strings.phrase("未登录", "Signed Out"),
+                tint: ClaudeTheme.slate,
+                systemImage: "person.crop.circle.badge.xmark"
+            )
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .background(ClaudeTheme.header)
+    }
+
+    private var loginPageHeader: some View {
+        PanelPageHeader(title: strings.phrase("登录", "Sign In"))
+    }
+
+    private var credentialsCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    credentialLabel(strings.phrase("服务地址", "Server URL"))
+                    TextField("https://tokenrouter.example.com", text: $model.settingsDraft.baseURL)
+                        .loginCredentialField()
                         .focused($focusedField, equals: .baseURL)
+                        .onSubmit {
+                            focusedField = .email
+                        }
                         .onChange(of: model.settingsDraft.baseURL) { _ in
                             model.scheduleSettingsAutosave(refreshAfterSave: false)
                         }
+                }
 
-                    TextField(strings.phrase("账号", "Account"), text: $model.loginEmail)
-                        .themedTextField()
+                VStack(alignment: .leading, spacing: 6) {
+                    credentialLabel(strings.phrase("账号", "Account"))
+                    TextField("name@example.com", text: $model.loginEmail)
+                        .loginCredentialField()
                         .focused($focusedField, equals: .email)
+                        .onSubmit {
+                            focusedField = .password
+                        }
+                }
 
-                    SecureField(strings.phrase("密码", "Password"), text: $model.loginPassword)
-                        .themedTextField()
+                VStack(alignment: .leading, spacing: 6) {
+                    credentialLabel(strings.phrase("密码", "Password"))
+                    SecureField("", text: $model.loginPassword)
+                        .loginCredentialField()
+                        .accessibilityLabel(strings.phrase("密码", "Password"))
                         .focused($focusedField, equals: .password)
+                        .onSubmit {
+                            submitLogin()
+                        }
+                }
 
+                Button {
+                    submitLogin()
+                } label: {
+                    HStack(spacing: 7) {
+                        if model.isLoggingIn {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            SafeSystemImage(systemName: "key.fill", fallbackName: "key")
+                        }
+                        Text(model.isLoggingIn ? strings.phrase("连接中...", "Connecting...") : strings.phrase("登录", "Sign In"))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!formState.canSubmit || model.isLoggingIn)
+            }
+        }
+    }
+
+    private var interfaceCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    credentialLabel(strings.phrase("语言", "Language"))
+                    GlassSegmentedControl(
+                        selection: languageBinding,
+                        items: languageItems
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    credentialLabel(strings.phrase("外观", "Appearance"))
+                    GlassSegmentedControl(
+                        selection: appearanceBinding,
+                        items: appearanceItems
+                    )
+                }
+            }
+        }
+    }
+
+    private var advancedOptionsCard: some View {
+        GlassCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showsAdvancedOptions.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(strings.phrase("高级选项", "Advanced Options"))
+                            .font(.headline)
+                            .foregroundStyle(ClaudeTheme.primaryText)
+                        Spacer()
+                        SafeSystemImage(systemName: "chevron.right", fallbackName: "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                            .rotationEffect(.degrees(showsAdvancedOptions ? 90 : 0))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if showsAdvancedOptions {
                     RefreshIntervalControl(
                         seconds: $model.settingsDraft.refreshIntervalSeconds,
                         strings: strings,
@@ -82,41 +178,15 @@ struct LoginPanel: View {
                     ) {
                         model.scheduleSettingsAutosave(refreshAfterSave: false)
                     }
-                }
-            }
 
-            if let error = model.settingsError {
-                MessageRow(message: error)
-            }
-
-            Button {
-                model.loginAndSave()
-            } label: {
-                HStack {
-                    if model.isLoggingIn {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "key.fill")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(strings.phrase("手动令牌", "Manual Token"))
+                            .font(.callout.weight(.semibold))
+                        SecureField("Bearer Token", text: manualTokenBinding)
+                            .loginCredentialField()
+                            .focused($focusedField, equals: .authToken)
                     }
-                    Text(model.isLoggingIn ? strings.phrase("连接中...", "Connecting...") : strings.phrase("登录", "Login"))
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!formState.canSubmit || model.isLoggingIn)
 
-            GlassCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(strings.phrase("手动令牌", "Manual token"))
-                        .font(.headline)
-                    SecureField("Bearer Token", text: $model.settingsDraft.authToken)
-                        .themedTextField()
-                        .focused($focusedField, equals: .authToken)
-                        .onChange(of: model.settingsDraft.authToken) { _ in
-                            model.scheduleSettingsAutosave(refreshAfterSave: false)
-                        }
                     Button {
                         model.saveSettings()
                     } label: {
@@ -125,36 +195,46 @@ struct LoginPanel: View {
                     .disabled(model.settingsDraft.authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            Button {
+                model.openURL(model.settingsDraft.baseURL)
+            } label: {
+                Label(strings.phrase("打开服务", "Open Server"), systemImage: "safari")
+            }
+            .disabled(model.settingsDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
             Spacer()
 
-            HStack {
-                Button {
-                    model.openURL(model.settingsDraft.baseURL)
-                } label: {
-                    Label(strings.phrase("打开服务", "Open Server"), systemImage: "safari")
-                }
-                .disabled(model.settingsDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                Spacer()
-
-                Button {
-                    model.quit()
-                } label: {
-                    Label(strings.phrase("退出", "Quit"), systemImage: "power")
-                }
-            }
-            .buttonStyle(.borderless)
-        }
-        .padding(22)
-        .frame(width: 520, height: 680)
-        .background(PanelBackground())
-        .environment(\.appLanguage, model.settingsDraft.language)
-        .onAppear {
-            DispatchQueue.main.async {
-                focusedField = model.settingsDraft.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .baseURL : .email
+            Button {
+                model.quit()
+            } label: {
+                Label(strings.phrase("退出", "Quit"), systemImage: "power")
             }
         }
+        .buttonStyle(.borderless)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(ClaudeTheme.secondaryText)
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+        .background(ClaudeTheme.footer)
+    }
+
+    private func credentialLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ClaudeTheme.secondaryText)
+    }
+
+    private func submitLogin() {
+        guard formState.canSubmit, !model.isLoggingIn else {
+            return
+        }
+        focusedField = nil
+        model.loginAndSave()
     }
 
     private var strings: AppStrings {
@@ -175,6 +255,16 @@ struct LoginPanel: View {
             get: { model.settingsDraft.appearance },
             set: { value in
                 model.applySettingsChange(refreshAfterSave: false) { $0.appearance = value }
+            }
+        )
+    }
+
+    private var manualTokenBinding: Binding<String> {
+        Binding(
+            get: { model.settingsDraft.authToken },
+            set: { value in
+                model.settingsDraft.authToken = value
+                model.scheduleSettingsAutosave(refreshAfterSave: false)
             }
         )
     }
@@ -215,8 +305,6 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                settingsHeader
-
                 generalSettingsCard
 
                 menuBarSettingsCard
@@ -247,12 +335,6 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsHeader: some View {
-        PanelPageHeader(
-            title: strings.phrase("设置", "Settings")
-        )
-    }
-
     private var generalSettingsCard: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 12) {
@@ -280,7 +362,7 @@ struct SettingsView: View {
                     )
                 }
 
-                settingsRow("Base URL") {
+                settingsRow(strings.phrase("服务地址", "Server URL")) {
                     TextField("https://sub2api.example.com", text: baseURLBinding)
                         .themedTextField()
                         .focused($focusedField, equals: .baseURL)
@@ -615,14 +697,24 @@ struct SettingsView: View {
                 Text(strings.phrase("登录", "Login"))
                     .font(.headline)
 
-                SecureField("Bearer Token", text: authTokenBinding)
-                    .themedTextField()
-                    .focused($focusedField, equals: .authToken)
+                connectionField(strings.phrase("手动令牌", "Manual Token")) {
+                    SecureField("Bearer Token", text: authTokenBinding)
+                        .credentialTextInput()
+                        .themedTextField()
+                        .focused($focusedField, equals: .authToken)
+                }
 
-                TextField("Email", text: loginEmailBinding)
-                    .themedTextField()
-                SecureField(strings.phrase("密码", "Password"), text: loginPasswordBinding)
-                    .themedTextField()
+                connectionField(strings.phrase("账号", "Account")) {
+                    TextField("name@example.com", text: loginEmailBinding)
+                        .credentialTextInput()
+                        .themedTextField()
+                }
+                connectionField(strings.phrase("密码", "Password")) {
+                    SecureField("", text: loginPasswordBinding)
+                        .credentialTextInput()
+                        .themedTextField()
+                        .accessibilityLabel(strings.phrase("密码", "Password"))
+                }
                 Button {
                     model.loginAndSave()
                 } label: {
@@ -648,6 +740,18 @@ struct SettingsView: View {
                 .frame(width: 100, alignment: .trailing)
                 .lineLimit(2)
                 .minimumScaleFactor(0.85)
+            content()
+        }
+    }
+
+    private func connectionField<Content: View>(
+        _ label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(ClaudeTheme.secondaryText)
             content()
         }
     }

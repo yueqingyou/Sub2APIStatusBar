@@ -4,7 +4,7 @@ TokenRouter Monitor is a macOS menu bar companion for [TokenFlux/TokenRouter](ht
 
 ## Highlights
 
-- Native macOS menu bar app with a compact SwiftUI popover
+- Native macOS menu bar app with a compact SwiftUI popover and one tonal surface hierarchy shared by signed-out and authenticated views
 - User dashboard cards for balance, API keys, requests, spend, token totals, RPM/TPM, and response time
 - Admin accounts can monitor a selected user's realtime occupied concurrency and normal account count in supported views and menu bar fields
 - Administrator-only OpenAI OAuth account view with five-hour and seven-day quota, standard value, local history, and forecast signals
@@ -118,6 +118,8 @@ On first launch, click the menu bar icon and fill:
 - Account email
 - Password
 
+Before authentication, the status item remains a single TokenRouter icon and the popover hides all monitoring metrics. Language and appearance stay available on the sign-in screen; refresh interval and manual Bearer token entry are grouped under the collapsed advanced options.
+
 Non-secret preferences are saved at:
 
 ```text
@@ -155,7 +157,7 @@ Admin accounts can additionally enable realtime concurrency, normal account coun
 ## Build A macOS App
 
 ```bash
-VERSION=v0.1.38 ./scripts/build-app.sh
+VERSION=v0.1.39 ./scripts/build-app.sh
 ```
 
 Output:
@@ -171,14 +173,14 @@ Release builds are host-native by default. Building on an Intel Mac without an a
 Set `ARCHITECTURE` to build a specific target or a Universal 2 app. Supported values are `x86_64`, `arm64`, and `universal`; `native` remains the default.
 
 ```bash
-VERSION=v0.1.38 ARCHITECTURE=universal ./scripts/build-app.sh
+VERSION=v0.1.39 ARCHITECTURE=universal ./scripts/build-app.sh
 ```
 
 Optional signed build:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.38 \
+VERSION=v0.1.39 \
 ./scripts/build-app.sh
 ```
 
@@ -186,16 +188,16 @@ VERSION=v0.1.38 \
 
 ```bash
 for ARCHITECTURE in x86_64 arm64 universal; do
-  VERSION=v0.1.38 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
+  VERSION=v0.1.39 ARCHITECTURE="$ARCHITECTURE" ./scripts/package-release.sh
 done
 ```
 
 Output:
 
 ```text
-dist/Sub2APIStatusBar-0.1.38-macOS-x86_64.zip
-dist/Sub2APIStatusBar-0.1.38-macOS-arm64.zip
-dist/Sub2APIStatusBar-0.1.38-macOS-universal.zip
+dist/Sub2APIStatusBar-0.1.39-macOS-x86_64.zip
+dist/Sub2APIStatusBar-0.1.39-macOS-arm64.zip
+dist/Sub2APIStatusBar-0.1.39-macOS-universal.zip
 ```
 
 Each ZIP has a matching `.sha256` file. The checksum manifest references the archive by file name only, so downloaded assets can be verified together from any directory with `shasum -a 256 -c <archive>.sha256`.
@@ -204,7 +206,7 @@ By default, `package-release.sh` creates an ad-hoc signed archive. You can pass 
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.38 \
+VERSION=v0.1.39 \
 ARCHITECTURE=universal \
 ./scripts/package-release.sh
 ```
@@ -220,7 +222,7 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.38 \
+VERSION=v0.1.39 \
 ./scripts/notarize-release.sh
 ```
 

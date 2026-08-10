@@ -7,7 +7,7 @@ struct MonitorPanel: View {
 
     var body: some View {
         Group {
-            if model.config.authToken.isEmpty {
+            if model.config.menuBarStatusDisplayMode == .signedOut {
                 LoginPanel(model: model)
             } else {
                 VStack(spacing: 0) {
@@ -33,19 +33,7 @@ struct MonitorPanel: View {
     private var header: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(ClaudeTheme.elevatedCard)
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(iconColor.opacity(0.08))
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
-                    SafeSystemImage(systemName: iconName, fallbackName: "circle.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(iconColor)
-                }
-                .frame(width: 34, height: 34)
-                .shadow(color: ClaudeTheme.glassShadow.opacity(0.5), radius: 3, y: 1)
+                PanelBrandMark(statusTint: iconColor)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("TokenRouter")
@@ -72,12 +60,6 @@ struct MonitorPanel: View {
         .padding(.top, 14)
         .padding(.bottom, 12)
         .background(ClaudeTheme.header)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(ClaudeTheme.border)
-                .frame(height: 0.5)
-                .allowsHitTesting(false)
-        }
     }
 
     @ViewBuilder
@@ -97,10 +79,9 @@ struct MonitorPanel: View {
     private var overviewContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                PanelPageHeader(
-                    title: strings.phrase("概览", "Overview")
-                )
-                statusSection
+                if model.snapshot.isStale || !model.snapshot.connected {
+                    statusSection
+                }
 
                 if let updateInfo = model.updateInfo, updateInfo.isUpdateAvailable {
                     UpdateAvailableBanner(
@@ -143,11 +124,6 @@ struct MonitorPanel: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            StatusPill(
-                title: statusScopeLabel,
-                tint: iconColor,
-                systemImage: model.snapshot.mode == .admin ? "scope" : "person"
-            )
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 11)
@@ -214,14 +190,14 @@ struct MonitorPanel: View {
             items.append(normalAccountsMetric(normalAccountComposition))
         }
         items.append(contentsOf: [
-            balanceMetric(caption: strings.phrase("可用", "Available")),
+            balanceMetric(),
             userAPIKeysMetric(stats),
             MetricItem(title: strings.phrase("今日请求", "Today Requests"), value: StatusFormatters.menuBarCount(stats.todayRequests), caption: requestCaption(stats), systemImage: "chart.bar", tint: ClaudeTheme.accent),
             MetricItem(title: strings.phrase("今日费用", "Today Cost"), value: StatusFormatters.preciseCurrency(stats.todayActualCost), caption: costCaption(stats), systemImage: "dollarsign.circle", tint: ClaudeTheme.accent),
             MetricItem(title: strings.phrase("今日 Token", "Today Tokens"), value: StatusFormatters.compactNumber(stats.todayTokens), caption: tokenBreakdown(input: stats.todayInputTokens, output: stats.todayOutputTokens), systemImage: "cube", tint: ClaudeTheme.accent),
             MetricItem(title: totalTokenTitle, value: StatusFormatters.compactNumber(stats.totalTokens), caption: tokenBreakdown(input: stats.totalInputTokens, output: stats.totalOutputTokens), systemImage: "archivebox.fill", tint: ClaudeTheme.accent),
             performanceMetric(stats),
-            MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), caption: strings.phrase("平均耗时", "Average time"), systemImage: "clock", tint: ClaudeTheme.accent),
+            MetricItem(title: strings.phrase("平均响应", "Avg Response"), value: latencyText(milliseconds: stats.averageDurationMs), systemImage: "clock", tint: ClaudeTheme.accent),
         ].compactMap { $0 })
         return items
     }
@@ -266,17 +242,6 @@ struct MonitorPanel: View {
         )
     }
 
-    private var iconName: String {
-        switch model.snapshot.severity {
-        case .healthy:
-            return "checkmark.circle.fill"
-        case .warning:
-            return "exclamationmark.triangle.fill"
-        case .error:
-            return "xmark.octagon.fill"
-        }
-    }
-
     private var iconColor: Color {
         switch model.snapshot.severity {
         case .healthy:
@@ -299,19 +264,13 @@ struct MonitorPanel: View {
                 "Refresh failed. Showing the last successful data and retrying on the refresh interval."
             )
         }
-        if model.snapshot.connected {
-            return strings.phrase(
-                "监控已连接，数据会按刷新间隔自动更新。",
-                "Monitoring is connected and updates on your refresh interval."
-            )
-        }
         return strings.phrase(
             "当前无法连接服务，检查网络或登录状态。",
             "The server is not reachable. Check network or login state."
         )
     }
 
-    private func balanceMetric(caption: String? = nil) -> MetricItem? {
+    private func balanceMetric() -> MetricItem? {
         let balance: Double?
         if model.snapshot.mode == .admin,
            let monitoredUser = model.snapshot.monitoredUser {
@@ -326,17 +285,9 @@ struct MonitorPanel: View {
         return MetricItem(
             title: strings.phrase("余额", "Balance"),
             value: StatusFormatters.currency(balance),
-            caption: caption,
             systemImage: "banknote",
             tint: ClaudeTheme.accent
         )
-    }
-
-    private var statusScopeLabel: String {
-        if model.snapshot.mode == .admin {
-            return strings.phrase("管理员监控", "Admin Monitor")
-        }
-        return strings.phrase("用户用量", "User Usage")
     }
 
     private var totalTokenTitle: String {
@@ -360,16 +311,16 @@ struct MonitorPanel: View {
         return MetricItem(title: strings.phrase("性能", "Performance"), value: "\(StatusFormatters.menuBarRate(stats.rpm)) RPM", caption: "\(StatusFormatters.compactNumber(Int64(stats.tpm))) TPM", systemImage: "bolt", tint: ClaudeTheme.gold)
     }
 
-    private func requestCaption(_ stats: DashboardStats) -> String {
+    private func requestCaption(_ stats: DashboardStats) -> String? {
         if model.snapshot.mode == .admin {
-            return strings.phrase("所选用户", "Selected user")
+            return nil
         }
         return strings.phrase("总计 \(StatusFormatters.compactNumber(stats.totalRequests))", "Total \(StatusFormatters.compactNumber(stats.totalRequests))")
     }
 
-    private func costCaption(_ stats: DashboardStats) -> String {
+    private func costCaption(_ stats: DashboardStats) -> String? {
         if model.snapshot.mode == .admin {
-            return strings.phrase("所选用户", "Selected user")
+            return nil
         }
         return strings.phrase("总计 \(StatusFormatters.preciseCurrency(stats.totalActualCost))", "Total \(StatusFormatters.preciseCurrency(stats.totalActualCost))")
     }

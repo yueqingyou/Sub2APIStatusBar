@@ -32,44 +32,40 @@ extension AppAppearance {
 
 enum ClaudeTheme {
     static let background = adaptiveColor(
-        light: NSColor(srgbRed: 0.965, green: 0.972, blue: 0.985, alpha: 0.72),
-        dark: NSColor(srgbRed: 0.055, green: 0.062, blue: 0.078, alpha: 0.82)
+        light: NSColor(srgbRed: 0.920, green: 0.938, blue: 0.970, alpha: 0.92),
+        dark: NSColor(srgbRed: 0.042, green: 0.048, blue: 0.063, alpha: 0.94)
     )
     static let header = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.38),
-        dark: NSColor.white.withAlphaComponent(0.035)
-    )
-    static let footer = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.32),
-        dark: NSColor.white.withAlphaComponent(0.025)
-    )
-    static let card = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.64),
+        light: NSColor.white.withAlphaComponent(0.78),
         dark: NSColor.white.withAlphaComponent(0.065)
     )
+    static let footer = adaptiveColor(
+        light: NSColor.white.withAlphaComponent(0.70),
+        dark: NSColor.white.withAlphaComponent(0.050)
+    )
+    static let card = adaptiveColor(
+        light: NSColor.white.withAlphaComponent(0.88),
+        dark: NSColor.white.withAlphaComponent(0.085)
+    )
     static let elevatedCard = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.86),
-        dark: NSColor.white.withAlphaComponent(0.105)
+        light: NSColor.white.withAlphaComponent(0.98),
+        dark: NSColor.white.withAlphaComponent(0.145)
     )
     static let tabBackground = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.36),
-        dark: NSColor.black.withAlphaComponent(0.12)
+        light: NSColor(srgbRed: 0.885, green: 0.905, blue: 0.940, alpha: 0.88),
+        dark: NSColor.black.withAlphaComponent(0.22)
     )
     static let tabSelected = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.84),
-        dark: NSColor.white.withAlphaComponent(0.11)
+        light: NSColor.white.withAlphaComponent(0.96),
+        dark: NSColor.white.withAlphaComponent(0.16)
     )
     static let border = adaptiveColor(
         light: NSColor.black.withAlphaComponent(0.075),
         dark: NSColor.white.withAlphaComponent(0.10)
     )
-    static let glassBorder = adaptiveColor(
-        light: NSColor.black.withAlphaComponent(0.095),
-        dark: NSColor.white.withAlphaComponent(0.13)
-    )
     static let panelSheen = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.34),
-        dark: NSColor.white.withAlphaComponent(0.055)
+        light: NSColor.white.withAlphaComponent(0.50),
+        dark: NSColor.white.withAlphaComponent(0.070)
     )
     static let glassShadow = adaptiveColor(
         light: NSColor.black.withAlphaComponent(0.065),
@@ -77,7 +73,6 @@ enum ClaudeTheme {
     )
     static let primaryText = Color(nsColor: .labelColor)
     static let secondaryText = Color(nsColor: .secondaryLabelColor)
-    static let muted = Color(nsColor: .tertiaryLabelColor)
     static let accent = Color(nsColor: .controlAccentColor)
     static let success = adaptiveColor(
         light: NSColor(srgbRed: 0.16, green: 0.52, blue: 0.34, alpha: 1),
@@ -100,8 +95,8 @@ enum ClaudeTheme {
         dark: NSColor(srgbRed: 0.90, green: 0.43, blue: 0.42, alpha: 1)
     )
     static let textFieldBackground = adaptiveColor(
-        light: NSColor.white.withAlphaComponent(0.70),
-        dark: NSColor.white.withAlphaComponent(0.075)
+        light: NSColor(srgbRed: 0.925, green: 0.940, blue: 0.965, alpha: 0.96),
+        dark: NSColor.white.withAlphaComponent(0.105)
     )
     static let progressTrack = adaptiveColor(
         light: NSColor.black.withAlphaComponent(0.075),
@@ -132,12 +127,23 @@ extension View {
             .padding(.horizontal, 10)
             .frame(minHeight: 30)
             .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
-                    .allowsHitTesting(false)
-            }
-            .shadow(color: ClaudeTheme.glassShadow.opacity(0.45), radius: 2, y: 1)
+            .shadow(color: ClaudeTheme.glassShadow.opacity(0.30), radius: 1.5, y: 0.5)
+    }
+
+    func credentialTextInput() -> some View {
+        self
+            .autocorrectionDisabled()
+            .textContentType(nil)
+            .background(CredentialInputConfigurator().allowsHitTesting(false))
+    }
+
+    func loginCredentialField() -> some View {
+        credentialTextInput()
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 32)
+            .background(ClaudeTheme.textFieldBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .shadow(color: ClaudeTheme.glassShadow.opacity(0.30), radius: 1.5, y: 0.5)
     }
 
     func glassSurface(cornerRadius: CGFloat = 12) -> some View {
@@ -146,6 +152,120 @@ extension View {
                 cornerRadius: cornerRadius
             )
         )
+    }
+}
+
+private struct CredentialInputConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> CredentialInputConfigurationView {
+        CredentialInputConfigurationView()
+    }
+
+    func updateNSView(_ nsView: CredentialInputConfigurationView, context: Context) {
+        nsView.scheduleConfiguration()
+    }
+}
+
+private final class CredentialInputConfigurationView: NSView {
+    private weak var configuredTextField: NSTextField?
+    private var isConfigurationScheduled = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(textDidBeginEditing(_:)),
+            name: NSControl.textDidBeginEditingNotification,
+            object: nil
+        )
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        scheduleConfiguration()
+    }
+
+    func scheduleConfiguration() {
+        guard !isConfigurationScheduled else {
+            return
+        }
+        isConfigurationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            self.isConfigurationScheduled = false
+            self.configureNearestTextField()
+        }
+    }
+
+    @objc private func textDidBeginEditing(_ notification: Notification) {
+        guard let textField = notification.object as? NSTextField,
+              textField === configuredTextField else {
+            return
+        }
+        DispatchQueue.main.async { [weak textField] in
+            guard let editor = textField?.currentEditor() as? NSTextView else {
+                return
+            }
+            Self.configure(editor)
+        }
+    }
+
+    private func configureNearestTextField() {
+        guard let contentView = window?.contentView else {
+            return
+        }
+        let origin = convert(NSPoint(x: bounds.midX, y: bounds.midY), to: contentView)
+        guard let textField = Self.textFields(in: contentView)
+            .filter({ $0.isEditable })
+            .min(by: { lhs, rhs in
+                Self.squaredDistance(from: origin, to: lhs, in: contentView)
+                    < Self.squaredDistance(from: origin, to: rhs, in: contentView)
+            }) else {
+            return
+        }
+
+        configuredTextField = textField
+        textField.isAutomaticTextCompletionEnabled = false
+        if let editor = textField.currentEditor() as? NSTextView {
+            Self.configure(editor)
+        }
+    }
+
+    private static func configure(_ editor: NSTextView) {
+        editor.isAutomaticTextCompletionEnabled = false
+        editor.isAutomaticSpellingCorrectionEnabled = false
+        editor.isAutomaticTextReplacementEnabled = false
+        editor.isAutomaticQuoteSubstitutionEnabled = false
+        editor.isAutomaticDashSubstitutionEnabled = false
+        editor.isAutomaticLinkDetectionEnabled = false
+        editor.isAutomaticDataDetectionEnabled = false
+    }
+
+    private static func textFields(in view: NSView) -> [NSTextField] {
+        var fields: [NSTextField] = []
+        if let textField = view as? NSTextField {
+            fields.append(textField)
+        }
+        return view.subviews.reduce(into: fields) { result, subview in
+            result.append(contentsOf: textFields(in: subview))
+        }
+    }
+
+    private static func squaredDistance(from origin: NSPoint, to textField: NSTextField, in contentView: NSView) -> CGFloat {
+        let fieldOrigin = textField.convert(NSPoint(x: textField.bounds.midX, y: textField.bounds.midY), to: contentView)
+        let x = fieldOrigin.x - origin.x
+        let y = fieldOrigin.y - origin.y
+        return x * x + y * y
     }
 }
 
@@ -175,11 +295,7 @@ private struct GlassSurfaceModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(ClaudeTheme.card, in: shape)
-            .overlay {
-                shape
-                    .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
-                    .allowsHitTesting(false)
-            }
+            .shadow(color: ClaudeTheme.glassShadow.opacity(0.34), radius: 2, y: 1)
     }
 
     private var shape: RoundedRectangle {
@@ -276,11 +392,6 @@ struct GlassSegmentedControl<Value: Equatable>: View {
         }
         .padding(4)
         .background(ClaudeTheme.tabBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
-                .allowsHitTesting(false)
-        }
     }
 
     private func segment(_ item: GlassSegmentedItem<Value>) -> some View {
@@ -305,11 +416,6 @@ struct GlassSegmentedControl<Value: Equatable>: View {
                 isSelected ? ClaudeTheme.tabSelected : Color.clear,
                 in: RoundedRectangle(cornerRadius: 7, style: .continuous)
             )
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(isSelected ? ClaudeTheme.glassBorder : Color.clear, lineWidth: 0.75)
-                    .allowsHitTesting(false)
-            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -406,12 +512,7 @@ struct StatusPill: View {
         .foregroundStyle(tint)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(tint.opacity(0.08), in: shape)
-        .overlay {
-            shape
-                .stroke(tint.opacity(0.12), lineWidth: 0.5)
-                .allowsHitTesting(false)
-        }
+        .background(tint.opacity(0.11), in: shape)
     }
 }
 

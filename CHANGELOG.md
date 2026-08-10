@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.39
+
+- Unified the signed-out popover with the authenticated app shell, shared brand mark, adaptive tonal surfaces, and the same light/dark hierarchy instead of retaining a visually separate legacy login screen.
+- Kept the signed-out menu bar item to one template brand icon with explicit Signed Out tooltip and accessibility text, preventing configured metrics or stale snapshots from appearing before authentication.
+- Removed automatic credential focus and disabled macOS completion, correction, replacement, and detection behavior for account, password, and token fields so candidate overlays no longer cover active input.
+- Removed redundant page titles, duplicate labels and account identity, decorative dividers, borders, status dots, and captions while preserving lines and messages that carry data, risk, recovery, or structural meaning.
+- Hardened the app-bundle build so a failed Swift release compile cannot reuse an older executable, and constrained the Intel Swift 5.7 optimized frontend to a configurable single-thread default for stable release builds.
+
 ## v0.1.38
 
 - Added a no-hardware-change low-power baseline using ST7305 1 Hz LPM, ESP32-S3 dynamic frequency scaling and automatic Light-sleep, NimBLE modem sleep, event-driven idle waits, an explicitly sleeping unused SHTC3, and disabled PCF85063 clock output.

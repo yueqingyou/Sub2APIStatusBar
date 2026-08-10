@@ -2,12 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${VERSION:-v0.1.38}"
+VERSION="${VERSION:-v0.1.39}"
 APP_NAME="Sub2APIStatusBar"
 BUNDLE_ID="${BUNDLE_ID:-com.geekywizkid.sub2api-statusbar}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 ARCHITECTURE="${ARCHITECTURE:-native}"
 MINIMUM_MACOS_VERSION="${MINIMUM_MACOS_VERSION:-12.0}"
+SWIFT_FRONTEND_THREADS="${SWIFT_FRONTEND_THREADS:-1}"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -16,6 +17,10 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 source "$ROOT_DIR/scripts/macos-architecture.sh"
 ARCHITECTURE="$(resolve_macos_architecture "$ARCHITECTURE")"
+[[ "$SWIFT_FRONTEND_THREADS" =~ ^[1-9][0-9]*$ ]] || {
+  echo "SWIFT_FRONTEND_THREADS must be a positive integer." >&2
+  exit 1
+}
 
 build_binary_for_architecture() {
   local architecture="$1"
@@ -23,16 +28,24 @@ build_binary_for_architecture() {
   local triple="$architecture-apple-macosx$MINIMUM_MACOS_VERSION"
   local binary_directory
 
-  swift build \
+  if ! swift build \
     -c release \
     --product "$APP_NAME" \
     --triple "$triple" \
-    --scratch-path "$scratch_path" >&2
+    --scratch-path "$scratch_path" \
+    -Xswiftc -num-threads \
+    -Xswiftc "$SWIFT_FRONTEND_THREADS" >&2; then
+    return 1
+  fi
   binary_directory="$(swift build \
     -c release \
     --triple "$triple" \
     --scratch-path "$scratch_path" \
     --show-bin-path)"
+  [[ -x "$binary_directory/$APP_NAME" ]] || {
+    echo "Built executable is missing: $binary_directory/$APP_NAME" >&2
+    return 1
+  }
   echo "$binary_directory/$APP_NAME"
 }
 

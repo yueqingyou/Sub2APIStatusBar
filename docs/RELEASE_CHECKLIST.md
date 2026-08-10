@@ -31,7 +31,7 @@
 
 ## Before Public Distribution
 
-- [x] Choose a public version tag, for example `v0.1.38`
+- [x] Choose a public version tag, for example `v0.1.39`
 - [ ] Optional: build with a Developer ID Application certificate
 - [ ] Optional: notarize the app with Apple
 - [x] Attach the release zip and checksum to a GitHub Release
@@ -44,16 +44,16 @@
 ```bash
 swift test
 swift build
-VERSION=v0.1.38 \
+VERSION=v0.1.39 \
 ./scripts/package-release.sh
-VERSION=v0.1.38 ./scripts/verify-release.sh
+VERSION=v0.1.39 ./scripts/verify-release.sh
 ```
 
 Developer ID signing:
 
 ```bash
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.38 \
+VERSION=v0.1.39 \
 ./scripts/package-release.sh
 ```
 
@@ -66,6 +66,6 @@ APPLE_ID="you@example.com" \
 TEAM_ID="TEAMID" \
 APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx" \
 SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-VERSION=v0.1.38 \
+VERSION=v0.1.39 \
 ./scripts/notarize-release.sh
 ```

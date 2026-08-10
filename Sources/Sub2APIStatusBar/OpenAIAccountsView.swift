@@ -22,10 +22,6 @@ struct OpenAIAccountsView: View {
     private var accountList: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                PanelPageHeader(
-                    title: strings.phrase("OpenAI 账号", "OpenAI Accounts")
-                )
-
                 if let error = model.snapshot.openAIQuotaError {
                     MessageRow(message: error)
                 }
@@ -171,8 +167,6 @@ private struct OpenAIAccountDetailView: View {
                     ZStack {
                         Circle()
                             .fill(ClaudeTheme.elevatedCard)
-                        Circle()
-                            .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
                         Image(systemName: "chevron.left")
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(ClaudeTheme.primaryText)
@@ -211,12 +205,6 @@ private struct OpenAIAccountDetailView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
             .background(ClaudeTheme.header)
-            .overlay(alignment: .bottom) {
-                Rectangle()
-                    .fill(ClaudeTheme.border)
-                    .frame(height: 0.5)
-                    .allowsHitTesting(false)
-            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -226,9 +214,9 @@ private struct OpenAIAccountDetailView: View {
                     )
 
                     if let progress = account.progress(for: selectedWindow) {
-                        SectionBlock(title: windowTitle) {
+                        GlassCard {
                             VStack(alignment: .leading, spacing: 12) {
-                                OpenAIQuotaProgressRow(title: windowTitle, progress: progress, strings: strings)
+                                OpenAIQuotaProgressRow(title: nil, progress: progress, strings: strings)
                                 if let stats = progress.windowStats {
                                     InfoRow(label: strings.phrase("请求", "Requests"), value: StatusFormatters.compactNumber(stats.requests))
                                     InfoRow(label: "Token", value: StatusFormatters.compactNumber(stats.tokens))
@@ -283,12 +271,6 @@ private struct OpenAIAccountDetailView: View {
         }
     }
 
-    private var windowTitle: String {
-        selectedWindow == .fiveHour
-            ? strings.phrase("五小时", "5 hours")
-            : strings.phrase("七天", "7 days")
-    }
-
     private var quotaWindowItems: [GlassSegmentedItem<OpenAIQuotaWindow>] {
         [
             GlassSegmentedItem(
@@ -340,15 +322,17 @@ private struct OpenAIAccountDetailView: View {
 }
 
 private struct OpenAIQuotaProgressRow: View {
-    let title: String
+    let title: String?
     let progress: UsageProgress
     let strings: AppStrings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(title)
-                    .font(.caption.weight(.semibold))
+                if let title {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                }
                 Spacer()
                 Text(strings.phrase("已用 \(usedText)", "Used \(usedText)"))
                 .font(.caption.monospacedDigit())

@@ -49,7 +49,6 @@ struct OpenAIQuotaOverviewView: View {
 
                 if let focus = focusAccount,
                    let progress = focus.account.progress(for: window) {
-                    Divider()
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(focus.account.account.displayName)

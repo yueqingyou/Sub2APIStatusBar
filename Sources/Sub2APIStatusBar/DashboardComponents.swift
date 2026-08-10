@@ -41,11 +41,13 @@ struct UserAccountCard: View {
                 Text(displayName)
                     .font(.headline)
                     .lineLimit(1)
-                Text(user.email)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                if displayName != user.email {
+                    Text(user.email)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
             }
 
             Spacer()
@@ -88,11 +90,13 @@ struct MonitoredUserCard: View {
                 Text(user.displayName)
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
-                Text(user.email)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                if user.displayName != user.email {
+                    Text(user.email)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
             }
 
             Spacer()
@@ -214,9 +218,6 @@ struct SubscriptionQuotaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Circle()
-                    .fill(item.status == "active" ? ClaudeTheme.success : ClaudeTheme.muted)
-                    .frame(width: 7, height: 7)
                 Text(item.groupName)
                     .font(.headline)
                 Spacer()
@@ -314,10 +315,12 @@ struct SubscriptionEmptyState: View {
                 Text(strings.phrase("暂无订阅", "No Subscriptions"))
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(ClaudeTheme.primaryText)
-                Text(emptyDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if activeCount > 0 {
+                    Text(emptyDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 8)
@@ -335,15 +338,9 @@ struct SubscriptionEmptyState: View {
     }
 
     private var emptyDescription: String {
-        if activeCount > 0 {
-            return strings.phrase(
-                "服务返回了活跃数量，但没有订阅明细。",
-                "The service returned active counts but no subscription details."
-            )
-        }
-        return strings.phrase(
-            "该账号当前没有可展示的订阅配额。",
-            "This account has no subscription quotas to display."
+        strings.phrase(
+            "服务返回了活跃数量，但没有订阅明细。",
+            "The service returned active counts but no subscription details."
         )
     }
 
@@ -454,9 +451,6 @@ struct ModelDistributionView: View {
                             tint: ClaudeTheme.slate,
                             height: 5
                         )
-                    }
-                    if item.id != visibleModels.last?.id {
-                        Divider()
                     }
                 }
             }

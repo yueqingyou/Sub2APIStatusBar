@@ -14,19 +14,7 @@ struct CodexWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .center) {
-                    PanelPageHeader(
-                        title: strings.phrase("任务", "Tasks")
-                    )
-                    Spacer()
-                    if selection == .activity, !model.codexNodes.isEmpty {
-                        Label("\(healthyNodeCount)/\(model.codexNodes.count)", systemImage: "server.rack")
-                            .font(.caption.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(healthyNodeCount == model.codexNodes.count ? ClaudeTheme.success : ClaudeTheme.warning)
-                    }
-                }
-
+            HStack(alignment: .center, spacing: 10) {
                 GlassSegmentedControl(
                     selection: $selection,
                     items: [
@@ -42,6 +30,11 @@ struct CodexWorkspaceView: View {
                         ),
                     ]
                 )
+                if selection == .activity, !model.codexNodes.isEmpty {
+                    Label("\(healthyNodeCount)/\(model.codexNodes.count)", systemImage: "server.rack")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(healthyNodeCount == model.codexNodes.count ? ClaudeTheme.success : ClaudeTheme.warning)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 14)
@@ -63,13 +56,12 @@ struct CodexWorkspaceView: View {
             latestUsage: model.snapshot.latestUsage,
             realtimeConcurrency: model.snapshot.realtimeConcurrency,
             timelineEventLimit: model.config.codexTaskTimelineEventLimit,
-            strings: strings,
-            showsPageHeader: false
+            strings: strings
         )
     }
 
     private var nodeView: some View {
-        CodexNodeConfigurationView(model: model, strings: strings, showsPageHeader: false)
+        CodexNodeConfigurationView(model: model, strings: strings)
     }
 
     private var healthyNodeCount: Int {

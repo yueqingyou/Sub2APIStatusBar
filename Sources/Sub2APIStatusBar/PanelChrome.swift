@@ -1,5 +1,40 @@
 import SwiftUI
 
+struct PanelBrandMark: View {
+    var statusTint: Color?
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(ClaudeTheme.elevatedCard)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(ClaudeTheme.accent.opacity(0.08))
+                SafeSystemImage(
+                    systemName: "antenna.radiowaves.left.and.right",
+                    fallbackName: "circle.grid.3x3.fill"
+                )
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(ClaudeTheme.accent)
+            }
+            .frame(width: 34, height: 34)
+
+            if let statusTint {
+                Circle()
+                    .fill(statusTint)
+                    .frame(width: 8, height: 8)
+                    .overlay {
+                        Circle()
+                            .stroke(ClaudeTheme.elevatedCard, lineWidth: 2)
+                    }
+                    .offset(x: 2, y: 2)
+            }
+        }
+        .frame(width: 34, height: 34)
+        .shadow(color: ClaudeTheme.glassShadow.opacity(0.5), radius: 3, y: 1)
+    }
+}
+
 struct PanelFooter: View {
     @ObservedObject var model: MonitorViewModel
     let strings: AppStrings
@@ -27,12 +62,6 @@ struct PanelFooter: View {
         .padding(.horizontal, 16)
         .frame(height: 44)
         .background(ClaudeTheme.footer)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(ClaudeTheme.border)
-                .frame(height: 0.5)
-                .allowsHitTesting(false)
-        }
     }
 }
 
@@ -85,17 +114,7 @@ struct RefreshActionButton: View {
         Button(action: action) {
             ZStack {
                 Circle()
-                    .fill(ClaudeTheme.elevatedCard)
-                    .overlay {
-                        Circle()
-                            .fill(isRefreshing ? ClaudeTheme.accent.opacity(0.13) : ClaudeTheme.elevatedCard.opacity(0.42))
-                            .allowsHitTesting(false)
-                    }
-                    .overlay {
-                        Circle()
-                            .stroke(ClaudeTheme.glassBorder, lineWidth: 0.75)
-                            .allowsHitTesting(false)
-                    }
+                    .fill(isRefreshing ? ClaudeTheme.accent.opacity(0.13) : ClaudeTheme.elevatedCard)
                     .frame(width: 30, height: 30)
                 SafeSystemImage(
                     systemName: isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise",
@@ -169,9 +188,6 @@ struct RefreshIntervalControl: View {
                 }
             }
 
-            Text(strings.phrase("失败自动重试，并保留上次成功数据。", "Failures retry automatically and keep the last successful data."))
-            .font(.caption2)
-            .foregroundStyle(ClaudeTheme.secondaryText)
         }
     }
 
@@ -192,7 +208,6 @@ struct RefreshIntervalControl: View {
         let isSelected = currentSeconds == preset
         let foreground = isSelected ? ClaudeTheme.primaryText : ClaudeTheme.secondaryText
         let background = isSelected ? ClaudeTheme.accent.opacity(0.14) : Color.clear
-        let border = isSelected ? ClaudeTheme.accent.opacity(0.22) : Color.clear
 
         return Button {
             updateSeconds(preset)
@@ -203,11 +218,6 @@ struct RefreshIntervalControl: View {
                 .frame(minWidth: 38)
                 .padding(.vertical, 5)
                 .background(background, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(border, lineWidth: 0.75)
-                        .allowsHitTesting(false)
-                }
         }
         .buttonStyle(.plain)
     }
@@ -241,7 +251,6 @@ struct PanelPageTabs: View {
         let isSelected = selection == page
         let foreground = isSelected ? ClaudeTheme.primaryText : ClaudeTheme.secondaryText
         let background = isSelected ? ClaudeTheme.elevatedCard : Color.clear
-        let border = isSelected ? ClaudeTheme.glassBorder : Color.clear
 
         return Button {
             selection = page
@@ -256,11 +265,6 @@ struct PanelPageTabs: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 30)
                 .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(border, lineWidth: 0.75)
-                        .allowsHitTesting(false)
-                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

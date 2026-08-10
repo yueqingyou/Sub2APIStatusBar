@@ -16,7 +16,6 @@ struct CodexTaskConsoleView: View {
     private let gatewayConcurrency: CodexTaskGatewayConcurrencyDetail?
     let timelineEventLimit: Int
     let strings: AppStrings
-    let showsPageHeader: Bool
     @State private var expandedTaskIDs: Set<String> = []
     @State private var isGatewayExpanded = false
 
@@ -25,8 +24,7 @@ struct CodexTaskConsoleView: View {
         latestUsage: UsageLog?,
         realtimeConcurrency: UserRealtimeConcurrency?,
         timelineEventLimit: Int,
-        strings: AppStrings,
-        showsPageHeader: Bool = true
+        strings: AppStrings
     ) {
         consoleRows = CodexTaskConsoleModel.rows(activities: activities)
         gatewayUsage = CodexTaskConsoleModel.gatewayUsageDetail(latestUsage: latestUsage)
@@ -35,7 +33,6 @@ struct CodexTaskConsoleView: View {
         )
         self.timelineEventLimit = timelineEventLimit
         self.strings = strings
-        self.showsPageHeader = showsPageHeader
     }
 
     var body: some View {
@@ -53,8 +50,6 @@ struct CodexTaskConsoleView: View {
 
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                consoleHeader(activeCount: activeRows.count, recentCount: recentRows.count)
-
                 if consoleRows.isEmpty {
                     emptyCard
                 } else {
@@ -87,21 +82,6 @@ struct CodexTaskConsoleView: View {
         }
     }
 
-    private func consoleHeader(activeCount: Int, recentCount: Int) -> some View {
-        HStack(spacing: 12) {
-            if showsPageHeader {
-                PanelPageHeader(
-                    title: strings.phrase("Codex 任务", "Codex Tasks")
-                )
-            }
-            Spacer()
-            HStack(spacing: 6) {
-                summaryBadge(value: activeCount, label: strings.phrase("活动", "active"), tint: ClaudeTheme.success)
-                summaryBadge(value: recentCount, label: strings.phrase("历史", "recent"), tint: ClaudeTheme.slate)
-            }
-        }
-    }
-
     @ViewBuilder
     private var gatewaySection: some View {
         if gatewayUsage != nil || gatewayConcurrency != nil {
@@ -116,7 +96,7 @@ struct CodexTaskConsoleView: View {
                             .foregroundStyle(ClaudeTheme.secondaryText)
                         Text(strings.phrase("网关明细", "Gateway Details"))
                             .font(.callout.weight(.semibold))
-                        if let gatewayConcurrency {
+                        if let gatewayConcurrency, !isGatewayExpanded {
                             Text(gatewayConcurrency.capacityText)
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(ClaudeTheme.secondaryText)
@@ -136,9 +116,6 @@ struct CodexTaskConsoleView: View {
                 if isGatewayExpanded {
                     if let gatewayConcurrency {
                         gatewayConcurrencyContent(gatewayConcurrency)
-                    }
-                    if gatewayConcurrency != nil, gatewayUsage != nil {
-                        Divider()
                     }
                     if let gatewayUsage {
                         gatewayUsageContent(gatewayUsage)
@@ -213,10 +190,6 @@ struct CodexTaskConsoleView: View {
                 toggleTask(row.id)
             } label: {
                 HStack(alignment: .center, spacing: 10) {
-                    Circle()
-                        .fill(statusColor(row.status))
-                        .frame(width: 8, height: 8)
-
                     VStack(alignment: .leading, spacing: 3) {
                         Text(taskTitle(row))
                             .font(.callout.weight(.semibold))
@@ -247,13 +220,9 @@ struct CodexTaskConsoleView: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                Divider()
-                    .overlay(ClaudeTheme.border)
                 taskDetailRows(row)
 
                 if !row.events.isEmpty {
-                    Divider()
-                        .overlay(ClaudeTheme.border)
                     timelineSection(row)
                 }
             }
@@ -268,17 +237,9 @@ struct CodexTaskConsoleView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ClaudeTheme.secondaryText)
                 Spacer()
-                Text(eventCountText(row.events.count))
+                Text(eventDisplayCountText(total: row.events.count, visible: visibleEvents.count))
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(ClaudeTheme.secondaryText)
-            }
-            if row.events.count > visibleEvents.count {
-                Text(strings.phrase(
-                    "显示最近 \(visibleEvents.count) 条",
-                    "Latest \(visibleEvents.count) shown"
-                ))
-                .font(.caption2)
-                .foregroundStyle(ClaudeTheme.secondaryText)
             }
             ForEach(visibleEvents) { event in
                 eventRow(event)
@@ -360,13 +321,6 @@ struct CodexTaskConsoleView: View {
         }
         .foregroundStyle(ClaudeTheme.primaryText)
         .padding(.top, 4)
-    }
-
-    private func summaryBadge(value: Int, label: String, tint: Color) -> some View {
-        StatusPill(
-            title: "\(value) \(label)",
-            tint: tint
-        )
     }
 
     private func statusBadge(_ status: String) -> some View {
@@ -455,8 +409,11 @@ struct CodexTaskConsoleView: View {
         }
     }
 
-    private func eventCountText(_ count: Int) -> String {
-        strings.phrase("\(count) 条", "\(count) events")
+    private func eventDisplayCountText(total: Int, visible: Int) -> String {
+        guard visible < total else {
+            return strings.phrase("\(total) 条", "\(total) events")
+        }
+        return strings.phrase("最近 \(visible) / 共 \(total)", "Latest \(visible) / \(total)")
     }
 
     private static func timestamp(_ date: Date) -> String {

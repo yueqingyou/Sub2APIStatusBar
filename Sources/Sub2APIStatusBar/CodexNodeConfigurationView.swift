@@ -4,13 +4,11 @@ import Sub2APIStatusCore
 struct CodexNodeConfigurationView: View {
     @ObservedObject var model: MonitorViewModel
     let strings: AppStrings
-    var showsPageHeader = true
     @State private var isFormPresented = false
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                summaryHeader
                 nodeListCard
                 installPreviewCard
                 if isFormPresented {
@@ -21,54 +19,37 @@ struct CodexNodeConfigurationView: View {
         }
     }
 
-    private var summaryHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if showsPageHeader {
-                PanelPageHeader(
-                    title: strings.phrase("Codex 节点", "Codex Nodes")
-                )
-            }
-            HStack(spacing: 8) {
-                receiverBadge
-                Spacer()
-                Button {
-                    model.resetCodexNodeForm(kind: .local)
-                    isFormPresented = true
-                } label: {
-                    Label(strings.phrase("本机", "Local"), systemImage: "plus")
-                }
-                Button {
-                    model.resetCodexNodeForm(kind: .remote)
-                    isFormPresented = true
-                } label: {
-                    Label(strings.phrase("远端", "Remote"), systemImage: "plus")
-                }
-            }
-            .buttonStyle(.borderless)
-        }
-    }
-
-    private var receiverBadge: some View {
-        StatusPill(
-            title: strings.phrase(
-                "已配置 \(model.codexNodes.count) 个节点",
-                "\(model.codexNodes.count) nodes configured"
-            ),
-            tint: ClaudeTheme.slate,
-            systemImage: "server.rack"
-        )
-    }
-
     @ViewBuilder
     private var nodeListCard: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 12) {
-                Label(strings.phrase("已登记节点", "Registered Nodes"), systemImage: "server.rack")
-                    .font(.headline)
+                HStack {
+                    Label(strings.phrase("已登记节点", "Registered Nodes"), systemImage: "server.rack")
+                        .font(.headline)
+                    if !model.codexNodes.isEmpty {
+                        Text(String(model.codexNodes.count))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(ClaudeTheme.secondaryText)
+                    }
+                    Spacer()
+                    Button {
+                        model.resetCodexNodeForm(kind: .local)
+                        isFormPresented = true
+                    } label: {
+                        Label(strings.phrase("本机", "Local"), systemImage: "plus")
+                    }
+                    Button {
+                        model.resetCodexNodeForm(kind: .remote)
+                        isFormPresented = true
+                    } label: {
+                        Label(strings.phrase("远端", "Remote"), systemImage: "plus")
+                    }
+                }
+                .buttonStyle(.borderless)
                 if model.codexNodes.isEmpty {
                     Text(strings.phrase("暂无节点", "No nodes"))
-                    .font(.callout)
-                    .foregroundStyle(ClaudeTheme.secondaryText)
+                        .font(.callout)
+                        .foregroundStyle(ClaudeTheme.secondaryText)
                 } else {
                     VStack(spacing: 10) {
                         ForEach(model.codexNodes) { node in
@@ -108,7 +89,9 @@ struct CodexNodeConfigurationView: View {
                 }
             }
             InfoRow(label: strings.phrase("接收端", "Receiver"), value: node.hookReceiverURL.absoluteString)
-            InfoRow(label: strings.phrase("本机监听", "Local Listener"), value: "127.0.0.1:\(node.localReceiverPort)")
+            if node.kind == .remote {
+                InfoRow(label: strings.phrase("本机监听", "Local Listener"), value: "127.0.0.1:\(node.localReceiverPort)")
+            }
             if let ssh = node.ssh {
                 InfoRow(label: "SSH", value: ssh.destination)
             }
@@ -241,7 +224,7 @@ struct CodexNodeConfigurationView: View {
     private var formCard: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 12) {
-                Label(strings.phrase("节点表单", "Node Form"), systemImage: "slider.horizontal.3")
+                Label(nodeFormTitle, systemImage: "slider.horizontal.3")
                     .font(.headline)
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -307,6 +290,12 @@ struct CodexNodeConfigurationView: View {
         }
     }
 
+    private var nodeFormTitle: String {
+        model.editingCodexNodeID == nil
+            ? strings.phrase("新增节点", "Add Node")
+            : strings.phrase("编辑节点", "Edit Node")
+    }
+
     private var localFields: some View {
         VStack(alignment: .leading, spacing: 10) {
             twoColumnFields(
@@ -317,18 +306,16 @@ struct CodexNodeConfigurationView: View {
                 left: field(strings.phrase("本机监听端口", "Local Receiver Port"), text: $model.codexNodeForm.localReceiverPort),
                 right: secureField(strings.phrase("节点密钥", "Secret"), text: $model.codexNodeForm.secret)
             )
-            field(strings.phrase("CODEX_HOME（本机留空则读取环境变量）", "CODEX_HOME (local uses environment when empty)"), text: $model.codexNodeForm.codexHomeOverride)
+            field(
+                "CODEX_HOME",
+                text: $model.codexNodeForm.codexHomeOverride,
+                help: strings.phrase("本机留空时读取环境变量", "Uses the local environment when empty")
+            )
         }
     }
 
     private var remoteFields: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(strings.phrase(
-                "远端只需 SSH 连接，可读取 ~/.ssh/config 或手动填写；节点参数会自动生成。",
-                "Remote nodes only need SSH settings; load ~/.ssh/config or enter them manually. Node parameters are generated."
-            ))
-            .font(.caption)
-            .foregroundStyle(ClaudeTheme.secondaryText)
             sshConfigPicker
             twoColumnFields(
                 left: field(strings.phrase("SSH 主机", "SSH Host"), text: $model.codexNodeForm.sshHost),
@@ -385,13 +372,15 @@ struct CodexNodeConfigurationView: View {
         }
     }
 
-    private func field(_ label: String, text: Binding<String>) -> some View {
+    private func field(_ label: String, text: Binding<String>, help: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(ClaudeTheme.secondaryText)
-            TextField(label, text: text)
+            TextField("", text: text)
                 .themedTextField()
+                .accessibilityLabel(label)
+                .help(help ?? label)
         }
     }
 
@@ -400,8 +389,10 @@ struct CodexNodeConfigurationView: View {
             Text(label)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(ClaudeTheme.secondaryText)
-            SecureField(label, text: text)
+            SecureField("", text: text)
+                .credentialTextInput()
                 .themedTextField()
+                .accessibilityLabel(label)
         }
     }
 

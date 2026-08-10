@@ -1,5 +1,20 @@
 import Foundation
 
+public enum MenuBarStatusDisplayMode: Sendable, Equatable {
+    case signedOut
+    case iconOnly
+    case metrics
+}
+
+public extension AppConfig {
+    var menuBarStatusDisplayMode: MenuBarStatusDisplayMode {
+        if authToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .signedOut
+        }
+        return showsMenuBarText ? .metrics : .iconOnly
+    }
+}
+
 public struct MenuBarStatusLayout: Sendable, Equatable {
     public static let fallbackWidth: Double = 128
     public static let fixedHeight: Double = 22
